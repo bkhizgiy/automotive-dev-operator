@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  creationTimestamp: null
+  labels:
+    app.kubernetes.io/component: build-api
+    app.kubernetes.io/name: automotive-dev-operator
+  name: ado-build-api
+spec:
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+  - name: proxy
+    port: 8081
+    targetPort: 8081
+  selector:
+    app.kubernetes.io/component: build-api
+    app.kubernetes.io/name: automotive-dev-operator
+status:
+  loadBalancer: {}

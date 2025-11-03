@@ -13,7 +13,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/rh-automotive-dev-platform/automotive-dev-operator/internal/buildapi"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi"
 )
 
 type Client struct {

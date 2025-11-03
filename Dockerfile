@@ -4,15 +4,22 @@ ARG TARGETOS
 ARG TARGETARCH
 
 WORKDIR /workspace
+
+# Copy files as root first
 COPY go.mod go.mod
 COPY go.sum go.sum
-RUN go mod download
-
 COPY cmd/main.go cmd/main.go
 COPY cmd/build-api/main.go cmd/build-api/main.go
 COPY cmd/init-secrets/main.go cmd/init-secrets/main.go
 COPY api/ api/
 COPY internal/ internal/
+
+# Set ownership and switch to non-root user (go-toolset runs as 1001)
+USER root
+RUN chown -R 1001:0 /workspace && chmod -R 775 /workspace
+USER 1001
+
+RUN go mod download
 
 ENV CGO_ENABLED=0
 RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags "-s -w" -o manager cmd/main.go

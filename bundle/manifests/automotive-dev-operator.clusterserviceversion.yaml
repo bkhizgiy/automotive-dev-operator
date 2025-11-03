@@ -1,0 +1,639 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: |-
+      [
+        {
+          "apiVersion": "automotive.sdv.cloud.redhat.com/v1",
+          "kind": "AutomotiveDevConfig",
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/managed-by": "kustomize",
+              "app.kubernetes.io/name": "automotive-dev-operator",
+              "environment": "development"
+            },
+            "name": "automotive-dev",
+            "namespace": "automotive-dev-operator-system"
+          },
+          "spec": {
+            "buildConfig": {
+              "pvcSize": "8Gi"
+            }
+          }
+        },
+        {
+          "apiVersion": "automotive.sdv.cloud.redhat.com/v1",
+          "kind": "ImageBuild",
+          "metadata": {
+            "annotations": {
+              "description": "Example ImageBuild CR. The architecture can be set to any supported value like \"aarch64\", \"x86_64\", etc. See your build platform's documentation for supported values.\n"
+            },
+            "labels": {
+              "app.kubernetes.io/managed-by": "kustomize",
+              "app.kubernetes.io/name": "automotive-dev-operator"
+            },
+            "name": "imagebuild-sample"
+          },
+          "spec": {
+            "architecture": "amd64",
+            "automotiveImageBuilder": "quay.io/centos-sig-automotive/automotive-image-builder:1.0.0",
+            "distro": "cs9",
+            "exportFormat": "qcow2",
+            "manifestConfigMap": "mpp",
+            "mode": "image",
+            "serveArtifact": false,
+            "serveExpiryHours": 24,
+            "target": "qemu"
+          }
+        }
+      ]
+    capabilities: Basic Install
+    categories: Developer Tools
+    containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
+    createdAt: "2025-11-03T13:35:38Z"
+    operatorframework.io/suggested-namespace: automotive-dev-operator-system
+    operators.operatorframework.io/builder: operator-sdk-v1.39.1
+    operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
+    repository: https://github.com/centos-automotive-suite/automotive-dev-operator
+    support: Red Hat
+  name: automotive-dev-operator.v0.0.1
+  namespace: placeholder
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+    - description: AutomotiveDevConfig is the Schema for the automotivedevconfigs
+        API
+      displayName: Automotive Dev Config
+      kind: AutomotiveDevConfig
+      name: automotivedevconfigs.automotive.sdv.cloud.redhat.com
+      version: v1
+    - description: ImageBuild is the Schema for the imagebuilds API
+      displayName: Image Build
+      kind: ImageBuild
+      name: imagebuilds.automotive.sdv.cloud.redhat.com
+      version: v1
+    - description: Image is the Schema for the images API
+      displayName: Image
+      kind: Image
+      name: images.automotive.sdv.cloud.redhat.com
+      resources:
+      - kind: ConfigMap
+        name: ""
+        version: v1
+      specDescriptors:
+      - description: Architecture specifies the target architecture
+        displayName: Architecture
+        path: architecture
+      - description: Distro specifies the distribution
+        displayName: Distribution
+        path: distro
+      - description: ExportFormat specifies the output format
+        displayName: Export Format
+        path: exportFormat
+      - description: Target specifies the build target
+        displayName: Target
+        path: target
+      - description: Location defines where the image is stored
+        displayName: Location
+        path: location
+      - description: Type specifies the storage type
+        displayName: Location Type
+        path: location.type
+      statusDescriptors:
+      - description: Phase represents the current phase of the image
+        displayName: Phase
+        path: phase
+        x-descriptors:
+        - urn:alm:descriptor:io.kubernetes.phase
+      version: v1
+  description: CentOS Automotive Suite
+  displayName: CentOS Automotive Suite
+  icon:
+  - base64data: ""
+    mediatype: ""
+  install:
+    spec:
+      clusterPermissions:
+      - rules:
+        - apiGroups:
+          - ""
+          resources:
+          - configmaps
+          - persistentvolumeclaims
+          - pods
+          - serviceaccounts
+          - services
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - ""
+          resources:
+          - namespaces
+          verbs:
+          - create
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - ""
+          resources:
+          - pods/exec
+          verbs:
+          - create
+        - apiGroups:
+          - ""
+          resources:
+          - pods/log
+          verbs:
+          - get
+        - apiGroups:
+          - ""
+          resources:
+          - secrets
+          verbs:
+          - create
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - apps
+          resources:
+          - deployments
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - automotive.sdv.cloud.redhat.com
+          resources:
+          - automotivedevconfigs
+          - imagebuilds
+          - images
+          - operatorconfigs
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - automotive.sdv.cloud.redhat.com
+          resources:
+          - automotivedevconfigs/finalizers
+          - imagebuilds/finalizers
+          - images/finalizers
+          - operatorconfigs/finalizers
+          verbs:
+          - update
+        - apiGroups:
+          - automotive.sdv.cloud.redhat.com
+          resources:
+          - automotivedevconfigs/status
+          - imagebuilds/status
+          - images/status
+          - operatorconfigs/status
+          verbs:
+          - get
+          - patch
+          - update
+        - apiGroups:
+          - rbac.authorization.k8s.io
+          resources:
+          - clusterrolebindings
+          - clusterroles
+          - rolebindings
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - route.openshift.io
+          resources:
+          - routes
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - security.openshift.io
+          resources:
+          - securitycontextconstraints
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - use
+          - watch
+        - apiGroups:
+          - tekton.dev
+          resources:
+          - pipelineruns
+          - pipelines
+          - taskruns
+          - tasks
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        serviceAccountName: ado-controller-manager
+      deployments:
+      - label:
+          app.kubernetes.io/component: build-api
+          app.kubernetes.io/name: automotive-dev-operator
+        name: ado-build-api
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app.kubernetes.io/component: build-api
+              app.kubernetes.io/name: automotive-dev-operator
+          strategy: {}
+          template:
+            metadata:
+              labels:
+                app.kubernetes.io/component: build-api
+                app.kubernetes.io/name: automotive-dev-operator
+            spec:
+              containers:
+              - command:
+                - /build-api
+                env:
+                - name: BUILD_API_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                image: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
+                imagePullPolicy: Always
+                name: build-api
+                ports:
+                - containerPort: 8080
+                  name: http
+                resources:
+                  limits:
+                    cpu: 200m
+                    memory: 512Mi
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+                securityContext:
+                  allowPrivilegeEscalation: false
+              - args:
+                - --provider=openshift
+                - --https-address=
+                - --http-address=:8081
+                - --upstream=http://localhost:8080
+                - --openshift-service-account=ado-controller-manager
+                - --cookie-secret=$(COOKIE_SECRET)
+                - --cookie-secure=false
+                - --pass-access-token=true
+                - --pass-user-headers=true
+                - --request-logging=true
+                - --skip-auth-regex=^/healthz
+                - --email-domain=*
+                - --skip-provider-button=true
+                - --upstream-timeout=0
+                env:
+                - name: COOKIE_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      key: cookie-secret
+                      name: ado-build-api-oauth-proxy
+                image: registry.redhat.io/openshift4/ose-oauth-proxy:latest
+                imagePullPolicy: IfNotPresent
+                name: oauth-proxy
+                ports:
+                - containerPort: 8081
+                  name: proxy-http
+                resources:
+                  limits:
+                    cpu: 100m
+                    memory: 128Mi
+                  requests:
+                    cpu: 10m
+                    memory: 32Mi
+                securityContext:
+                  allowPrivilegeEscalation: false
+              initContainers:
+              - command:
+                - /init-secrets
+                env:
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                image: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
+                imagePullPolicy: Always
+                name: init-secrets
+                resources: {}
+                securityContext:
+                  allowPrivilegeEscalation: false
+              serviceAccountName: ado-controller-manager
+      - label:
+          app.kubernetes.io/managed-by: kustomize
+          app.kubernetes.io/name: automotive-dev-operator
+          control-plane: controller-manager
+        name: ado-controller-manager
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              control-plane: controller-manager
+          strategy: {}
+          template:
+            metadata:
+              annotations:
+                kubectl.kubernetes.io/default-container: manager
+              labels:
+                control-plane: controller-manager
+            spec:
+              affinity:
+                nodeAffinity:
+                  requiredDuringSchedulingIgnoredDuringExecution:
+                    nodeSelectorTerms:
+                    - matchExpressions:
+                      - key: kubernetes.io/arch
+                        operator: In
+                        values:
+                        - arm64
+                        - amd64
+                      - key: kubernetes.io/os
+                        operator: In
+                        values:
+                        - linux
+              containers:
+              - args:
+                - --leader-elect
+                - --health-probe-bind-address=:8081
+                - --metrics-bind-address=0
+                command:
+                - /manager
+                env:
+                - name: BUILD_API_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                image: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
+                imagePullPolicy: Always
+                livenessProbe:
+                  httpGet:
+                    path: /healthz
+                    port: 8081
+                  initialDelaySeconds: 15
+                  periodSeconds: 20
+                name: manager
+                ports:
+                - containerPort: 8080
+                  name: build-api
+                readinessProbe:
+                  httpGet:
+                    path: /readyz
+                    port: 8081
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                resources:
+                  limits:
+                    cpu: 500m
+                    memory: 128Mi
+                  requests:
+                    cpu: 10m
+                    memory: 64Mi
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                    - ALL
+              initContainers:
+              - command:
+                - /init-secrets
+                env:
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                image: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
+                imagePullPolicy: Always
+                name: init-oauth-secrets
+                resources:
+                  limits:
+                    cpu: 100m
+                    memory: 64Mi
+                  requests:
+                    cpu: 10m
+                    memory: 32Mi
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                    - ALL
+              securityContext:
+                runAsNonRoot: true
+              serviceAccountName: ado-controller-manager
+              terminationGracePeriodSeconds: 10
+      - label:
+          app.kubernetes.io/component: webui
+          app.kubernetes.io/name: ado-webui
+          app.kubernetes.io/part-of: automotive-dev-operator
+        name: ado-webui
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app.kubernetes.io/name: ado-webui
+              app.kubernetes.io/part-of: automotive-dev-operator
+          strategy: {}
+          template:
+            metadata:
+              labels:
+                app.kubernetes.io/component: webui
+                app.kubernetes.io/name: ado-webui
+                app.kubernetes.io/part-of: automotive-dev-operator
+            spec:
+              containers:
+              - image: quay.io/rh-sdv-cloud/aib-webui:latest
+                name: webui
+                ports:
+                - containerPort: 8080
+                  name: http
+                resources:
+                  limits:
+                    cpu: 500m
+                    memory: 512Mi
+                  requests:
+                    cpu: 100m
+                    memory: 128Mi
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                    - ALL
+                  readOnlyRootFilesystem: true
+                  runAsNonRoot: true
+                  runAsUser: 1001
+                volumeMounts:
+                - mountPath: /etc/nginx/nginx.conf
+                  name: nginx-config
+                  subPath: nginx.conf
+                - mountPath: /var/cache/nginx
+                  name: nginx-cache
+                - mountPath: /var/run
+                  name: nginx-run
+              - args:
+                - --provider=openshift
+                - --http-address=:8081
+                - --https-address=
+                - --upstream=http://127.0.0.1:8080
+                - --openshift-service-account=ado-controller-manager
+                - --cookie-secret=$(COOKIE_SECRET)
+                - --pass-user-bearer-token=true
+                - --pass-access-token=true
+                - --request-logging=true
+                - --email-domain=*
+                - --skip-provider-button=true
+                - --upstream-timeout=0
+                env:
+                - name: COOKIE_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      key: cookie-secret
+                      name: ado-webui-oauth-proxy
+                image: registry.redhat.io/openshift4/ose-oauth-proxy:latest
+                imagePullPolicy: IfNotPresent
+                livenessProbe:
+                  httpGet:
+                    path: /oauth/healthz
+                    port: proxy-http
+                  initialDelaySeconds: 30
+                  periodSeconds: 10
+                name: oauth-proxy
+                ports:
+                - containerPort: 8081
+                  name: proxy-http
+                readinessProbe:
+                  httpGet:
+                    path: /oauth/healthz
+                    port: proxy-http
+                  initialDelaySeconds: 5
+                  periodSeconds: 5
+                resources:
+                  limits:
+                    cpu: 100m
+                    memory: 128Mi
+                  requests:
+                    cpu: 10m
+                    memory: 32Mi
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                    - ALL
+                  readOnlyRootFilesystem: true
+                  runAsNonRoot: true
+                  runAsUser: 1001
+              initContainers:
+              - command:
+                - /init-secrets
+                env:
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                image: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
+                imagePullPolicy: Always
+                name: init-secrets
+                resources: {}
+                securityContext:
+                  allowPrivilegeEscalation: false
+              serviceAccountName: ado-controller-manager
+              volumes:
+              - configMap:
+                  name: ado-webui-nginx-config
+                name: nginx-config
+              - emptyDir: {}
+                name: nginx-cache
+              - emptyDir: {}
+                name: nginx-run
+      permissions:
+      - rules:
+        - apiGroups:
+          - ""
+          resources:
+          - configmaps
+          verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+        - apiGroups:
+          - coordination.k8s.io
+          resources:
+          - leases
+          verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+        - apiGroups:
+          - ""
+          resources:
+          - events
+          verbs:
+          - create
+          - patch
+        serviceAccountName: ado-controller-manager
+    strategy: deployment
+  installModes:
+  - supported: true
+    type: OwnNamespace
+  - supported: true
+    type: SingleNamespace
+  - supported: false
+    type: MultiNamespace
+  - supported: false
+    type: AllNamespaces
+  keywords:
+  - automotive
+  links:
+  - name: CentOS Automotive Suite
+    url: https://github.com/centos-automotive-suite/automotive-dev-operator
+  maturity: alpha
+  minKubeVersion: 1.26.0
+  provider:
+    name: Red Hat
+  version: 0.0.1

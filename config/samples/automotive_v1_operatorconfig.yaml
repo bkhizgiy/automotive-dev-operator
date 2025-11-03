@@ -1,0 +1,7 @@
+apiVersion: automotive.sdv.cloud.redhat.com/v1
+kind: OperatorConfig
+metadata:
+  name: default
+spec:
+  webUI: true
+

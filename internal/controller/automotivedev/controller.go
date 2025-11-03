@@ -14,8 +14,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	automotivev1 "github.com/rh-automotive-dev-platform/automotive-dev-operator/api/v1"
-	"github.com/rh-automotive-dev-platform/automotive-dev-operator/internal/common/tasks"
+	automotivev1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/tasks"
 )
 
 // AutomotiveDevConfigReconciler reconciles a AutomotiveDevConfig object

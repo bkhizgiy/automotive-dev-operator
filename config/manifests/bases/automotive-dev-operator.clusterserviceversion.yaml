@@ -94,6 +94,11 @@ metadata:
         }
       ]
     capabilities: Basic Install
+    categories: Developer Tools
+    containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
+    operatorframework.io/suggested-namespace: automotive-dev-operator-system
+    repository: https://github.com/centos-automotive-suite/automotive-dev-operator
+    support: Red Hat
   name: automotive-dev-operator.v0.0.0
   namespace: placeholder
 spec:
@@ -145,9 +150,8 @@ spec:
       kind: ImageBuild
       name: imagebuilds.automotive.sdv.cloud.redhat.com
       version: v1
-  description: Operator for Automotive Development platform - includes pipelines for
-    building AutoSD images
-  displayName: Automotive Development Platform
+  description: CentOS Automotive Suite
+  displayName: CentOS Automotive Suite
   icon:
   - base64data: ""
     mediatype: ""
@@ -160,15 +164,15 @@ spec:
     type: OwnNamespace
   - supported: true
     type: SingleNamespace
-  - supported: true
+  - supported: false
     type: MultiNamespace
   - supported: false
     type: AllNamespaces
   keywords:
   - automotive
   links:
-  - name: Automotive Dev Operator
-    url: https://automotive-dev-operator.domain
+  - name: CentOS Automotive Suite
+    url: https://github.com/centos-automotive-suite/automotive-dev-operator
   maturity: alpha
   minKubeVersion: 1.26.0
   provider:

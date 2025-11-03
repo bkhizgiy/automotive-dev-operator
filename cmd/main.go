@@ -21,8 +21,6 @@ import (
 	"flag"
 	"os"
 
-	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
-	// to ensure that exec-entrypoint and run can make use of them.
 	routev1 "github.com/openshift/api/route/v1"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
@@ -39,10 +37,11 @@ import (
 	securityv1 "github.com/openshift/api/security/v1"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 
-	automotivev1 "github.com/rh-automotive-dev-platform/automotive-dev-operator/api/v1"
-	"github.com/rh-automotive-dev-platform/automotive-dev-operator/internal/controller/automotivedev"
-	"github.com/rh-automotive-dev-platform/automotive-dev-operator/internal/controller/image"
-	"github.com/rh-automotive-dev-platform/automotive-dev-operator/internal/controller/imagebuild"
+	automotivev1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/automotivedev"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/image"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/imagebuild"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/operatorconfig"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -170,6 +169,17 @@ func main() {
 
 	if err = imageReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Image")
+		os.Exit(1)
+	}
+
+	operatorConfigReconciler := &operatorconfig.OperatorConfigReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Log:    ctrl.Log.WithName("controllers").WithName("OperatorConfig"),
+	}
+
+	if err = operatorConfigReconciler.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "OperatorConfig")
 		os.Exit(1)
 	}
 

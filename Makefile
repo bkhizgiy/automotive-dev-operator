@@ -325,6 +325,19 @@ catalog-build: opm ## Build a catalog image.
 catalog-push: ## Push a catalog image.
 	$(MAKE) docker-push IMG=$(CATALOG_IMG)
 
+# Deploy catalog to OpenShift OperatorHub
+.PHONY: catalog-deploy
+catalog-deploy: ## Build and deploy the catalog to OpenShift OperatorHub
+	@echo "Building and deploying operator catalog..."
+	./deploy-catalog.sh
+
+.PHONY: catalog-update
+catalog-update: ## Update catalog configuration with current bundle image
+	@echo "Updating catalog configuration..."
+	@sed -i.bak "s|image:.*|image: $(BUNDLE_IMG)|g" catalog/automotive-dev-operator.yaml
+	@rm -f catalog/automotive-dev-operator.yaml.bak
+	@echo "Catalog updated to use bundle image: $(BUNDLE_IMG)"
+
 .PHONY: build-caib
 build-caib: ## Build the caib tool
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/caib cmd/caib/main.go

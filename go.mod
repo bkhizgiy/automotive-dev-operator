@@ -1,4 +1,4 @@
-module github.com/rh-automotive-dev-platform/automotive-dev-operator
+module github.com/centos-automotive-suite/automotive-dev-operator
 
 go 1.24.0
 

@@ -53,11 +53,24 @@ rules:
   - update
   - watch
 - apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - automotive.sdv.cloud.redhat.com
   resources:
   - automotivedevconfigs
   - imagebuilds
   - images
+  - operatorconfigs
   verbs:
   - create
   - delete
@@ -72,6 +85,7 @@ rules:
   - automotivedevconfigs/finalizers
   - imagebuilds/finalizers
   - images/finalizers
+  - operatorconfigs/finalizers
   verbs:
   - update
 - apiGroups:
@@ -80,6 +94,7 @@ rules:
   - automotivedevconfigs/status
   - imagebuilds/status
   - images/status
+  - operatorconfigs/status
   verbs:
   - get
   - patch
