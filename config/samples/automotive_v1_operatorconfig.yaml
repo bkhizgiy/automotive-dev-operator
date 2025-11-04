@@ -1,7 +1,9 @@
 apiVersion: automotive.sdv.cloud.redhat.com/v1
 kind: OperatorConfig
 metadata:
-  name: default
+  labels:
+    app.kubernetes.io/name: automotive-dev-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: config
 spec:
   webUI: true
-
