@@ -13,7 +13,7 @@ metadata:
               "app.kubernetes.io/name": "automotive-dev-operator",
               "environment": "development"
             },
-            "name": "automotive-dev",
+            "name": "config",
             "namespace": "automotive-dev-operator-system"
           },
           "spec": {
@@ -51,7 +51,7 @@ metadata:
     capabilities: Basic Install
     categories: Developer Tools
     containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
-    createdAt: "2025-11-03T13:35:38Z"
+    createdAt: "2025-11-04T12:09:13Z"
     operatorframework.io/suggested-namespace: automotive-dev-operator-system
     operators.operatorframework.io/builder: operator-sdk-v1.39.1
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
@@ -78,35 +78,11 @@ spec:
       displayName: Image
       kind: Image
       name: images.automotive.sdv.cloud.redhat.com
-      resources:
-      - kind: ConfigMap
-        name: ""
-        version: v1
-      specDescriptors:
-      - description: Architecture specifies the target architecture
-        displayName: Architecture
-        path: architecture
-      - description: Distro specifies the distribution
-        displayName: Distribution
-        path: distro
-      - description: ExportFormat specifies the output format
-        displayName: Export Format
-        path: exportFormat
-      - description: Target specifies the build target
-        displayName: Target
-        path: target
-      - description: Location defines where the image is stored
-        displayName: Location
-        path: location
-      - description: Type specifies the storage type
-        displayName: Location Type
-        path: location.type
-      statusDescriptors:
-      - description: Phase represents the current phase of the image
-        displayName: Phase
-        path: phase
-        x-descriptors:
-        - urn:alm:descriptor:io.kubernetes.phase
+      version: v1
+    - description: OperatorConfig is the Schema for the operatorconfigs API
+      displayName: Operator Config
+      kind: OperatorConfig
+      name: operatorconfigs.automotive.sdv.cloud.redhat.com
       version: v1
   description: CentOS Automotive Suite
   displayName: CentOS Automotive Suite
@@ -403,7 +379,7 @@ spec:
                   valueFrom:
                     fieldRef:
                       fieldPath: metadata.namespace
-                image: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
+                image: default-route-openshift-image-registry.apps.automotive1.ocp.automotive.sig.centos.org/automotive-dev-operator-system/automotive-dev-operator:latest
                 imagePullPolicy: Always
                 livenessProbe:
                   httpGet:
@@ -441,7 +417,7 @@ spec:
                   valueFrom:
                     fieldRef:
                       fieldPath: metadata.namespace
-                image: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
+                image: default-route-openshift-image-registry.apps.automotive1.ocp.automotive.sig.centos.org/automotive-dev-operator-system/automotive-dev-operator:latest
                 imagePullPolicy: Always
                 name: init-oauth-secrets
                 resources:

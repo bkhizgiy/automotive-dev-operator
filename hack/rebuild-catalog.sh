@@ -27,6 +27,23 @@ echo "Logging in to OpenShift registry..."
 ${CONTAINER_TOOL} login -u $(oc whoami) -p $(oc whoami -t) ${REGISTRY} --tls-verify=false
 
 echo ""
+echo "Regenerating catalog..."
+cat > catalog/automotive-dev-operator.yaml << EOF
+---
+defaultChannel: alpha
+name: automotive-dev-operator
+schema: olm.package
+---
+schema: olm.channel
+package: automotive-dev-operator
+name: alpha
+entries:
+  - name: automotive-dev-operator.v${VERSION}
+---
+EOF
+./bin/opm render bundle/ --output yaml >> catalog/automotive-dev-operator.yaml
+
+echo ""
 echo "Validating catalog..."
 if [ -f "bin/opm" ]; then
     ./bin/opm validate catalog/

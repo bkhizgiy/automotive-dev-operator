@@ -102,7 +102,7 @@ Download the pinned manifest from the release and apply it:
 
 ```sh
 TAG=v0.0.10
-curl -L -o install-$TAG.yaml https://github.com/rh-automotive-dev-platform/automotive-dev-operator/releases/download/$TAG/install-$TAG.yaml
+curl -L -o install-$TAG.yaml https://github.com/centos-automotive-suite/automotive-dev-operator/releases/download/$TAG/install-$TAG.yaml
 kubectl apply -f install-$TAG.yaml
 kubectl apply -f config/samples/automotive_v1_automotivedev.yaml # to add the image building tasks
 ```
@@ -130,7 +130,7 @@ Download the CLI binary from the same release and install it in your PATH (Linux
 TAG=v0.0.11
 
 curl -L -o caib-$TAG-$ARCH \
-  https://github.com/rh-automotive-dev-platform/automotive-dev-operator/releases/download/$TAG/caib-$TAG-$ARCH
+  https://github.com/centos-automotive-suite/automotive-dev-operator/releases/download/$TAG/caib-$TAG-$ARCH
 
 sudo install -m 0755 caib-$TAG-$ARCH /usr/local/bin/caib
 

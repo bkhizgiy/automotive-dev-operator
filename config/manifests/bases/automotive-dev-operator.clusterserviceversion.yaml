@@ -105,40 +105,6 @@ spec:
   apiservicedefinitions: {}
   customresourcedefinitions:
     owned:
-    - description: Image is the Schema for the images API
-      displayName: Image
-      kind: Image
-      name: images.automotive.sdv.cloud.redhat.com
-      resources:
-      - kind: ConfigMap
-        name: ""
-        version: v1
-      specDescriptors:
-      - description: Architecture specifies the target architecture
-        displayName: Architecture
-        path: architecture
-      - description: Distro specifies the distribution
-        displayName: Distribution
-        path: distro
-      - description: ExportFormat specifies the output format
-        displayName: Export Format
-        path: exportFormat
-      - description: Target specifies the build target
-        displayName: Target
-        path: target
-      - description: Location defines where the image is stored
-        displayName: Location
-        path: location
-      - description: Type specifies the storage type
-        displayName: Location Type
-        path: location.type
-      statusDescriptors:
-      - description: Phase represents the current phase of the image
-        displayName: Phase
-        path: phase
-        x-descriptors:
-        - urn:alm:descriptor:io.kubernetes.phase
-      version: v1
     - description: AutomotiveDevConfig is the Schema for the automotivedevconfigs
         API
       displayName: Automotive Dev Config
@@ -149,6 +115,16 @@ spec:
       displayName: Image Build
       kind: ImageBuild
       name: imagebuilds.automotive.sdv.cloud.redhat.com
+      version: v1
+    - description: Image is the Schema for the images API
+      displayName: Image
+      kind: Image
+      name: images.automotive.sdv.cloud.redhat.com
+      version: v1
+    - description: OperatorConfig is the Schema for the operatorconfigs API
+      displayName: Operator Config
+      kind: OperatorConfig
+      name: operatorconfigs.automotive.sdv.cloud.redhat.com
       version: v1
   description: CentOS Automotive Suite
   displayName: CentOS Automotive Suite

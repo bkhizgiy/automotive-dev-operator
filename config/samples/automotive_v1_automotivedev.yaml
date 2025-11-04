@@ -5,10 +5,11 @@ metadata:
     app.kubernetes.io/name: automotive-dev-operator
     app.kubernetes.io/managed-by: kustomize
     environment: development
-  name: automotive-dev
+  name: config
   namespace: automotive-dev-operator-system
 spec:
   buildConfig:
     #     useMemoryVolumes: true
     #     memoryVolumeSize: "8Gi"
     pvcSize: "8Gi"
+

@@ -3,7 +3,7 @@ set -e
 
 # Configuration
 VERSION=${VERSION:-0.0.1}
-NAMESPACE=${NAMESPACE:-openshift-marketplace}
+NAMESPACE=${NAMESPACE:-automotive-dev-operator-system}
 
 # Detect OpenShift internal registry
 echo "Detecting OpenShift internal registry..."
@@ -31,17 +31,18 @@ fi
 echo "Using OpenShift internal registry: ${INTERNAL_REGISTRY}"
 
 REGISTRY=${REGISTRY:-${INTERNAL_REGISTRY}}
-IMAGE_TAG_BASE=${IMAGE_TAG_BASE:-${REGISTRY}/${NAMESPACE}/automotive-dev-operator}
-OPERATOR_IMG="${IMAGE_TAG_BASE}:latest"
-BUNDLE_IMG="${IMAGE_TAG_BASE}-bundle:v${VERSION}"
-CATALOG_IMG="${IMAGE_TAG_BASE}-catalog:v${VERSION}"
+CATALOG_NAMESPACE=${CATALOG_NAMESPACE:-openshift-marketplace}
+OPERATOR_IMG="${REGISTRY}/${NAMESPACE}/automotive-dev-operator:latest"
+BUNDLE_IMG="${REGISTRY}/${CATALOG_NAMESPACE}/automotive-dev-operator-bundle:v${VERSION}"
+CATALOG_IMG="${REGISTRY}/${CATALOG_NAMESPACE}/automotive-dev-operator-catalog:v${VERSION}"
 CONTAINER_TOOL=${CONTAINER_TOOL:-podman}
 
 echo "=========================================="
 echo "Building and Deploying Operator Catalog"
 echo "=========================================="
 echo "Version: ${VERSION}"
-echo "Namespace: ${NAMESPACE}"
+echo "Operator Namespace: ${NAMESPACE}"
+echo "Catalog Namespace: ${CATALOG_NAMESPACE}"
 echo "Registry: ${REGISTRY}"
 echo "Operator Image: ${OPERATOR_IMG}"
 echo "Bundle Image: ${BUNDLE_IMG}"
@@ -57,7 +58,7 @@ echo "Building operator image..."
 make docker-build IMG=${OPERATOR_IMG}
 
 echo ""
-echo "Pushing operator image to OpenShift registry..."
+echo "Pushing operator image..."
 ${CONTAINER_TOOL} push ${OPERATOR_IMG} --tls-verify=false
 
 echo ""
@@ -73,9 +74,24 @@ echo "Pushing bundle image to OpenShift registry..."
 ${CONTAINER_TOOL} push ${BUNDLE_IMG} --tls-verify=false
 
 echo ""
-echo "Updating catalog configuration..."
-BUNDLE_IMG_INTERNAL="image-registry.openshift-image-registry.svc:5000/${NAMESPACE}/automotive-dev-operator-bundle:v${VERSION}"
-sed -i.bak "s|image:.*|image: ${BUNDLE_IMG_INTERNAL}|g" catalog/automotive-dev-operator.yaml
+echo "Regenerating catalog..."
+BUNDLE_IMG_INTERNAL="image-registry.openshift-image-registry.svc:5000/${CATALOG_NAMESPACE}/automotive-dev-operator-bundle:v${VERSION}"
+cat > catalog/automotive-dev-operator.yaml << EOF
+---
+defaultChannel: alpha
+name: automotive-dev-operator
+schema: olm.package
+---
+schema: olm.channel
+package: automotive-dev-operator
+name: alpha
+entries:
+  - name: automotive-dev-operator.v${VERSION}
+---
+EOF
+./bin/opm render bundle/ --output yaml >> catalog/automotive-dev-operator.yaml
+# Update bundle image reference to internal registry
+sed -i.bak "s|image:.*automotive-dev-operator-bundle.*|image: ${BUNDLE_IMG_INTERNAL}|g" catalog/automotive-dev-operator.yaml
 rm -f catalog/automotive-dev-operator.yaml.bak
 
 echo ""
@@ -88,13 +104,13 @@ ${CONTAINER_TOOL} push ${CATALOG_IMG} --tls-verify=false
 
 echo ""
 echo "Updating CatalogSource manifest..."
-CATALOG_IMG_INTERNAL="image-registry.openshift-image-registry.svc:5000/${NAMESPACE}/automotive-dev-operator-catalog:v${VERSION}"
+CATALOG_IMG_INTERNAL="image-registry.openshift-image-registry.svc:5000/${CATALOG_NAMESPACE}/automotive-dev-operator-catalog:v${VERSION}"
 sed -i.bak "s|image:.*|image: ${CATALOG_IMG_INTERNAL}|g" catalogsource.yaml
 rm -f catalogsource.yaml.bak
 
 echo ""
 echo "Applying CatalogSource to OpenShift cluster..."
-oc apply -f catalogsource.yaml
+oc apply -f catalogsource.yaml -n ${CATALOG_NAMESPACE}
 
 echo ""
 echo "=========================================="
