@@ -1,6 +1,9 @@
 package operatorconfig
 
 import (
+	"crypto/rand"
+	"encoding/base64"
+
 	routev1 "github.com/openshift/api/route/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -271,6 +274,31 @@ func (r *OperatorConfigReconciler) buildWebUIRoute() *routev1.Route {
 				InsecureEdgeTerminationPolicy: routev1.InsecureEdgeTerminationPolicyRedirect,
 			},
 			WildcardPolicy: routev1.WildcardPolicyNone,
+		},
+	}
+}
+
+func (r *OperatorConfigReconciler) buildOAuthSecret(name string) *corev1.Secret {
+	// Generate a random 32-byte cookie secret for AES-256
+	cookieSecret := make([]byte, 32)
+	if _, err := rand.Read(cookieSecret); err != nil {
+		// Fallback to a static secret if random generation fails
+		// This should never happen in practice
+		cookieSecret = []byte("fallback-secret-change-me-32bit")
+	}
+
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: operatorNamespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":    "automotive-dev-operator",
+				"app.kubernetes.io/part-of": "automotive-dev-operator",
+			},
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"cookie-secret": []byte(base64.StdEncoding.EncodeToString(cookieSecret)[:32]),
 		},
 	}
 }

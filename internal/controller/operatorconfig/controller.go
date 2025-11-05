@@ -34,6 +34,8 @@ type OperatorConfigReconciler struct {
 // +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=operatorconfigs/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;create;update;patch;delete
 
 func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -101,6 +103,16 @@ func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 }
 
 func (r *OperatorConfigReconciler) deployWebUI(ctx context.Context, owner *automotivev1.OperatorConfig) error {
+	// Create cookie secrets for OAuth proxies
+	if err := r.ensureOAuthSecrets(ctx, owner); err != nil {
+		return fmt.Errorf("failed to ensure OAuth secrets: %w", err)
+	}
+
+	// Update ServiceAccount with OAuth redirect annotations
+	if err := r.updateServiceAccountOAuthAnnotations(ctx); err != nil {
+		return fmt.Errorf("failed to update ServiceAccount OAuth annotations: %w", err)
+	}
+
 	// Create/update deployment
 	deployment := r.buildWebUIDeployment()
 	if err := r.createOrUpdate(ctx, deployment, owner); err != nil {
@@ -117,6 +129,67 @@ func (r *OperatorConfigReconciler) deployWebUI(ctx context.Context, owner *autom
 	route := r.buildWebUIRoute()
 	if err := r.createOrUpdate(ctx, route, owner); err != nil {
 		return fmt.Errorf("failed to create/update webui route: %w", err)
+	}
+
+	return nil
+}
+
+func (r *OperatorConfigReconciler) ensureOAuthSecrets(ctx context.Context, owner *automotivev1.OperatorConfig) error {
+	secrets := []string{"ado-webui-oauth-proxy", "ado-build-api-oauth-proxy"}
+
+	for _, secretName := range secrets {
+		secret := &corev1.Secret{}
+		err := r.Get(ctx, client.ObjectKey{Name: secretName, Namespace: operatorNamespace}, secret)
+
+		if err != nil {
+			if !errors.IsNotFound(err) {
+				return fmt.Errorf("failed to get secret %s: %w", secretName, err)
+			}
+
+			// Secret doesn't exist, create it
+			secret = r.buildOAuthSecret(secretName)
+			if err := ctrl.SetControllerReference(owner, secret, r.Scheme); err != nil {
+				return fmt.Errorf("failed to set controller reference on secret %s: %w", secretName, err)
+			}
+			if err := r.Create(ctx, secret); err != nil {
+				return fmt.Errorf("failed to create secret %s: %w", secretName, err)
+			}
+			r.Log.Info("Created OAuth secret", "name", secretName)
+		}
+	}
+
+	return nil
+}
+
+func (r *OperatorConfigReconciler) updateServiceAccountOAuthAnnotations(ctx context.Context) error {
+	sa := &corev1.ServiceAccount{}
+	err := r.Get(ctx, client.ObjectKey{Name: "ado-controller-manager", Namespace: operatorNamespace}, sa)
+	if err != nil {
+		return fmt.Errorf("failed to get ServiceAccount: %w", err)
+	}
+
+	if sa.Annotations == nil {
+		sa.Annotations = make(map[string]string)
+	}
+
+	annotations := map[string]string{
+		"serviceaccounts.openshift.io/oauth-redirectreference.webui":    `{"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"ado-webui"}}`,
+		"serviceaccounts.openshift.io/oauth-redirectreference.buildapi": `{"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"ado-build-api"}}`,
+	}
+
+	updated := false
+	for key, value := range annotations {
+		if sa.Annotations[key] != value {
+			sa.Annotations[key] = value
+			updated = true
+		}
+	}
+
+	if updated {
+		if err := r.Update(ctx, sa); err != nil {
+			return fmt.Errorf("failed to update ServiceAccount annotations: %w", err)
+		}
+		r.Log.Info("Updated ServiceAccount OAuth annotations")
 	}
 
 	return nil
@@ -145,6 +218,17 @@ func (r *OperatorConfigReconciler) cleanupWebUI(ctx context.Context) error {
 	route.Namespace = operatorNamespace
 	if err := r.Delete(ctx, route); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to delete webui route: %w", err)
+	}
+
+	// Delete OAuth secrets
+	secrets := []string{"ado-webui-oauth-proxy", "ado-build-api-oauth-proxy"}
+	for _, secretName := range secrets {
+		secret := &corev1.Secret{}
+		secret.Name = secretName
+		secret.Namespace = operatorNamespace
+		if err := r.Delete(ctx, secret); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete secret %s: %w", secretName, err)
+		}
 	}
 
 	return nil
@@ -178,6 +262,7 @@ func (r *OperatorConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&automotivev1.OperatorConfig{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Owns(&corev1.Secret{}).
 		Owns(&routev1.Route{}).
 		Complete(r)
 }

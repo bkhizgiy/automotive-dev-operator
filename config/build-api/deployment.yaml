@@ -75,7 +75,7 @@ spec:
         - name: COOKIE_SECRET
           valueFrom:
             secretKeyRef:
-              name: build-api-oauth-proxy
+              name: ado-build-api-oauth-proxy
               key: cookie-secret
         ports:
         - containerPort: 8081
