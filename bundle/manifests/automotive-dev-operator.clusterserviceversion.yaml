@@ -46,12 +46,26 @@ metadata:
             "serveExpiryHours": 24,
             "target": "qemu"
           }
+        },
+        {
+          "apiVersion": "automotive.sdv.cloud.redhat.com/v1",
+          "kind": "OperatorConfig",
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/managed-by": "kustomize",
+              "app.kubernetes.io/name": "automotive-dev-operator"
+            },
+            "name": "config"
+          },
+          "spec": {
+            "webUI": true
+          }
         }
       ]
     capabilities: Basic Install
     categories: Developer Tools
     containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
-    createdAt: "2025-11-04T12:09:13Z"
+    createdAt: "2025-11-05T15:02:53Z"
     operatorframework.io/suggested-namespace: automotive-dev-operator-system
     operators.operatorframework.io/builder: operator-sdk-v1.39.1
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
@@ -99,6 +113,7 @@ spec:
           - configmaps
           - persistentvolumeclaims
           - pods
+          - secrets
           - serviceaccounts
           - services
           verbs:
@@ -130,17 +145,6 @@ spec:
           - pods/log
           verbs:
           - get
-        - apiGroups:
-          - ""
-          resources:
-          - secrets
-          verbs:
-          - create
-          - get
-          - list
-          - patch
-          - update
-          - watch
         - apiGroups:
           - apps
           resources:
@@ -245,97 +249,6 @@ spec:
         serviceAccountName: ado-controller-manager
       deployments:
       - label:
-          app.kubernetes.io/component: build-api
-          app.kubernetes.io/name: automotive-dev-operator
-        name: ado-build-api
-        spec:
-          replicas: 1
-          selector:
-            matchLabels:
-              app.kubernetes.io/component: build-api
-              app.kubernetes.io/name: automotive-dev-operator
-          strategy: {}
-          template:
-            metadata:
-              labels:
-                app.kubernetes.io/component: build-api
-                app.kubernetes.io/name: automotive-dev-operator
-            spec:
-              containers:
-              - command:
-                - /build-api
-                env:
-                - name: BUILD_API_NAMESPACE
-                  valueFrom:
-                    fieldRef:
-                      fieldPath: metadata.namespace
-                image: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
-                imagePullPolicy: Always
-                name: build-api
-                ports:
-                - containerPort: 8080
-                  name: http
-                resources:
-                  limits:
-                    cpu: 200m
-                    memory: 512Mi
-                  requests:
-                    cpu: 50m
-                    memory: 64Mi
-                securityContext:
-                  allowPrivilegeEscalation: false
-              - args:
-                - --provider=openshift
-                - --https-address=
-                - --http-address=:8081
-                - --upstream=http://localhost:8080
-                - --openshift-service-account=ado-controller-manager
-                - --cookie-secret=$(COOKIE_SECRET)
-                - --cookie-secure=false
-                - --pass-access-token=true
-                - --pass-user-headers=true
-                - --request-logging=true
-                - --skip-auth-regex=^/healthz
-                - --email-domain=*
-                - --skip-provider-button=true
-                - --upstream-timeout=0
-                env:
-                - name: COOKIE_SECRET
-                  valueFrom:
-                    secretKeyRef:
-                      key: cookie-secret
-                      name: ado-build-api-oauth-proxy
-                image: registry.redhat.io/openshift4/ose-oauth-proxy:latest
-                imagePullPolicy: IfNotPresent
-                name: oauth-proxy
-                ports:
-                - containerPort: 8081
-                  name: proxy-http
-                resources:
-                  limits:
-                    cpu: 100m
-                    memory: 128Mi
-                  requests:
-                    cpu: 10m
-                    memory: 32Mi
-                securityContext:
-                  allowPrivilegeEscalation: false
-              initContainers:
-              - command:
-                - /init-secrets
-                env:
-                - name: POD_NAMESPACE
-                  valueFrom:
-                    fieldRef:
-                      fieldPath: metadata.namespace
-                image: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
-                imagePullPolicy: Always
-                name: init-secrets
-                resources: {}
-                securityContext:
-                  allowPrivilegeEscalation: false
-              serviceAccountName: ado-controller-manager
-      - label:
           app.kubernetes.io/managed-by: kustomize
           app.kubernetes.io/name: automotive-dev-operator
           control-plane: controller-manager
@@ -436,129 +349,6 @@ spec:
                 runAsNonRoot: true
               serviceAccountName: ado-controller-manager
               terminationGracePeriodSeconds: 10
-      - label:
-          app.kubernetes.io/component: webui
-          app.kubernetes.io/name: ado-webui
-          app.kubernetes.io/part-of: automotive-dev-operator
-        name: ado-webui
-        spec:
-          replicas: 1
-          selector:
-            matchLabels:
-              app.kubernetes.io/name: ado-webui
-              app.kubernetes.io/part-of: automotive-dev-operator
-          strategy: {}
-          template:
-            metadata:
-              labels:
-                app.kubernetes.io/component: webui
-                app.kubernetes.io/name: ado-webui
-                app.kubernetes.io/part-of: automotive-dev-operator
-            spec:
-              containers:
-              - image: quay.io/rh-sdv-cloud/aib-webui:latest
-                name: webui
-                ports:
-                - containerPort: 8080
-                  name: http
-                resources:
-                  limits:
-                    cpu: 500m
-                    memory: 512Mi
-                  requests:
-                    cpu: 100m
-                    memory: 128Mi
-                securityContext:
-                  allowPrivilegeEscalation: false
-                  capabilities:
-                    drop:
-                    - ALL
-                  readOnlyRootFilesystem: true
-                  runAsNonRoot: true
-                  runAsUser: 1001
-                volumeMounts:
-                - mountPath: /etc/nginx/nginx.conf
-                  name: nginx-config
-                  subPath: nginx.conf
-                - mountPath: /var/cache/nginx
-                  name: nginx-cache
-                - mountPath: /var/run
-                  name: nginx-run
-              - args:
-                - --provider=openshift
-                - --http-address=:8081
-                - --https-address=
-                - --upstream=http://127.0.0.1:8080
-                - --openshift-service-account=ado-controller-manager
-                - --cookie-secret=$(COOKIE_SECRET)
-                - --pass-user-bearer-token=true
-                - --pass-access-token=true
-                - --request-logging=true
-                - --email-domain=*
-                - --skip-provider-button=true
-                - --upstream-timeout=0
-                env:
-                - name: COOKIE_SECRET
-                  valueFrom:
-                    secretKeyRef:
-                      key: cookie-secret
-                      name: ado-webui-oauth-proxy
-                image: registry.redhat.io/openshift4/ose-oauth-proxy:latest
-                imagePullPolicy: IfNotPresent
-                livenessProbe:
-                  httpGet:
-                    path: /oauth/healthz
-                    port: proxy-http
-                  initialDelaySeconds: 30
-                  periodSeconds: 10
-                name: oauth-proxy
-                ports:
-                - containerPort: 8081
-                  name: proxy-http
-                readinessProbe:
-                  httpGet:
-                    path: /oauth/healthz
-                    port: proxy-http
-                  initialDelaySeconds: 5
-                  periodSeconds: 5
-                resources:
-                  limits:
-                    cpu: 100m
-                    memory: 128Mi
-                  requests:
-                    cpu: 10m
-                    memory: 32Mi
-                securityContext:
-                  allowPrivilegeEscalation: false
-                  capabilities:
-                    drop:
-                    - ALL
-                  readOnlyRootFilesystem: true
-                  runAsNonRoot: true
-                  runAsUser: 1001
-              initContainers:
-              - command:
-                - /init-secrets
-                env:
-                - name: POD_NAMESPACE
-                  valueFrom:
-                    fieldRef:
-                      fieldPath: metadata.namespace
-                image: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
-                imagePullPolicy: Always
-                name: init-secrets
-                resources: {}
-                securityContext:
-                  allowPrivilegeEscalation: false
-              serviceAccountName: ado-controller-manager
-              volumes:
-              - configMap:
-                  name: ado-webui-nginx-config
-                name: nginx-config
-              - emptyDir: {}
-                name: nginx-cache
-              - emptyDir: {}
-                name: nginx-run
       permissions:
       - rules:
         - apiGroups:

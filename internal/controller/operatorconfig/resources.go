@@ -278,6 +278,330 @@ func (r *OperatorConfigReconciler) buildWebUIRoute() *routev1.Route {
 	}
 }
 
+func (r *OperatorConfigReconciler) buildWebUINginxConfigMap() *corev1.ConfigMap {
+	nginxConf := `events {
+  worker_connections 1024;
+}
+
+http {
+  include /etc/nginx/mime.types;
+  default_type application/octet-stream;
+
+  sendfile on;
+  keepalive_timeout 65;
+  access_log /dev/stdout;
+  error_log /dev/stderr notice;
+
+  server {
+    listen 8080;
+    server_name localhost;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location = /index.html {
+      add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+      add_header Pragma "no-cache" always;
+      add_header Expires "0" always;
+    }
+
+    location / {
+      try_files $uri $uri/ /index.html;
+    }
+
+    location /oauth/ {
+      proxy_pass http://127.0.0.1:8081;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header X-Forwarded-Host $server_name;
+    }
+
+    location = /config.js {
+      default_type application/javascript;
+      add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+      add_header Pragma "no-cache" always;
+      add_header Expires "0" always;
+      return 200 "window.__API_BASE = '';\n";
+    }
+
+    location ~ ^/v1/builds/.*/logs/sse$ {
+      proxy_pass http://ado-build-api:8080;
+      proxy_set_header Authorization "Bearer $http_x_forwarded_access_token";
+      proxy_set_header X-Forwarded-Access-Token $http_x_forwarded_access_token;
+      proxy_set_header X-Forwarded-User $http_x_forwarded_user;
+      proxy_set_header X-Forwarded-Email $http_x_forwarded_email;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+
+      proxy_buffering off;
+      proxy_cache off;
+      proxy_http_version 1.1;
+      proxy_set_header Connection "";
+      chunked_transfer_encoding off;
+      proxy_read_timeout 86400s;
+      proxy_send_timeout 86400s;
+      proxy_connect_timeout 10s;
+    }
+
+    location /v1/ {
+      proxy_pass http://ado-build-api:8080;
+      proxy_set_header Authorization "Bearer $http_x_forwarded_access_token";
+      proxy_set_header X-Forwarded-Access-Token $http_x_forwarded_access_token;
+      proxy_set_header X-Forwarded-User $http_x_forwarded_user;
+      proxy_set_header X-Forwarded-Email $http_x_forwarded_email;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+
+      proxy_buffering off;
+      proxy_cache off;
+      proxy_read_timeout 1800s;
+      proxy_send_timeout 1800s;
+      proxy_connect_timeout 60s;
+    }
+
+    location ~* \.(?:js|css|png|jpg|jpeg|gif|svg|ico|woff2?)$ {
+      add_header Cache-Control "public, max-age=31536000, immutable" always;
+      expires 1y;
+    }
+
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+  }
+}`
+
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ado-webui-nginx-config",
+			Namespace: operatorNamespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":      "ado-webui",
+				"app.kubernetes.io/component": "webui",
+				"app.kubernetes.io/part-of":   "automotive-dev-operator",
+			},
+		},
+		Data: map[string]string{
+			"nginx.conf": nginxConf,
+		},
+	}
+}
+
+func (r *OperatorConfigReconciler) buildBuildAPIDeployment() *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ado-build-api",
+			Namespace: operatorNamespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":      "automotive-dev-operator",
+				"app.kubernetes.io/component": "build-api",
+				"app.kubernetes.io/part-of":   "automotive-dev-operator",
+			},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: int32Ptr(1),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app.kubernetes.io/name":      "automotive-dev-operator",
+					"app.kubernetes.io/component": "build-api",
+				},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"app.kubernetes.io/name":      "automotive-dev-operator",
+						"app.kubernetes.io/component": "build-api",
+					},
+				},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "ado-controller-manager",
+					InitContainers: []corev1.Container{
+						{
+							Name:            "init-secrets",
+							Image:           "quay.io/rh-sdv-cloud/automotive-dev-operator:latest",
+							ImagePullPolicy: corev1.PullAlways,
+							Command:         []string{"/init-secrets"},
+							Env: []corev1.EnvVar{
+								{
+									Name: "POD_NAMESPACE",
+									ValueFrom: &corev1.EnvVarSource{
+										FieldRef: &corev1.ObjectFieldSelector{
+											FieldPath: "metadata.namespace",
+										},
+									},
+								},
+							},
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: boolPtr(false),
+							},
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							Name:            "build-api",
+							Image:           "quay.io/rh-sdv-cloud/automotive-dev-operator:latest",
+							ImagePullPolicy: corev1.PullAlways,
+							Command:         []string{"/build-api"},
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("50m"),
+									corev1.ResourceMemory: resource.MustParse("64Mi"),
+								},
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("200m"),
+									corev1.ResourceMemory: resource.MustParse("512Mi"),
+								},
+							},
+							Env: []corev1.EnvVar{
+								{
+									Name: "BUILD_API_NAMESPACE",
+									ValueFrom: &corev1.EnvVarSource{
+										FieldRef: &corev1.ObjectFieldSelector{
+											FieldPath: "metadata.namespace",
+										},
+									},
+								},
+							},
+							Ports: []corev1.ContainerPort{
+								{
+									Name:          "http",
+									ContainerPort: 8080,
+									Protocol:      corev1.ProtocolTCP,
+								},
+							},
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: boolPtr(false),
+							},
+						},
+						{
+							Name:            "oauth-proxy",
+							Image:           "registry.redhat.io/openshift4/ose-oauth-proxy:latest",
+							ImagePullPolicy: corev1.PullIfNotPresent,
+							Args: []string{
+								"--provider=openshift",
+								"--https-address=",
+								"--http-address=:8081",
+								"--upstream=http://localhost:8080",
+								"--openshift-service-account=ado-controller-manager",
+								"--cookie-secret=$(COOKIE_SECRET)",
+								"--cookie-secure=false",
+								"--pass-access-token=true",
+								"--pass-user-headers=true",
+								"--request-logging=true",
+								"--skip-auth-regex=^/healthz",
+								"--email-domain=*",
+								"--skip-provider-button=true",
+								"--upstream-timeout=0",
+							},
+							Env: []corev1.EnvVar{
+								{
+									Name: "COOKIE_SECRET",
+									ValueFrom: &corev1.EnvVarSource{
+										SecretKeyRef: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{
+												Name: "ado-build-api-oauth-proxy",
+											},
+											Key: "cookie-secret",
+										},
+									},
+								},
+							},
+							Ports: []corev1.ContainerPort{
+								{
+									Name:          "proxy-http",
+									ContainerPort: 8081,
+									Protocol:      corev1.ProtocolTCP,
+								},
+							},
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("10m"),
+									corev1.ResourceMemory: resource.MustParse("32Mi"),
+								},
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("100m"),
+									corev1.ResourceMemory: resource.MustParse("128Mi"),
+								},
+							},
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: boolPtr(false),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func (r *OperatorConfigReconciler) buildBuildAPIService() *corev1.Service {
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ado-build-api",
+			Namespace: operatorNamespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":      "automotive-dev-operator",
+				"app.kubernetes.io/component": "build-api",
+				"app.kubernetes.io/part-of":   "automotive-dev-operator",
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{
+				"app.kubernetes.io/name":      "automotive-dev-operator",
+				"app.kubernetes.io/component": "build-api",
+			},
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "http",
+					Port:       8080,
+					TargetPort: intstr.FromInt(8080),
+					Protocol:   corev1.ProtocolTCP,
+				},
+				{
+					Name:       "proxy",
+					Port:       8081,
+					TargetPort: intstr.FromInt(8081),
+					Protocol:   corev1.ProtocolTCP,
+				},
+			},
+		},
+	}
+}
+
+func (r *OperatorConfigReconciler) buildBuildAPIRoute() *routev1.Route {
+	return &routev1.Route{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ado-build-api",
+			Namespace: operatorNamespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":      "automotive-dev-operator",
+				"app.kubernetes.io/component": "build-api",
+				"app.kubernetes.io/part-of":   "automotive-dev-operator",
+			},
+		},
+		Spec: routev1.RouteSpec{
+			To: routev1.RouteTargetReference{
+				Kind: "Service",
+				Name: "ado-build-api",
+			},
+			Port: &routev1.RoutePort{
+				TargetPort: intstr.FromString("proxy"),
+			},
+			TLS: &routev1.TLSConfig{
+				Termination:                   routev1.TLSTerminationEdge,
+				InsecureEdgeTerminationPolicy: routev1.InsecureEdgeTerminationPolicyRedirect,
+			},
+			WildcardPolicy: routev1.WildcardPolicyNone,
+		},
+	}
+}
+
 func (r *OperatorConfigReconciler) buildOAuthSecret(name string) *corev1.Secret {
 	// Generate a random 32-byte cookie secret for AES-256
 	cookieSecret := make([]byte, 32)
@@ -305,6 +629,10 @@ func (r *OperatorConfigReconciler) buildOAuthSecret(name string) *corev1.Secret 
 
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+func int32Ptr(i int32) *int32 {
+	return &i
 }
 
 func int64Ptr(i int64) *int64 {

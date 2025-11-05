@@ -2,4 +2,5 @@
 resources:
 - automotive_v1_imagebuild.yaml
 - automotive_v1_automotivedev.yaml
+- automotive_v1_operatorconfig.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
