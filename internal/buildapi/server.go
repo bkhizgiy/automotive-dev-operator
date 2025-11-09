@@ -938,7 +938,7 @@ func getBuild(c *gin.Context, name string) {
 		Message:          build.Status.Message,
 		RequestedBy:      build.Annotations["automotive.sdv.cloud.redhat.com/requested-by"],
 		ArtifactURL:      build.Status.ArtifactURL,
-		ArtifactFileName: build.Status.ArtifactFileName,
+		ArtifactFileName: strings.TrimSpace(build.Status.ArtifactFileName),
 		StartTime: func() string {
 			if build.Status.StartTime != nil {
 				return build.Status.StartTime.Time.Format(time.RFC3339)
@@ -1179,7 +1179,7 @@ func (a *APIServer) listArtifacts(c *gin.Context, name string) {
 		return
 	}
 
-	artifactFileName := build.Status.ArtifactFileName
+	artifactFileName := strings.TrimSpace(build.Status.ArtifactFileName)
 	if artifactFileName == "" {
 		var ext string
 		switch build.Spec.ExportFormat {
@@ -1315,7 +1315,7 @@ func (a *APIServer) streamArtifactPart(c *gin.Context, name, file string) {
 		return
 	}
 
-	artifactFileName := build.Status.ArtifactFileName
+	artifactFileName := strings.TrimSpace(build.Status.ArtifactFileName)
 	if artifactFileName == "" {
 		var ext string
 		switch build.Spec.ExportFormat {
@@ -1460,7 +1460,7 @@ func (a *APIServer) streamDefaultArtifact(c *gin.Context, name string) {
 		return
 	}
 
-	artifactFileName := build.Status.ArtifactFileName
+	artifactFileName := strings.TrimSpace(build.Status.ArtifactFileName)
 	if artifactFileName == "" {
 		var ext string
 		switch build.Spec.ExportFormat {
@@ -1539,6 +1539,7 @@ func (a *APIServer) streamDefaultArtifact(c *gin.Context, name string) {
 	}
 
 	podPath := "/workspace/shared/" + artifactFileName
+	a.log.Info("checking artifact file existence", "build", name, "artifactFileName", artifactFileName, "podPath", podPath, "podName", artifactPod.Name)
 
 	// Check if file exists and get size
 	sizeReq := clientset.CoreV1().RESTClient().Post().
@@ -1555,18 +1556,22 @@ func (a *APIServer) streamDefaultArtifact(c *gin.Context, name string) {
 
 	sizeExec, err := remotecommand.NewSPDYExecutor(restCfg, http.MethodPost, sizeReq.URL())
 	if err != nil {
+		a.log.Error(err, "failed to create executor", "build", name)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("executor (size): %v", err)})
 		return
 	}
 
 	var sizeStdout strings.Builder
 	if err := sizeExec.StreamWithContext(ctx, remotecommand.StreamOptions{Stdout: &sizeStdout, Stderr: io.Discard}); err != nil {
+		a.log.Error(err, "size stream failed", "build", name)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("size stream: %v", err)})
 		return
 	}
 
 	sz := strings.TrimSpace(sizeStdout.String())
+	a.log.Info("file size check result", "build", name, "result", sz, "artifactFileName", artifactFileName)
 	if sz == "" || sz == "MISSING" {
+		a.log.Info("file not found in artifact pod", "build", name, "artifactFileName", artifactFileName, "podPath", podPath)
 		c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
 		return
 	}
