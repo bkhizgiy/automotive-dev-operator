@@ -50,6 +50,11 @@ echo "Catalog Image: ${CATALOG_IMG}"
 echo "=========================================="
 
 echo ""
+echo "Ensuring push permissions..."
+oc policy add-role-to-user system:image-pusher $(oc whoami) -n ${NAMESPACE} 2>/dev/null || true
+oc policy add-role-to-user system:image-pusher $(oc whoami) -n ${CATALOG_NAMESPACE} 2>/dev/null || true
+
+echo ""
 echo "Logging in to OpenShift registry..."
 ${CONTAINER_TOOL} login -u $(oc whoami) -p $(oc whoami -t) ${REGISTRY} --tls-verify=false
 

@@ -1,0 +1,9 @@
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: automotive-dev-operator-group
+  namespace: automotive-dev-operator-system
+spec:
+  targetNamespaces:
+  - automotive-dev-operator-system
+

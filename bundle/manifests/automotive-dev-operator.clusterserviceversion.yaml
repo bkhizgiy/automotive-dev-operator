@@ -65,7 +65,7 @@ metadata:
     capabilities: Basic Install
     categories: Developer Tools
     containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
-    createdAt: "2025-11-05T15:02:53Z"
+    createdAt: "2025-11-09T10:38:33Z"
     operatorframework.io/suggested-namespace: automotive-dev-operator-system
     operators.operatorframework.io/builder: operator-sdk-v1.39.1
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
@@ -312,11 +312,11 @@ spec:
                   periodSeconds: 10
                 resources:
                   limits:
-                    cpu: 500m
-                    memory: 128Mi
+                    cpu: "1"
+                    memory: 512Mi
                   requests:
-                    cpu: 10m
-                    memory: 64Mi
+                    cpu: 100m
+                    memory: 256Mi
                 securityContext:
                   allowPrivilegeEscalation: false
                   capabilities:

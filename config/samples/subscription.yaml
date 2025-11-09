@@ -1,0 +1,12 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: automotive-dev-operator
+  namespace: automotive-dev-operator-system
+spec:
+  channel: alpha
+  name: automotive-dev-operator
+  source: automotive-dev-operator-catalog
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
+
