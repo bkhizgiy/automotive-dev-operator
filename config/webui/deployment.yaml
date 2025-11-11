@@ -73,6 +73,7 @@ spec:
             - --cookie-secret=$(COOKIE_SECRET)
             - --pass-user-bearer-token=true
             - --pass-access-token=true
+            - --pass-user-headers=true
             - --request-logging=true
             - --email-domain=*
             - --skip-provider-button=true
