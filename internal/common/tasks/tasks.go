@@ -4,13 +4,22 @@ import (
 	_ "embed"
 	"time"
 
-	automotivev1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 )
+
+// BuildConfig defines configuration options for build operations
+// This is an internal type used for task generation
+type BuildConfig struct {
+	UseMemoryVolumes bool
+	MemoryVolumeSize string
+	PVCSize          string
+	RuntimeClassName string
+	ServeExpiryHours int32
+}
 
 const AutomotiveImageBuilder = "quay.io/centos-sig-automotive/automotive-image-builder:1.0.0"
 
@@ -100,7 +109,7 @@ func GeneratePushArtifactRegistryTask(namespace string) *tektonv1.Task {
 }
 
 // GenerateBuildAutomotiveImageTask creates a Tekton Task for building automotive images
-func GenerateBuildAutomotiveImageTask(namespace string, buildConfig *automotivev1.BuildConfig, envSecretRef string) *tektonv1.Task {
+func GenerateBuildAutomotiveImageTask(namespace string, buildConfig *BuildConfig, envSecretRef string) *tektonv1.Task {
 	task := &tektonv1.Task{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "tekton.dev/v1",

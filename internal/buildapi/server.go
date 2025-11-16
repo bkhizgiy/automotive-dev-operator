@@ -808,10 +808,10 @@ func createBuild(c *gin.Context) {
 
 	serveExpiryHours := int32(24)
 	{
-		autoDev := &automotivev1.AutomotiveDevConfig{}
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: "automotive-dev", Namespace: namespace}, autoDev); err == nil {
-			if autoDev.Spec.BuildConfig != nil && autoDev.Spec.BuildConfig.ServeExpiryHours > 0 {
-				serveExpiryHours = autoDev.Spec.BuildConfig.ServeExpiryHours
+		operatorConfig := &automotivev1.OperatorConfig{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: "config", Namespace: namespace}, operatorConfig); err == nil {
+			if operatorConfig.Spec.OSBuilds != nil && operatorConfig.Spec.OSBuilds.ServeExpiryHours > 0 {
+				serveExpiryHours = operatorConfig.Spec.OSBuilds.ServeExpiryHours
 			}
 		}
 	}

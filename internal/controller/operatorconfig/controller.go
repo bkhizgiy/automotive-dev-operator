@@ -6,16 +6,18 @@ import (
 
 	"github.com/go-logr/logr"
 	routev1 "github.com/openshift/api/route/v1"
+	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	automotivev1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/tasks"
 )
 
 const (
@@ -23,11 +25,39 @@ const (
 	finalizerName     = "operatorconfig.automotive.sdv.cloud.redhat.com/finalizer"
 )
 
+// isNoMatchError checks if error is "no matches for kind" error (CRD doesn't exist)
+func isNoMatchError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := err.Error()
+	return errMsg == "no matches for kind \"Route\" in version \"route.openshift.io/v1\"" ||
+		errMsg == "no matches for kind \"Ingress\" in version \"networking.k8s.io/v1\""
+}
+
+// detectOpenShift checks if we're running on OpenShift by looking for OpenShift-specific APIs
+func (r *OperatorConfigReconciler) detectOpenShift(ctx context.Context) bool {
+	if r.IsOpenShift != nil {
+		return *r.IsOpenShift
+	}
+
+	route := &routev1.Route{}
+	route.Name = "test"
+	route.Namespace = "default"
+	err := r.Get(ctx, client.ObjectKey{Name: "test", Namespace: "default"}, route)
+
+	isOpenShift := !isNoMatchError(err)
+	r.IsOpenShift = &isOpenShift
+	r.Log.Info("Platform detected", "isOpenShift", isOpenShift)
+	return isOpenShift
+}
+
 // OperatorConfigReconciler reconciles an OperatorConfig object
 type OperatorConfigReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Log    logr.Logger
+	Scheme      *runtime.Scheme
+	Log         logr.Logger
+	IsOpenShift *bool
 }
 
 // +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=operatorconfigs,verbs=get;list;watch;create;update;patch;delete
@@ -39,6 +69,8 @@ type OperatorConfigReconciler struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=tekton.dev,resources=tasks;pipelines;pipelineruns,verbs=get;list;watch;create;update;patch;delete
 
 func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log.WithValues("operatorconfig", req.NamespacedName)
@@ -72,6 +104,10 @@ func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		log.Info("Handling deletion")
 		if err := r.cleanupWebUI(ctx); err != nil {
 			log.Error(err, "Failed to cleanup WebUI")
+			return ctrl.Result{}, err
+		}
+		if err := r.cleanupOSBuilds(ctx); err != nil {
+			log.Error(err, "Failed to cleanup OSBuilds")
 			return ctrl.Result{}, err
 		}
 		log.Info("Removing finalizer")
@@ -128,8 +164,49 @@ func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 	}
 
+	// Reconcile OSBuilds
+	log.Info("Processing OSBuilds configuration", "osBuilds", config.Spec.OSBuilds, "generation", config.Generation)
+	if config.Spec.OSBuilds != nil && config.Spec.OSBuilds.Enabled {
+		if err := r.deployOSBuilds(ctx, config); err != nil {
+			log.Error(err, "Failed to deploy OSBuilds")
+			if config.Status.Phase != "Failed" || config.Status.OSBuildsDeployed {
+				config.Status.Phase = "Failed"
+				config.Status.Message = fmt.Sprintf("Failed to deploy OSBuilds: %v", err)
+				config.Status.OSBuildsDeployed = false
+				statusChanged = true
+			}
+			if statusChanged {
+				_ = r.Status().Update(ctx, config)
+			}
+			return ctrl.Result{}, err
+		}
+		if !config.Status.OSBuildsDeployed {
+			config.Status.OSBuildsDeployed = true
+			config.Status.Phase = "Ready"
+			config.Status.Message = "OSBuilds deployed successfully"
+			statusChanged = true
+		}
+	} else {
+		if err := r.cleanupOSBuilds(ctx); err != nil {
+			log.Error(err, "Failed to cleanup OSBuilds")
+			if config.Status.Phase != "Failed" {
+				config.Status.Phase = "Failed"
+				config.Status.Message = fmt.Sprintf("Failed to cleanup OSBuilds: %v", err)
+				statusChanged = true
+			}
+			if statusChanged {
+				_ = r.Status().Update(ctx, config)
+			}
+			return ctrl.Result{}, err
+		}
+		if config.Status.OSBuildsDeployed {
+			config.Status.OSBuildsDeployed = false
+			statusChanged = true
+		}
+	}
+
 	if statusChanged {
-		log.Info("Updating status", "phase", config.Status.Phase, "webUIDeployed", config.Status.WebUIDeployed)
+		log.Info("Updating status", "phase", config.Status.Phase, "webUIDeployed", config.Status.WebUIDeployed, "osBuildsDeployed", config.Status.OSBuildsDeployed)
 		if err := r.Status().Update(ctx, config); err != nil {
 			log.Error(err, "Failed to update status")
 			return ctrl.Result{}, err
@@ -170,7 +247,8 @@ func (r *OperatorConfigReconciler) deployWebUI(ctx context.Context, owner *autom
 
 	// Create/update deployment
 	r.Log.Info("Creating/updating webui deployment")
-	deployment := r.buildWebUIDeployment()
+	isOpenShift := r.detectOpenShift(ctx)
+	deployment := r.buildWebUIDeployment(isOpenShift)
 	if err := r.createOrUpdate(ctx, deployment, owner); err != nil {
 		r.Log.Error(err, "Failed to create/update webui deployment")
 		return fmt.Errorf("failed to create/update webui deployment: %w", err)
@@ -179,25 +257,34 @@ func (r *OperatorConfigReconciler) deployWebUI(ctx context.Context, owner *autom
 
 	// Create/update service
 	r.Log.Info("Creating/updating webui service")
-	service := r.buildWebUIService()
+	service := r.buildWebUIService(isOpenShift)
 	if err := r.createOrUpdate(ctx, service, owner); err != nil {
 		r.Log.Error(err, "Failed to create/update webui service")
 		return fmt.Errorf("failed to create/update webui service: %w", err)
 	}
 	r.Log.Info("WebUI service created/updated successfully")
 
-	// Create/update route
+	// Create/update route (OpenShift)
 	r.Log.Info("Creating/updating webui route")
 	route := r.buildWebUIRoute()
 	if err := r.createOrUpdate(ctx, route, owner); err != nil {
-		r.Log.Error(err, "Failed to create/update webui route")
-		return fmt.Errorf("failed to create/update webui route: %w", err)
+		r.Log.Error(err, "Failed to create/update webui route (this is expected on non-OpenShift clusters)")
+	} else {
+		r.Log.Info("WebUI route created/updated successfully")
 	}
-	r.Log.Info("WebUI route created/updated successfully")
+
+	// Create/update ingress (Kubernetes)
+	r.Log.Info("Creating/updating webui ingress")
+	ingress := r.buildWebUIIngress()
+	if err := r.createOrUpdate(ctx, ingress, owner); err != nil {
+		r.Log.Error(err, "Failed to create/update webui ingress (this is expected if ingress controller is not installed)")
+	} else {
+		r.Log.Info("WebUI ingress created/updated successfully")
+	}
 
 	// Create/update build-api deployment
 	r.Log.Info("Creating/updating build-api deployment")
-	buildAPIDeployment := r.buildBuildAPIDeployment()
+	buildAPIDeployment := r.buildBuildAPIDeployment(isOpenShift)
 	if err := r.createOrUpdate(ctx, buildAPIDeployment, owner); err != nil {
 		r.Log.Error(err, "Failed to create/update build-api deployment")
 		return fmt.Errorf("failed to create/update build-api deployment: %w", err)
@@ -206,21 +293,30 @@ func (r *OperatorConfigReconciler) deployWebUI(ctx context.Context, owner *autom
 
 	// Create/update build-api service
 	r.Log.Info("Creating/updating build-api service")
-	buildAPIService := r.buildBuildAPIService()
+	buildAPIService := r.buildBuildAPIService(isOpenShift)
 	if err := r.createOrUpdate(ctx, buildAPIService, owner); err != nil {
 		r.Log.Error(err, "Failed to create/update build-api service")
 		return fmt.Errorf("failed to create/update build-api service: %w", err)
 	}
 	r.Log.Info("Build-API service created/updated successfully")
 
-	// Create/update build-api route
+	// Create/update build-api route (OpenShift)
 	r.Log.Info("Creating/updating build-api route")
 	buildAPIRoute := r.buildBuildAPIRoute()
 	if err := r.createOrUpdate(ctx, buildAPIRoute, owner); err != nil {
-		r.Log.Error(err, "Failed to create/update build-api route")
-		return fmt.Errorf("failed to create/update build-api route: %w", err)
+		r.Log.Error(err, "Failed to create/update build-api route (this is expected on non-OpenShift clusters)")
+	} else {
+		r.Log.Info("Build-API route created/updated successfully")
 	}
-	r.Log.Info("Build-API route created/updated successfully")
+
+	// Create/update build-api ingress (Kubernetes)
+	r.Log.Info("Creating/updating build-api ingress")
+	buildAPIIngress := r.buildBuildAPIIngress()
+	if err := r.createOrUpdate(ctx, buildAPIIngress, owner); err != nil {
+		r.Log.Error(err, "Failed to create/update build-api ingress (this is expected if ingress controller is not installed)")
+	} else {
+		r.Log.Info("Build-API ingress created/updated successfully")
+	}
 
 	r.Log.Info("WebUI deployment completed successfully")
 	return nil
@@ -311,8 +407,16 @@ func (r *OperatorConfigReconciler) cleanupWebUI(ctx context.Context) error {
 	route := &routev1.Route{}
 	route.Name = "ado-webui"
 	route.Namespace = operatorNamespace
-	if err := r.Delete(ctx, route); err != nil && !errors.IsNotFound(err) {
-		return fmt.Errorf("failed to delete webui route: %w", err)
+	if err := r.Delete(ctx, route); err != nil && !errors.IsNotFound(err) && !isNoMatchError(err) {
+		r.Log.Error(err, "Failed to delete webui route (ignoring, expected on non-OpenShift clusters)")
+	}
+
+	// Delete ingress
+	ingress := &networkingv1.Ingress{}
+	ingress.Name = "ado-webui"
+	ingress.Namespace = operatorNamespace
+	if err := r.Delete(ctx, ingress); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete webui ingress: %w", err)
 	}
 
 	// Delete nginx ConfigMap
@@ -339,12 +443,20 @@ func (r *OperatorConfigReconciler) cleanupWebUI(ctx context.Context) error {
 		return fmt.Errorf("failed to delete build-api service: %w", err)
 	}
 
-	// Delete build-api route
+	// Delete build-api route (OpenShift only - ignore errors on non-OpenShift clusters)
 	buildAPIRoute := &routev1.Route{}
 	buildAPIRoute.Name = "ado-build-api"
 	buildAPIRoute.Namespace = operatorNamespace
-	if err := r.Delete(ctx, buildAPIRoute); err != nil && !errors.IsNotFound(err) {
-		return fmt.Errorf("failed to delete build-api route: %w", err)
+	if err := r.Delete(ctx, buildAPIRoute); err != nil && !errors.IsNotFound(err) && !isNoMatchError(err) {
+		r.Log.Error(err, "Failed to delete build-api route (ignoring, expected on non-OpenShift clusters)")
+	}
+
+	// Delete build-api ingress
+	buildAPIIngress := &networkingv1.Ingress{}
+	buildAPIIngress.Name = "ado-build-api"
+	buildAPIIngress.Namespace = operatorNamespace
+	if err := r.Delete(ctx, buildAPIIngress); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete build-api ingress: %w", err)
 	}
 
 	// Delete OAuth secrets
@@ -380,9 +492,117 @@ func (r *OperatorConfigReconciler) createOrUpdate(ctx context.Context, obj clien
 	return r.Update(ctx, obj)
 }
 
+func (r *OperatorConfigReconciler) deployOSBuilds(ctx context.Context, config *automotivev1.OperatorConfig) error {
+	r.Log.Info("Starting OSBuilds deployment")
+
+	// Convert OSBuildsConfig to BuildConfig for task generation
+	var buildConfig *tasks.BuildConfig
+	if config.Spec.OSBuilds != nil {
+		buildConfig = &tasks.BuildConfig{
+			UseMemoryVolumes: config.Spec.OSBuilds.UseMemoryVolumes,
+			MemoryVolumeSize: config.Spec.OSBuilds.MemoryVolumeSize,
+			PVCSize:          config.Spec.OSBuilds.PVCSize,
+			RuntimeClassName: config.Spec.OSBuilds.RuntimeClassName,
+			ServeExpiryHours: config.Spec.OSBuilds.ServeExpiryHours,
+		}
+	}
+
+	// Generate and deploy Tekton tasks
+	tektonTasks := []*tektonv1.Task{
+		tasks.GenerateBuildAutomotiveImageTask(operatorNamespace, buildConfig, ""),
+		tasks.GeneratePushArtifactRegistryTask(operatorNamespace),
+	}
+
+	for _, task := range tektonTasks {
+		task.Labels["automotive.sdv.cloud.redhat.com/managed-by"] = config.Name
+
+		if err := controllerutil.SetControllerReference(config, task, r.Scheme); err != nil {
+			return fmt.Errorf("failed to set controller reference on task: %w", err)
+		}
+
+		if err := r.createOrUpdateTask(ctx, task); err != nil {
+			r.Log.Error(err, "Failed to create/update Task", "task", task.Name)
+			return fmt.Errorf("failed to create/update task %s: %w", task.Name, err)
+		}
+
+		r.Log.Info("Task created/updated successfully", "name", task.Name)
+	}
+
+	// Generate and deploy Tekton pipeline
+	pipeline := tasks.GenerateTektonPipeline("automotive-build-pipeline", operatorNamespace)
+	pipeline.Labels["automotive.sdv.cloud.redhat.com/managed-by"] = config.Name
+
+	if err := controllerutil.SetControllerReference(config, pipeline, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set controller reference on pipeline: %w", err)
+	}
+
+	if err := r.createOrUpdatePipeline(ctx, pipeline); err != nil {
+		r.Log.Error(err, "Failed to create/update Pipeline")
+		return fmt.Errorf("failed to create/update pipeline: %w", err)
+	}
+
+	r.Log.Info("OSBuilds deployment completed successfully")
+	return nil
+}
+
+func (r *OperatorConfigReconciler) cleanupOSBuilds(ctx context.Context) error {
+	r.Log.Info("Cleaning up OSBuilds resources")
+
+	// Delete Tekton tasks
+	taskNames := []string{"build-automotive-image", "push-artifact-registry"}
+	for _, taskName := range taskNames {
+		task := &tektonv1.Task{}
+		task.Name = taskName
+		task.Namespace = operatorNamespace
+		if err := r.Delete(ctx, task); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete task %s: %w", taskName, err)
+		}
+		r.Log.Info("Task deleted", "name", taskName)
+	}
+
+	// Delete Tekton pipeline
+	pipeline := &tektonv1.Pipeline{}
+	pipeline.Name = "automotive-build-pipeline"
+	pipeline.Namespace = operatorNamespace
+	if err := r.Delete(ctx, pipeline); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete pipeline: %w", err)
+	}
+	r.Log.Info("Pipeline deleted")
+
+	r.Log.Info("OSBuilds cleanup completed successfully")
+	return nil
+}
+
+func (r *OperatorConfigReconciler) createOrUpdateTask(ctx context.Context, task *tektonv1.Task) error {
+	existingTask := &tektonv1.Task{}
+	err := r.Get(ctx, client.ObjectKey{Name: task.Name, Namespace: task.Namespace}, existingTask)
+	if err != nil {
+		if !errors.IsNotFound(err) {
+			return fmt.Errorf("failed to get Task: %w", err)
+		}
+		return r.Create(ctx, task)
+	}
+
+	task.ResourceVersion = existingTask.ResourceVersion
+	return r.Update(ctx, task)
+}
+
+func (r *OperatorConfigReconciler) createOrUpdatePipeline(ctx context.Context, pipeline *tektonv1.Pipeline) error {
+	existingPipeline := &tektonv1.Pipeline{}
+	err := r.Get(ctx, client.ObjectKey{Name: pipeline.Name, Namespace: pipeline.Namespace}, existingPipeline)
+	if err != nil {
+		if !errors.IsNotFound(err) {
+			return fmt.Errorf("failed to get Pipeline: %w", err)
+		}
+		return r.Create(ctx, pipeline)
+	}
+
+	pipeline.ResourceVersion = existingPipeline.ResourceVersion
+	return r.Update(ctx, pipeline)
+}
+
 func (r *OperatorConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&automotivev1.OperatorConfig{}).
-		WithEventFilter(predicate.GenerationChangedPredicate{}).
 		Complete(r)
 }

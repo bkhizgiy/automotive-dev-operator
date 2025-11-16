@@ -38,7 +38,6 @@ import (
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 
 	automotivev1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1"
-	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/automotivedev"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/image"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/imagebuild"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/operatorconfig"
@@ -141,24 +140,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	autoDevReady := make(chan struct{})
-
-	autoDevReconciler := &automotivedev.AutomotiveDevConfigReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Log:    ctrl.Log.WithName("controllers").WithName("AutomotiveDevConfig"),
-		Ready:  autoDevReady,
-	}
-
-	if err = autoDevReconciler.SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "AutomotiveDevConfig")
-		os.Exit(1)
-	}
-
 	imageBuildReconciler := &imagebuild.ImageBuildReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Log:    ctrl.Log.WithName("controllers").WithName("ImageBuild"),
+	}
+
+	if err = imageBuildReconciler.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ImageBuild")
+		os.Exit(1)
 	}
 
 	imageReconciler := &image.ImageReconciler{
@@ -182,16 +172,6 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "OperatorConfig")
 		os.Exit(1)
 	}
-
-	go func() {
-		<-autoDevReady
-		setupLog.Info("AutomotiveDevConfig is ready, starting ImageBuild controller")
-
-		if err := imageBuildReconciler.SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "ImageBuild")
-			os.Exit(1)
-		}
-	}()
 
 	// Health checks
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

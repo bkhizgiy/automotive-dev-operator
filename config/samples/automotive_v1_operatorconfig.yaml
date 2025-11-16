@@ -4,6 +4,11 @@ metadata:
   labels:
     app.kubernetes.io/name: automotive-dev-operator
     app.kubernetes.io/managed-by: kustomize
-  name: config
+  name: automotive-dev
+  namespace: automotive-dev-operator-system
 spec:
   webUI: true
+  osBuilds:
+    enabled: true
+    pvcSize: "8Gi"
+    serveExpiryHours: 24

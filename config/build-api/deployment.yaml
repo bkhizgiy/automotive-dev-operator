@@ -22,7 +22,7 @@ spec:
       initContainers:
       - name: init-secrets
         image: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
-        imagePullPolicy: Always
+        imagePullPolicy: IfNotPresent
         command: ["/init-secrets"]
         env:
         - name: POD_NAMESPACE
@@ -34,7 +34,7 @@ spec:
       containers:
       - name: build-api
         image: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
-        imagePullPolicy: Always
+        imagePullPolicy: IfNotPresent
         command: ["/build-api"]
         resources:
           requests:
