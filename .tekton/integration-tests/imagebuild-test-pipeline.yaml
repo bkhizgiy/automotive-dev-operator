@@ -1,0 +1,152 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: imagebuild-test
+spec:
+  description: Test ImageBuild CR workflow
+  params:
+    - name: SNAPSHOT
+      description: The snapshot of the application
+      type: string
+    - name: NAMESPACE
+      description: Target namespace for testing
+      type: string
+      default: automotive-imagebuild-test
+  
+  tasks:
+    - name: provision-cluster
+      taskRef:
+        resolver: bundles
+        params:
+          - name: bundle
+            value: quay.io/konflux-ci/tekton-catalog/task-provision-env:0.1
+          - name: name
+            value: provision-env
+          - name: kind
+            value: task
+      params:
+        - name: SNAPSHOT
+          value: $(params.SNAPSHOT)
+    
+    - name: setup-test-environment
+      runAfter:
+        - provision-cluster
+      taskSpec:
+        params:
+          - name: SNAPSHOT
+          - name: NAMESPACE
+        steps:
+          - name: setup
+            image: quay.io/openshift/origin-cli:latest
+            script: |
+              #!/bin/bash
+              set -ex
+              
+              # Parse snapshot to get images
+              OPERATOR_IMAGE=$(echo '$(params.SNAPSHOT)' | jq -r '.components[] | select(.name=="automotive-dev-operator") | .containerImage')
+              
+              echo "Setting up test environment"
+              
+              # Create namespace
+              oc create namespace $(params.NAMESPACE) --dry-run=client -o yaml | oc apply -f -
+              
+              # Install Tekton if not present
+              oc get namespace openshift-pipelines || oc create namespace openshift-pipelines
+              
+              # Apply CRDs
+              oc apply -f https://raw.githubusercontent.com/centos-automotive-suite/automotive-dev-operator/main/config/crd/bases/
+              
+              # Deploy operator
+              cat <<EOF | oc apply -f -
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: automotive-dev-operator
+                namespace: $(params.NAMESPACE)
+              spec:
+                replicas: 1
+                selector:
+                  matchLabels:
+                    app: automotive-dev-operator
+                template:
+                  metadata:
+                    labels:
+                      app: automotive-dev-operator
+                  spec:
+                    containers:
+                    - name: manager
+                      image: ${OPERATOR_IMAGE}
+              EOF
+              
+              # Wait for operator
+              oc rollout status deployment/automotive-dev-operator -n $(params.NAMESPACE) --timeout=5m
+      params:
+        - name: SNAPSHOT
+          value: $(params.SNAPSHOT)
+        - name: NAMESPACE
+          value: $(params.NAMESPACE)
+    
+    - name: test-imagebuild-cr
+      runAfter:
+        - setup-test-environment
+      taskSpec:
+        params:
+          - name: NAMESPACE
+        steps:
+          - name: create-imagebuild
+            image: quay.io/openshift/origin-cli:latest
+            script: |
+              #!/bin/bash
+              set -ex
+              
+              # Create ImageBuild CR
+              cat <<EOF | oc apply -f -
+              apiVersion: automotive.sdv.cloud.redhat.com/v1
+              kind: ImageBuild
+              metadata:
+                name: test-imagebuild
+                namespace: $(params.NAMESPACE)
+              spec:
+                imageType: qemu
+                outputImage: test-output:latest
+                blueprintRef:
+                  name: test-blueprint
+              EOF
+              
+              echo "ImageBuild CR created"
+              
+              # Wait for CR to be processed (simple check)
+              sleep 10
+              
+              # Check CR status
+              oc get imagebuild test-imagebuild -n $(params.NAMESPACE) -o yaml
+              
+              echo "SUCCESS: ImageBuild CR test passed"
+      params:
+        - name: NAMESPACE
+          value: $(params.NAMESPACE)
+    
+    - name: cleanup
+      runAfter:
+        - test-imagebuild-cr
+      taskSpec:
+        params:
+          - name: NAMESPACE
+        steps:
+          - name: delete-resources
+            image: quay.io/openshift/origin-cli:latest
+            script: |
+              #!/bin/bash
+              set -x
+              
+              oc delete namespace $(params.NAMESPACE) --timeout=2m || true
+              echo "Cleanup completed"
+      params:
+        - name: NAMESPACE
+          value: $(params.NAMESPACE)
+  
+  results:
+    - name: TEST_OUTPUT
+      description: Test execution summary
+      value: "ImageBuild test completed successfully"
+

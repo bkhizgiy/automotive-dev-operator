@@ -1,0 +1,29 @@
+apiVersion: appstudio.redhat.com/v1alpha1
+kind: Component
+metadata:
+  name: automotive-dev-operator
+  namespace: default
+  annotations:
+    image.redhat.com/generate: "true"
+spec:
+  componentName: automotive-dev-operator
+  application: automotive-dev-operator
+  source:
+    git:
+      url: https://github.com/centos-automotive-suite/automotive-dev-operator
+      revision: main
+      context: ./
+      dockerfileUrl: Dockerfile
+  containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator
+  replicas: 1
+  targetPort: 8443
+  build:
+    containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+

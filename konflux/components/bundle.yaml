@@ -1,0 +1,21 @@
+apiVersion: appstudio.redhat.com/v1alpha1
+kind: Component
+metadata:
+  name: automotive-dev-operator-bundle
+  namespace: default
+  annotations:
+    image.redhat.com/generate: "true"
+    build.appstudio.openshift.io/depends-on: automotive-dev-operator
+spec:
+  componentName: automotive-dev-operator-bundle
+  application: automotive-dev-operator
+  source:
+    git:
+      url: https://github.com/centos-automotive-suite/automotive-dev-operator
+      revision: main
+      context: ./
+      dockerfileUrl: bundle.Dockerfile
+  containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator-bundle
+  build:
+    containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator-bundle
+

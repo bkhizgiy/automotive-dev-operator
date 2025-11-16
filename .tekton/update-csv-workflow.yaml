@@ -1,0 +1,106 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: update-csv-workflow
+  annotations:
+    pipelinesascode.tekton.dev/on-event: "[push]"
+    pipelinesascode.tekton.dev/on-target-branch: "[main]"
+    pipelinesascode.tekton.dev/max-keep-runs: "3"
+spec:
+  description: |
+    Workflow to update CSV with image digests after successful operator build.
+    This runs after the operator image is built and pushes an update to the CSV.
+  
+  params:
+    - name: git-url
+      description: Repository URL
+      type: string
+    - name: revision
+      description: Git revision
+      type: string
+    - name: operator-image-url
+      description: Built operator image URL
+      type: string
+    - name: operator-image-digest
+      description: Built operator image SHA digest
+      type: string
+    - name: webui-image-url
+      description: Built WebUI image URL
+      type: string
+      default: ""
+    - name: webui-image-digest
+      description: Built WebUI image SHA digest
+      type: string
+      default: ""
+  
+  workspaces:
+    - name: source-workspace
+    - name: git-credentials
+      optional: true
+  
+  tasks:
+    - name: clone-repository
+      taskRef:
+        resolver: bundles
+        params:
+          - name: bundle
+            value: quay.io/konflux-ci/tekton-catalog/task-git-clone:0.1
+          - name: name
+            value: git-clone
+          - name: kind
+            value: task
+      params:
+        - name: url
+          value: $(params.git-url)
+        - name: revision
+          value: $(params.revision)
+      workspaces:
+        - name: output
+          workspace: source-workspace
+        - name: basic-auth
+          workspace: git-credentials
+    
+    - name: update-csv-with-digests
+      runAfter:
+        - clone-repository
+      taskRef:
+        name: update-csv-digests
+      params:
+        - name: operator-image-url
+          value: $(params.operator-image-url)
+        - name: operator-image-digest
+          value: $(params.operator-image-digest)
+        - name: webui-image-url
+          value: $(params.webui-image-url)
+        - name: webui-image-digest
+          value: $(params.webui-image-digest)
+      workspaces:
+        - name: source
+          workspace: source-workspace
+    
+    - name: push-changes
+      runAfter:
+        - update-csv-with-digests
+      taskRef:
+        resolver: bundles
+        params:
+          - name: bundle
+            value: quay.io/konflux-ci/tekton-catalog/task-git-cli:0.1
+          - name: name
+            value: git-cli
+          - name: kind
+            value: task
+      params:
+        - name: GIT_USER_NAME
+          value: "Konflux Bot"
+        - name: GIT_USER_EMAIL
+          value: "konflux-bot@redhat.com"
+        - name: GIT_SCRIPT
+          value: |
+            git push origin HEAD:$(params.revision)
+      workspaces:
+        - name: source
+          workspace: source-workspace
+        - name: basic-auth
+          workspace: git-credentials
+

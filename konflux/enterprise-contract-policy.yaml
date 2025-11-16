@@ -1,0 +1,54 @@
+apiVersion: appstudio.redhat.com/v1alpha1
+kind: EnterpriseContractPolicy
+metadata:
+  name: automotive-dev-operator-policy
+  namespace: default
+spec:
+  description: Enterprise Contract policy for automotive-dev-operator
+  publicKey: k8s://openshift-pipelines/public-key
+  sources:
+    - name: Default Policies
+      policy:
+        - github.com/enterprise-contract/ec-policies//policy/lib
+        - github.com/enterprise-contract/ec-policies//policy/release
+      data:
+        - github.com/enterprise-contract/ec-policies//example/data
+  configuration:
+    include:
+      # SLSA Provenance checks
+      - slsa_provenance_available
+      - slsa_build_build_service
+      - slsa_source_version_controlled
+      
+      # Image integrity and signing
+      - attestation_signature_check
+      - attestation_task_bundle_check
+      
+      # Security scanning
+      - cve_check
+      - deprecated_base_image_check
+      - restricted_base_image_check
+      
+      # SBOM checks
+      - sbom_cyclonedx_check
+      - sbom_purl_check
+      
+      # Build process checks
+      - hermetic_build_task
+      - build_task_minimum_version
+      
+      # Task-specific checks
+      - test_passed
+      
+    exclude:
+      # Exclude checks that might be too strict initially
+      # Remove these as you mature your process
+      # - cve_check  # Uncomment to ignore CVE findings temporarily
+    
+    collections:
+      - minimal
+      - slsa3
+  
+  # Policy parameters
+  rekorURL: https://rekor.sigstore.dev
+
