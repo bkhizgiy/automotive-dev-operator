@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.16.1
+    controller-gen.kubebuilder.io/version: (devel)
   name: operatorconfigs.automotive.sdv.cloud.redhat.com
 spec:
   group: automotive.sdv.cloud.redhat.com
@@ -12,11 +12,14 @@ spec:
     listKind: OperatorConfigList
     plural: operatorconfigs
     singular: operatorconfig
-  scope: Cluster
+  scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.webUI
       name: WebUI
+      type: boolean
+    - jsonPath: .spec.osBuilds.enabled
+      name: OS Builds
       type: boolean
     - jsonPath: .status.phase
       name: Phase
@@ -49,6 +52,42 @@ spec:
           spec:
             description: OperatorConfigSpec defines the desired state of OperatorConfig
             properties:
+              osBuilds:
+                description: OSBuilds defines the configuration for OS build operations
+                properties:
+                  enabled:
+                    default: true
+                    description: Enabled determines if Tekton tasks for OS builds
+                      should be deployed
+                    type: boolean
+                  memoryVolumeSize:
+                    description: |-
+                      MemoryVolumeSize specifies the size limit for memory-backed volumes (required if UseMemoryVolumes is true)
+                      Example: "2Gi"
+                    type: string
+                  pvcSize:
+                    description: |-
+                      PVCSize specifies the size for persistent volume claims created for build workspaces
+                      Default: "8Gi"
+                    type: string
+                  runtimeClassName:
+                    description: |-
+                      RuntimeClassName specifies the runtime class to use for the build pod
+                      More info: https://kubernetes.io/docs/concepts/containers/runtime-class/
+                    type: string
+                  serveExpiryHours:
+                    description: |-
+                      ServeExpiryHours specifies how long to serve build artifacts before automatic cleanup
+                      Default: 24
+                    format: int32
+                    type: integer
+                  useMemoryVolumes:
+                    description: UseMemoryVolumes determines whether to use memory-backed
+                      volumes for build operations
+                    type: boolean
+                required:
+                - enabled
+                type: object
               webUI:
                 default: true
                 description: WebUI determines if the web UI should be deployed
@@ -62,6 +101,10 @@ spec:
               message:
                 description: Message provides detail about the current phase
                 type: string
+              osBuildsDeployed:
+                description: OSBuildsDeployed indicates if the OS Builds Tekton tasks
+                  are currently deployed
+                type: boolean
               phase:
                 description: Phase represents the current phase (Ready, Reconciling,
                   Failed)

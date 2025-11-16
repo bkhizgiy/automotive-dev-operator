@@ -57,7 +57,6 @@ rules:
 - apiGroups:
   - automotive.sdv.cloud.redhat.com
   resources:
-  - automotivedevconfigs
   - imagebuilds
   - images
   - operatorconfigs
@@ -72,7 +71,6 @@ rules:
 - apiGroups:
   - automotive.sdv.cloud.redhat.com
   resources:
-  - automotivedevconfigs/finalizers
   - imagebuilds/finalizers
   - images/finalizers
   - operatorconfigs/finalizers
@@ -81,7 +79,6 @@ rules:
 - apiGroups:
   - automotive.sdv.cloud.redhat.com
   resources:
-  - automotivedevconfigs/status
   - imagebuilds/status
   - images/status
   - operatorconfigs/status

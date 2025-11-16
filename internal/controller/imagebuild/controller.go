@@ -325,15 +325,23 @@ func (r *ImageBuildReconciler) createBuildTaskRun(ctx context.Context, imageBuil
 	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
 	log.Info("Creating TaskRun for ImageBuild")
 
-	autoDev := &automotivev1.AutomotiveDevConfig{}
-	err := r.Get(ctx, types.NamespacedName{Name: "automotive-dev", Namespace: OperatorNamespace}, autoDev)
+	// Fetch OperatorConfig from the operator namespace to get build configuration
+	operatorConfig := &automotivev1.OperatorConfig{}
+	err := r.Get(ctx, types.NamespacedName{Name: "config", Namespace: OperatorNamespace}, operatorConfig)
 	if err != nil && !errors.IsNotFound(err) {
-		return fmt.Errorf("failed to get AutomotiveDevConfig configuration: %w", err)
+		return fmt.Errorf("failed to get OperatorConfig configuration: %w", err)
 	}
 
-	var buildConfig *automotivev1.BuildConfig
-	if err == nil && autoDev.Spec.BuildConfig != nil {
-		buildConfig = autoDev.Spec.BuildConfig
+	var buildConfig *tasks.BuildConfig
+	if err == nil && operatorConfig.Spec.OSBuilds != nil {
+		// Convert OSBuildsConfig to BuildConfig
+		buildConfig = &tasks.BuildConfig{
+			UseMemoryVolumes: operatorConfig.Spec.OSBuilds.UseMemoryVolumes,
+			MemoryVolumeSize: operatorConfig.Spec.OSBuilds.MemoryVolumeSize,
+			PVCSize:          operatorConfig.Spec.OSBuilds.PVCSize,
+			RuntimeClassName: operatorConfig.Spec.OSBuilds.RuntimeClassName,
+			ServeExpiryHours: operatorConfig.Spec.OSBuilds.ServeExpiryHours,
+		}
 	}
 	buildTask := tasks.GenerateBuildAutomotiveImageTask(OperatorNamespace, buildConfig, imageBuild.Spec.EnvSecretRef)
 
@@ -1005,13 +1013,14 @@ func (r *ImageBuildReconciler) getOrCreateWorkspacePVC(ctx context.Context, imag
 			"old-pvc", imageBuild.Status.PVCName)
 	}
 
-	autoDev := &automotivev1.AutomotiveDevConfig{}
-	err := r.Get(ctx, types.NamespacedName{Name: "automotive-dev", Namespace: OperatorNamespace}, autoDev)
+	// Fetch OperatorConfig to get PVC size configuration
+	operatorConfig := &automotivev1.OperatorConfig{}
+	err := r.Get(ctx, types.NamespacedName{Name: "config", Namespace: OperatorNamespace}, operatorConfig)
 
 	storageSize := resource.MustParse("8Gi")
-	if err == nil && autoDev.Spec.BuildConfig != nil && autoDev.Spec.BuildConfig.PVCSize != "" {
-		storageSize = resource.MustParse(autoDev.Spec.BuildConfig.PVCSize)
-		log.Info("Using BuildConfig PVCSize", "size", autoDev.Spec.BuildConfig.PVCSize)
+	if err == nil && operatorConfig.Spec.OSBuilds != nil && operatorConfig.Spec.OSBuilds.PVCSize != "" {
+		storageSize = resource.MustParse(operatorConfig.Spec.OSBuilds.PVCSize)
+		log.Info("Using OSBuilds PVCSize", "size", operatorConfig.Spec.OSBuilds.PVCSize)
 	}
 
 	timestamp := fmt.Sprintf("%d", time.Now().Unix())
