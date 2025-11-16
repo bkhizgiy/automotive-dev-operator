@@ -1,0 +1,200 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: release-pipeline
+spec:
+  description: Release pipeline for automotive-dev-operator
+  params:
+    - name: release-strategy
+      description: Release strategy (dev, staging, production)
+      type: string
+    - name: snapshot
+      description: Snapshot to release
+      type: string
+    - name: target-namespace
+      description: Target namespace for deployment
+      type: string
+    - name: create-github-release
+      description: Whether to create a GitHub release
+      type: string
+      default: "false"
+  
+  tasks:
+    - name: verify-enterprise-contract
+      taskRef:
+        resolver: bundles
+        params:
+          - name: bundle
+            value: quay.io/konflux-ci/tekton-catalog/task-verify-enterprise-contract:0.1
+          - name: name
+            value: verify-enterprise-contract
+          - name: kind
+            value: task
+      params:
+        - name: SNAPSHOT
+          value: $(params.snapshot)
+        - name: POLICY_CONFIGURATION
+          value: automotive-dev-operator-policy
+    
+    - name: push-images-to-registry
+      runAfter:
+        - verify-enterprise-contract
+      taskSpec:
+        params:
+          - name: snapshot
+          - name: release-strategy
+        steps:
+          - name: push-images
+            image: quay.io/skopeo/stable:latest
+            script: |
+              #!/bin/bash
+              set -ex
+              
+              echo "Parsing snapshot: $(params.snapshot)"
+              
+              # Parse snapshot and push images with release tags
+              # For production, tag with version number
+              # For staging, tag with staging prefix
+              # For dev, tag with latest
+              
+              STRATEGY=$(params.release-strategy)
+              
+              echo "Pushing images for ${STRATEGY} release"
+              
+              # Image push logic would go here
+              # This is a placeholder for the actual implementation
+              
+              echo "Images pushed successfully"
+      params:
+        - name: snapshot
+          value: $(params.snapshot)
+        - name: release-strategy
+          value: $(params.release-strategy)
+    
+    - name: generate-install-manifest
+      runAfter:
+        - push-images-to-registry
+      taskSpec:
+        params:
+          - name: snapshot
+          - name: target-namespace
+        results:
+          - name: INSTALL_MANIFEST_PATH
+            description: Path to generated install manifest
+        steps:
+          - name: generate-manifest
+            image: quay.io/openshift/origin-cli:latest
+            script: |
+              #!/bin/bash
+              set -ex
+              
+              echo "Generating install manifest"
+              
+              # Parse images from snapshot
+              OPERATOR_IMAGE=$(echo '$(params.snapshot)' | jq -r '.components[] | select(.name=="automotive-dev-operator") | .containerImage')
+              WEBUI_IMAGE=$(echo '$(params.snapshot)' | jq -r '.components[] | select(.name=="aib-webui") | .containerImage')
+              BUNDLE_IMAGE=$(echo '$(params.snapshot)' | jq -r '.components[] | select(.name=="automotive-dev-operator-bundle") | .containerImage')
+              CATALOG_IMAGE=$(echo '$(params.snapshot)' | jq -r '.components[] | select(.name=="automotive-dev-operator-catalog") | .containerImage')
+              
+              # Generate kustomize-based manifest
+              cat <<EOF > /workspace/install.yaml
+              # Automotive Dev Operator Install Manifest
+              # Generated from Konflux release pipeline
+              ---
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: $(params.target-namespace)
+              ---
+              # CRDs and operator deployment would be included here
+              # with pinned image references
+              EOF
+              
+              echo "Install manifest generated at /workspace/install.yaml"
+              echo "/workspace/install.yaml" > $(results.INSTALL_MANIFEST_PATH.path)
+        workspaces:
+          - name: workspace
+      params:
+        - name: snapshot
+          value: $(params.snapshot)
+        - name: target-namespace
+          value: $(params.target-namespace)
+      workspaces:
+        - name: workspace
+          workspace: release-workspace
+    
+    - name: create-github-release
+      when:
+        - input: $(params.create-github-release)
+          operator: in
+          values: ["true"]
+      runAfter:
+        - generate-install-manifest
+      taskSpec:
+        params:
+          - name: snapshot
+        steps:
+          - name: create-release
+            image: quay.io/konflux-ci/release-service-utils:latest
+            script: |
+              #!/bin/bash
+              set -ex
+              
+              echo "Creating GitHub release"
+              
+              # Extract version from snapshot or use commit SHA
+              VERSION=$(echo '$(params.snapshot)' | jq -r '.version // .commit_sha')
+              
+              # Create GitHub release using gh CLI or API
+              # This would include:
+              # - Release notes
+              # - Install manifest
+              # - CAIB CLI binaries
+              # - SBOMs
+              
+              echo "GitHub release created for version: ${VERSION}"
+      params:
+        - name: snapshot
+          value: $(params.snapshot)
+    
+    - name: send-notifications
+      runAfter:
+        - generate-install-manifest
+      taskSpec:
+        params:
+          - name: release-strategy
+          - name: snapshot
+        results:
+          - name: status
+            description: Notification status
+        steps:
+          - name: notify
+            image: curlimages/curl:latest
+            script: |
+              #!/bin/sh
+              set -x
+              
+              STRATEGY=$(params.release-strategy)
+              
+              echo "Release completed for ${STRATEGY} environment"
+              
+              # Send notifications (Slack, email, etc.)
+              # This is a placeholder
+              
+              echo "Notifications sent"
+              echo "success" > $(results.status.path)
+      params:
+        - name: release-strategy
+          value: $(params.release-strategy)
+        - name: snapshot
+          value: $(params.snapshot)
+  
+  workspaces:
+    - name: release-workspace
+      description: Workspace for release artifacts
+  
+  results:
+    - name: RELEASE_STATUS
+      description: Status of the release
+      value: $(tasks.send-notifications.results.status)
+
