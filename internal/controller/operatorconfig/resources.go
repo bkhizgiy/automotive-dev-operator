@@ -7,6 +7,7 @@ import (
 	routev1 "github.com/openshift/api/route/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -598,6 +599,98 @@ func (r *OperatorConfigReconciler) buildBuildAPIRoute() *routev1.Route {
 				InsecureEdgeTerminationPolicy: routev1.InsecureEdgeTerminationPolicyRedirect,
 			},
 			WildcardPolicy: routev1.WildcardPolicyNone,
+		},
+	}
+}
+
+func (r *OperatorConfigReconciler) buildWebUIIngress() *networkingv1.Ingress {
+	pathTypePrefix := networkingv1.PathTypePrefix
+	ingressClassName := "nginx"
+
+	return &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ado-webui",
+			Namespace: operatorNamespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":      "ado-webui",
+				"app.kubernetes.io/part-of":   "automotive-dev-operator",
+				"app.kubernetes.io/component": "webui",
+			},
+			Annotations: map[string]string{
+				"nginx.ingress.kubernetes.io/backend-protocol": "HTTP",
+				"nginx.ingress.kubernetes.io/ssl-redirect":     "true",
+			},
+		},
+		Spec: networkingv1.IngressSpec{
+			IngressClassName: &ingressClassName,
+			Rules: []networkingv1.IngressRule{
+				{
+					IngressRuleValue: networkingv1.IngressRuleValue{
+						HTTP: &networkingv1.HTTPIngressRuleValue{
+							Paths: []networkingv1.HTTPIngressPath{
+								{
+									Path:     "/",
+									PathType: &pathTypePrefix,
+									Backend: networkingv1.IngressBackend{
+										Service: &networkingv1.IngressServiceBackend{
+											Name: "ado-webui",
+											Port: networkingv1.ServiceBackendPort{
+												Name: "http",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func (r *OperatorConfigReconciler) buildBuildAPIIngress() *networkingv1.Ingress {
+	pathTypePrefix := networkingv1.PathTypePrefix
+	ingressClassName := "nginx"
+
+	return &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ado-build-api",
+			Namespace: operatorNamespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":      "automotive-dev-operator",
+				"app.kubernetes.io/component": "build-api",
+				"app.kubernetes.io/part-of":   "automotive-dev-operator",
+			},
+			Annotations: map[string]string{
+				"nginx.ingress.kubernetes.io/backend-protocol": "HTTP",
+				"nginx.ingress.kubernetes.io/ssl-redirect":     "true",
+			},
+		},
+		Spec: networkingv1.IngressSpec{
+			IngressClassName: &ingressClassName,
+			Rules: []networkingv1.IngressRule{
+				{
+					IngressRuleValue: networkingv1.IngressRuleValue{
+						HTTP: &networkingv1.HTTPIngressRuleValue{
+							Paths: []networkingv1.HTTPIngressPath{
+								{
+									Path:     "/",
+									PathType: &pathTypePrefix,
+									Backend: networkingv1.IngressBackend{
+										Service: &networkingv1.IngressServiceBackend{
+											Name: "ado-build-api",
+											Port: networkingv1.ServiceBackendPort{
+												Name: "proxy",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
 		},
 	}
 }

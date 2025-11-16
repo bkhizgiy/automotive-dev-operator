@@ -16,7 +16,7 @@ env:
 
 jobs:
   e2e-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -38,14 +38,14 @@ jobs:
 
       - name: Install kubectl
         run: |
-          curl -LO "https://dl.k8s.io/release/${{ env.KUBECTL_VERSION }}/bin/linux/amd64/kubectl"
+          curl -LO "https://dl.k8s.io/release/${{ env.KUBECTL_VERSION }}/bin/linux/arm64/kubectl"
           chmod +x kubectl
           sudo mv kubectl /usr/local/bin/
           kubectl version --client
 
       - name: Install Kind
         run: |
-          curl -Lo ./kind "https://kind.sigs.k8s.io/dl/${{ env.KIND_VERSION }}/kind-linux-amd64"
+          curl -Lo ./kind "https://kind.sigs.k8s.io/dl/${{ env.KIND_VERSION }}/kind-linux-arm64"
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
           kind version
@@ -61,26 +61,17 @@ jobs:
           kubectl apply --filename https://storage.googleapis.com/tekton-releases/pipeline/latest/release.yaml
           echo "Waiting for Tekton Pipelines to be ready..."
           kubectl wait --for=condition=ready pod --all -n tekton-pipelines --timeout=5m
-          
-      - name: Build operator image
-        run: |
-          make docker-build IMG=automotive-dev-operator:test
-          kind load docker-image automotive-dev-operator:test --name automotive-dev-e2e
 
-      - name: Install CRDs
+      - name: Install NGINX Ingress Controller
         run: |
-          make install
-
-      - name: Deploy operator
-        run: |
-          make deploy IMG=automotive-dev-operator:test
-          
-      - name: Wait for operator to be ready
-        run: |
-          kubectl wait --for=condition=available --timeout=5m deployment/ado-controller-manager -n automotive-dev-operator-system
-          kubectl get pods -n automotive-dev-operator-system
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+          echo "Waiting for NGINX Ingress Controller to be ready..."
+          kubectl wait --namespace ingress-nginx --for=condition=ready pod --selector=app.kubernetes.io/component=controller --timeout=3m
 
       - name: Run E2E tests
+        env:
+          KIND_CLUSTER: automotive-dev-e2e
+          CONTAINER_TOOL: docker
         run: |
           make test-e2e
 

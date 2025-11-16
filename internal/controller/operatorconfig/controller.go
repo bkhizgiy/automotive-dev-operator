@@ -9,12 +9,12 @@ import (
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	automotivev1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/tasks"
@@ -234,14 +234,23 @@ func (r *OperatorConfigReconciler) deployWebUI(ctx context.Context, owner *autom
 	}
 	r.Log.Info("WebUI service created/updated successfully")
 
-	// Create/update route
+	// Create/update route (OpenShift)
 	r.Log.Info("Creating/updating webui route")
 	route := r.buildWebUIRoute()
 	if err := r.createOrUpdate(ctx, route, owner); err != nil {
-		r.Log.Error(err, "Failed to create/update webui route")
-		return fmt.Errorf("failed to create/update webui route: %w", err)
+		r.Log.Error(err, "Failed to create/update webui route (this is expected on non-OpenShift clusters)")
+	} else {
+		r.Log.Info("WebUI route created/updated successfully")
 	}
-	r.Log.Info("WebUI route created/updated successfully")
+
+	// Create/update ingress (Kubernetes)
+	r.Log.Info("Creating/updating webui ingress")
+	ingress := r.buildWebUIIngress()
+	if err := r.createOrUpdate(ctx, ingress, owner); err != nil {
+		r.Log.Error(err, "Failed to create/update webui ingress (this is expected if ingress controller is not installed)")
+	} else {
+		r.Log.Info("WebUI ingress created/updated successfully")
+	}
 
 	// Create/update build-api deployment
 	r.Log.Info("Creating/updating build-api deployment")
@@ -261,14 +270,23 @@ func (r *OperatorConfigReconciler) deployWebUI(ctx context.Context, owner *autom
 	}
 	r.Log.Info("Build-API service created/updated successfully")
 
-	// Create/update build-api route
+	// Create/update build-api route (OpenShift)
 	r.Log.Info("Creating/updating build-api route")
 	buildAPIRoute := r.buildBuildAPIRoute()
 	if err := r.createOrUpdate(ctx, buildAPIRoute, owner); err != nil {
-		r.Log.Error(err, "Failed to create/update build-api route")
-		return fmt.Errorf("failed to create/update build-api route: %w", err)
+		r.Log.Error(err, "Failed to create/update build-api route (this is expected on non-OpenShift clusters)")
+	} else {
+		r.Log.Info("Build-API route created/updated successfully")
 	}
-	r.Log.Info("Build-API route created/updated successfully")
+
+	// Create/update build-api ingress (Kubernetes)
+	r.Log.Info("Creating/updating build-api ingress")
+	buildAPIIngress := r.buildBuildAPIIngress()
+	if err := r.createOrUpdate(ctx, buildAPIIngress, owner); err != nil {
+		r.Log.Error(err, "Failed to create/update build-api ingress (this is expected if ingress controller is not installed)")
+	} else {
+		r.Log.Info("Build-API ingress created/updated successfully")
+	}
 
 	r.Log.Info("WebUI deployment completed successfully")
 	return nil
@@ -363,6 +381,14 @@ func (r *OperatorConfigReconciler) cleanupWebUI(ctx context.Context) error {
 		return fmt.Errorf("failed to delete webui route: %w", err)
 	}
 
+	// Delete ingress
+	ingress := &networkingv1.Ingress{}
+	ingress.Name = "ado-webui"
+	ingress.Namespace = operatorNamespace
+	if err := r.Delete(ctx, ingress); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete webui ingress: %w", err)
+	}
+
 	// Delete nginx ConfigMap
 	configMap := &corev1.ConfigMap{}
 	configMap.Name = "ado-webui-nginx-config"
@@ -393,6 +419,14 @@ func (r *OperatorConfigReconciler) cleanupWebUI(ctx context.Context) error {
 	buildAPIRoute.Namespace = operatorNamespace
 	if err := r.Delete(ctx, buildAPIRoute); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to delete build-api route: %w", err)
+	}
+
+	// Delete build-api ingress
+	buildAPIIngress := &networkingv1.Ingress{}
+	buildAPIIngress.Name = "ado-build-api"
+	buildAPIIngress.Namespace = operatorNamespace
+	if err := r.Delete(ctx, buildAPIIngress); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete build-api ingress: %w", err)
 	}
 
 	// Delete OAuth secrets
@@ -540,6 +574,5 @@ func (r *OperatorConfigReconciler) createOrUpdatePipeline(ctx context.Context, p
 func (r *OperatorConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&automotivev1.OperatorConfig{}).
-		WithEventFilter(predicate.GenerationChangedPredicate{}).
 		Complete(r)
 }
