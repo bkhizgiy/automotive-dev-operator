@@ -18,7 +18,243 @@ const (
 	defaultOperatorImage = "quay.io/rh-sdv-cloud/automotive-dev-operator:latest"
 )
 
-func (r *OperatorConfigReconciler) buildWebUIDeployment() *appsv1.Deployment {
+// buildWebUIContainers builds the container list for WebUI deployment, conditionally including oauth-proxy
+func (r *OperatorConfigReconciler) buildWebUIContainers(isOpenShift bool) []corev1.Container {
+	containers := []corev1.Container{
+		{
+			Name:            "webui",
+			Image:           defaultWebUIImage,
+			ImagePullPolicy: corev1.PullAlways,
+			Ports: []corev1.ContainerPort{
+				{
+					ContainerPort: 8080,
+					Name:          "http",
+				},
+			},
+			Resources: corev1.ResourceRequirements{
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("500m"),
+					corev1.ResourceMemory: resource.MustParse("512Mi"),
+				},
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("100m"),
+					corev1.ResourceMemory: resource.MustParse("128Mi"),
+				},
+			},
+			SecurityContext: &corev1.SecurityContext{
+				AllowPrivilegeEscalation: boolPtr(false),
+				Capabilities: &corev1.Capabilities{
+					Drop: []corev1.Capability{"ALL"},
+				},
+				ReadOnlyRootFilesystem: boolPtr(true),
+				RunAsNonRoot:           boolPtr(true),
+				RunAsUser:              int64Ptr(1001),
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{
+					Name:      "nginx-config",
+					MountPath: "/etc/nginx/nginx.conf",
+					SubPath:   "nginx.conf",
+				},
+				{
+					Name:      "nginx-cache",
+					MountPath: "/var/cache/nginx",
+				},
+				{
+					Name:      "nginx-run",
+					MountPath: "/var/run",
+				},
+			},
+		},
+	}
+
+	// Only add oauth-proxy on OpenShift
+	if isOpenShift {
+		containers = append(containers, corev1.Container{
+			Name:            "oauth-proxy",
+			Image:           "registry.redhat.io/openshift4/ose-oauth-proxy:latest",
+			ImagePullPolicy: corev1.PullIfNotPresent,
+			Args: []string{
+				"--provider=openshift",
+				"--http-address=:8081",
+				"--https-address=",
+				"--upstream=http://127.0.0.1:8080",
+				"--openshift-service-account=ado-controller-manager",
+				"--cookie-secret=$(COOKIE_SECRET)",
+				"--pass-user-bearer-token=true",
+				"--pass-access-token=true",
+				"--request-logging=true",
+				"--email-domain=*",
+				"--skip-provider-button=true",
+				"--upstream-timeout=0",
+			},
+			Env: []corev1.EnvVar{
+				{
+					Name: "COOKIE_SECRET",
+					ValueFrom: &corev1.EnvVarSource{
+						SecretKeyRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "ado-webui-oauth-proxy",
+							},
+							Key: "cookie-secret",
+						},
+					},
+				},
+			},
+			Ports: []corev1.ContainerPort{
+				{
+					ContainerPort: 8081,
+					Name:          "proxy-http",
+				},
+			},
+			LivenessProbe: &corev1.Probe{
+				ProbeHandler: corev1.ProbeHandler{
+					HTTPGet: &corev1.HTTPGetAction{
+						Path: "/oauth/healthz",
+						Port: intstr.FromString("proxy-http"),
+					},
+				},
+				InitialDelaySeconds: 30,
+				PeriodSeconds:       10,
+			},
+			ReadinessProbe: &corev1.Probe{
+				ProbeHandler: corev1.ProbeHandler{
+					HTTPGet: &corev1.HTTPGetAction{
+						Path: "/oauth/healthz",
+						Port: intstr.FromString("proxy-http"),
+					},
+				},
+				InitialDelaySeconds: 5,
+				PeriodSeconds:       5,
+			},
+			Resources: corev1.ResourceRequirements{
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("100m"),
+					corev1.ResourceMemory: resource.MustParse("128Mi"),
+				},
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("10m"),
+					corev1.ResourceMemory: resource.MustParse("32Mi"),
+				},
+			},
+			SecurityContext: &corev1.SecurityContext{
+				AllowPrivilegeEscalation: boolPtr(false),
+				Capabilities: &corev1.Capabilities{
+					Drop: []corev1.Capability{"ALL"},
+				},
+				ReadOnlyRootFilesystem: boolPtr(true),
+				RunAsNonRoot:           boolPtr(true),
+				RunAsUser:              int64Ptr(1001),
+			},
+		})
+	}
+
+	return containers
+}
+
+// buildBuildAPIContainers builds the container list for build-API deployment, conditionally including oauth-proxy
+func (r *OperatorConfigReconciler) buildBuildAPIContainers(isOpenShift bool) []corev1.Container {
+	containers := []corev1.Container{
+		{
+			Name:            "build-api",
+			Image:           "quay.io/rh-sdv-cloud/automotive-dev-operator:latest",
+			ImagePullPolicy: corev1.PullAlways,
+			Command:         []string{"/build-api"},
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("50m"),
+					corev1.ResourceMemory: resource.MustParse("64Mi"),
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("200m"),
+					corev1.ResourceMemory: resource.MustParse("512Mi"),
+				},
+			},
+			Env: []corev1.EnvVar{
+				{
+					Name: "BUILD_API_NAMESPACE",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.namespace",
+						},
+					},
+				},
+			},
+			Ports: []corev1.ContainerPort{
+				{
+					Name:          "http",
+					ContainerPort: 8080,
+					Protocol:      corev1.ProtocolTCP,
+				},
+			},
+			SecurityContext: &corev1.SecurityContext{
+				AllowPrivilegeEscalation: boolPtr(false),
+			},
+		},
+	}
+
+	// Only add oauth-proxy on OpenShift
+	if isOpenShift {
+		containers = append(containers, corev1.Container{
+			Name:            "oauth-proxy",
+			Image:           "registry.redhat.io/openshift4/ose-oauth-proxy:latest",
+			ImagePullPolicy: corev1.PullIfNotPresent,
+			Args: []string{
+				"--provider=openshift",
+				"--https-address=",
+				"--http-address=:8081",
+				"--upstream=http://localhost:8080",
+				"--openshift-service-account=ado-controller-manager",
+				"--cookie-secret=$(COOKIE_SECRET)",
+				"--cookie-secure=false",
+				"--pass-access-token=true",
+				"--pass-user-headers=true",
+				"--request-logging=true",
+				"--skip-auth-regex=^/healthz",
+				"--email-domain=*",
+				"--skip-provider-button=true",
+				"--upstream-timeout=0",
+			},
+			Env: []corev1.EnvVar{
+				{
+					Name: "COOKIE_SECRET",
+					ValueFrom: &corev1.EnvVarSource{
+						SecretKeyRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "ado-build-api-oauth-proxy",
+							},
+							Key: "cookie-secret",
+						},
+					},
+				},
+			},
+			Ports: []corev1.ContainerPort{
+				{
+					Name:          "proxy-http",
+					ContainerPort: 8081,
+					Protocol:      corev1.ProtocolTCP,
+				},
+			},
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("10m"),
+					corev1.ResourceMemory: resource.MustParse("32Mi"),
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("100m"),
+					corev1.ResourceMemory: resource.MustParse("128Mi"),
+				},
+			},
+			SecurityContext: &corev1.SecurityContext{
+				AllowPrivilegeEscalation: boolPtr(false),
+			},
+		})
+	}
+
+	return containers
+}
+
+func (r *OperatorConfigReconciler) buildWebUIDeployment(isOpenShift bool) *appsv1.Deployment {
 	replicas := int32(1)
 	labels := map[string]string{
 		"app.kubernetes.io/name":      "ado-webui",
@@ -67,130 +303,7 @@ func (r *OperatorConfigReconciler) buildWebUIDeployment() *appsv1.Deployment {
 							},
 						},
 					},
-					Containers: []corev1.Container{
-						{
-							Name:            "webui",
-							Image:           defaultWebUIImage,
-							ImagePullPolicy: corev1.PullAlways,
-							Ports: []corev1.ContainerPort{
-								{
-									ContainerPort: 8080,
-									Name:          "http",
-								},
-							},
-							Resources: corev1.ResourceRequirements{
-								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("500m"),
-									corev1.ResourceMemory: resource.MustParse("512Mi"),
-								},
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("100m"),
-									corev1.ResourceMemory: resource.MustParse("128Mi"),
-								},
-							},
-							SecurityContext: &corev1.SecurityContext{
-								AllowPrivilegeEscalation: boolPtr(false),
-								Capabilities: &corev1.Capabilities{
-									Drop: []corev1.Capability{"ALL"},
-								},
-								ReadOnlyRootFilesystem: boolPtr(true),
-								RunAsNonRoot:           boolPtr(true),
-								RunAsUser:              int64Ptr(1001),
-							},
-							VolumeMounts: []corev1.VolumeMount{
-								{
-									Name:      "nginx-config",
-									MountPath: "/etc/nginx/nginx.conf",
-									SubPath:   "nginx.conf",
-								},
-								{
-									Name:      "nginx-cache",
-									MountPath: "/var/cache/nginx",
-								},
-								{
-									Name:      "nginx-run",
-									MountPath: "/var/run",
-								},
-							},
-						},
-						{
-							Name:            "oauth-proxy",
-							Image:           "registry.redhat.io/openshift4/ose-oauth-proxy:latest",
-							ImagePullPolicy: corev1.PullIfNotPresent,
-							Args: []string{
-								"--provider=openshift",
-								"--http-address=:8081",
-								"--https-address=",
-								"--upstream=http://127.0.0.1:8080",
-								"--openshift-service-account=ado-controller-manager",
-								"--cookie-secret=$(COOKIE_SECRET)",
-								"--pass-user-bearer-token=true",
-								"--pass-access-token=true",
-								"--request-logging=true",
-								"--email-domain=*",
-								"--skip-provider-button=true",
-								"--upstream-timeout=0",
-							},
-							Env: []corev1.EnvVar{
-								{
-									Name: "COOKIE_SECRET",
-									ValueFrom: &corev1.EnvVarSource{
-										SecretKeyRef: &corev1.SecretKeySelector{
-											LocalObjectReference: corev1.LocalObjectReference{
-												Name: "ado-webui-oauth-proxy",
-											},
-											Key: "cookie-secret",
-										},
-									},
-								},
-							},
-							Ports: []corev1.ContainerPort{
-								{
-									ContainerPort: 8081,
-									Name:          "proxy-http",
-								},
-							},
-							LivenessProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/oauth/healthz",
-										Port: intstr.FromString("proxy-http"),
-									},
-								},
-								InitialDelaySeconds: 30,
-								PeriodSeconds:       10,
-							},
-							ReadinessProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/oauth/healthz",
-										Port: intstr.FromString("proxy-http"),
-									},
-								},
-								InitialDelaySeconds: 5,
-								PeriodSeconds:       5,
-							},
-							Resources: corev1.ResourceRequirements{
-								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("100m"),
-									corev1.ResourceMemory: resource.MustParse("128Mi"),
-								},
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("10m"),
-									corev1.ResourceMemory: resource.MustParse("32Mi"),
-								},
-							},
-							SecurityContext: &corev1.SecurityContext{
-								AllowPrivilegeEscalation: boolPtr(false),
-								Capabilities: &corev1.Capabilities{
-									Drop: []corev1.Capability{"ALL"},
-								},
-								ReadOnlyRootFilesystem: boolPtr(true),
-								RunAsNonRoot:           boolPtr(true),
-								RunAsUser:              int64Ptr(1001),
-							},
-						},
-					},
+					Containers: r.buildWebUIContainers(isOpenShift),
 					Volumes: []corev1.Volume{
 						{
 							Name: "nginx-config",
@@ -221,7 +334,16 @@ func (r *OperatorConfigReconciler) buildWebUIDeployment() *appsv1.Deployment {
 	}
 }
 
-func (r *OperatorConfigReconciler) buildWebUIService() *corev1.Service {
+func (r *OperatorConfigReconciler) buildWebUIService(isOpenShift bool) *corev1.Service {
+	// On OpenShift, use port 8081 targeting oauth-proxy
+	// On Kubernetes, use port 8080 targeting webui directly
+	port := int32(8080)
+	targetPort := "http"
+	if isOpenShift {
+		port = 8081
+		targetPort = "proxy-http"
+	}
+
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "ado-webui",
@@ -239,9 +361,9 @@ func (r *OperatorConfigReconciler) buildWebUIService() *corev1.Service {
 			Ports: []corev1.ServicePort{
 				{
 					Name:       "http",
-					Port:       8081,
+					Port:       port,
 					Protocol:   corev1.ProtocolTCP,
-					TargetPort: intstr.FromString("proxy-http"),
+					TargetPort: intstr.FromString(targetPort),
 				},
 			},
 		},
@@ -394,7 +516,7 @@ http {
 	}
 }
 
-func (r *OperatorConfigReconciler) buildBuildAPIDeployment() *appsv1.Deployment {
+func (r *OperatorConfigReconciler) buildBuildAPIDeployment(isOpenShift bool) *appsv1.Deployment {
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "ado-build-api",
@@ -443,105 +565,34 @@ func (r *OperatorConfigReconciler) buildBuildAPIDeployment() *appsv1.Deployment 
 							},
 						},
 					},
-					Containers: []corev1.Container{
-						{
-							Name:            "build-api",
-							Image:           "quay.io/rh-sdv-cloud/automotive-dev-operator:latest",
-							ImagePullPolicy: corev1.PullAlways,
-							Command:         []string{"/build-api"},
-							Resources: corev1.ResourceRequirements{
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("50m"),
-									corev1.ResourceMemory: resource.MustParse("64Mi"),
-								},
-								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("200m"),
-									corev1.ResourceMemory: resource.MustParse("512Mi"),
-								},
-							},
-							Env: []corev1.EnvVar{
-								{
-									Name: "BUILD_API_NAMESPACE",
-									ValueFrom: &corev1.EnvVarSource{
-										FieldRef: &corev1.ObjectFieldSelector{
-											FieldPath: "metadata.namespace",
-										},
-									},
-								},
-							},
-							Ports: []corev1.ContainerPort{
-								{
-									Name:          "http",
-									ContainerPort: 8080,
-									Protocol:      corev1.ProtocolTCP,
-								},
-							},
-							SecurityContext: &corev1.SecurityContext{
-								AllowPrivilegeEscalation: boolPtr(false),
-							},
-						},
-						{
-							Name:            "oauth-proxy",
-							Image:           "registry.redhat.io/openshift4/ose-oauth-proxy:latest",
-							ImagePullPolicy: corev1.PullIfNotPresent,
-							Args: []string{
-								"--provider=openshift",
-								"--https-address=",
-								"--http-address=:8081",
-								"--upstream=http://localhost:8080",
-								"--openshift-service-account=ado-controller-manager",
-								"--cookie-secret=$(COOKIE_SECRET)",
-								"--cookie-secure=false",
-								"--pass-access-token=true",
-								"--pass-user-headers=true",
-								"--request-logging=true",
-								"--skip-auth-regex=^/healthz",
-								"--email-domain=*",
-								"--skip-provider-button=true",
-								"--upstream-timeout=0",
-							},
-							Env: []corev1.EnvVar{
-								{
-									Name: "COOKIE_SECRET",
-									ValueFrom: &corev1.EnvVarSource{
-										SecretKeyRef: &corev1.SecretKeySelector{
-											LocalObjectReference: corev1.LocalObjectReference{
-												Name: "ado-build-api-oauth-proxy",
-											},
-											Key: "cookie-secret",
-										},
-									},
-								},
-							},
-							Ports: []corev1.ContainerPort{
-								{
-									Name:          "proxy-http",
-									ContainerPort: 8081,
-									Protocol:      corev1.ProtocolTCP,
-								},
-							},
-							Resources: corev1.ResourceRequirements{
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("10m"),
-									corev1.ResourceMemory: resource.MustParse("32Mi"),
-								},
-								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("100m"),
-									corev1.ResourceMemory: resource.MustParse("128Mi"),
-								},
-							},
-							SecurityContext: &corev1.SecurityContext{
-								AllowPrivilegeEscalation: boolPtr(false),
-							},
-						},
-					},
+					Containers: r.buildBuildAPIContainers(isOpenShift),
 				},
 			},
 		},
 	}
 }
 
-func (r *OperatorConfigReconciler) buildBuildAPIService() *corev1.Service {
+func (r *OperatorConfigReconciler) buildBuildAPIService(isOpenShift bool) *corev1.Service {
+	// Always expose port 8080 (direct access to build-api)
+	ports := []corev1.ServicePort{
+		{
+			Name:       "http",
+			Port:       8080,
+			TargetPort: intstr.FromInt(8080),
+			Protocol:   corev1.ProtocolTCP,
+		},
+	}
+
+	// On OpenShift, also expose port 8081 (oauth-proxy)
+	if isOpenShift {
+		ports = append(ports, corev1.ServicePort{
+			Name:       "proxy",
+			Port:       8081,
+			TargetPort: intstr.FromInt(8081),
+			Protocol:   corev1.ProtocolTCP,
+		})
+	}
+
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "ado-build-api",
@@ -557,20 +608,7 @@ func (r *OperatorConfigReconciler) buildBuildAPIService() *corev1.Service {
 				"app.kubernetes.io/name":      "automotive-dev-operator",
 				"app.kubernetes.io/component": "build-api",
 			},
-			Ports: []corev1.ServicePort{
-				{
-					Name:       "http",
-					Port:       8080,
-					TargetPort: intstr.FromInt(8080),
-					Protocol:   corev1.ProtocolTCP,
-				},
-				{
-					Name:       "proxy",
-					Port:       8081,
-					TargetPort: intstr.FromInt(8081),
-					Protocol:   corev1.ProtocolTCP,
-				},
-			},
+			Ports: ports,
 		},
 	}
 }
@@ -665,6 +703,7 @@ func (r *OperatorConfigReconciler) buildBuildAPIIngress() *networkingv1.Ingress 
 			Annotations: map[string]string{
 				"nginx.ingress.kubernetes.io/backend-protocol": "HTTP",
 				"nginx.ingress.kubernetes.io/ssl-redirect":     "true",
+				"nginx.ingress.kubernetes.io/rewrite-target":   "/",
 			},
 		},
 		Spec: networkingv1.IngressSpec{
@@ -675,7 +714,7 @@ func (r *OperatorConfigReconciler) buildBuildAPIIngress() *networkingv1.Ingress 
 						HTTP: &networkingv1.HTTPIngressRuleValue{
 							Paths: []networkingv1.HTTPIngressPath{
 								{
-									Path:     "/",
+									Path:     "/api",
 									PathType: &pathTypePrefix,
 									Backend: networkingv1.IngressBackend{
 										Service: &networkingv1.IngressServiceBackend{

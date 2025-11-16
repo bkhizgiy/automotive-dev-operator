@@ -25,11 +25,39 @@ const (
 	finalizerName     = "operatorconfig.automotive.sdv.cloud.redhat.com/finalizer"
 )
 
+// isNoMatchError checks if error is "no matches for kind" error (CRD doesn't exist)
+func isNoMatchError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := err.Error()
+	return errMsg == "no matches for kind \"Route\" in version \"route.openshift.io/v1\"" ||
+		errMsg == "no matches for kind \"Ingress\" in version \"networking.k8s.io/v1\""
+}
+
+// detectOpenShift checks if we're running on OpenShift by looking for OpenShift-specific APIs
+func (r *OperatorConfigReconciler) detectOpenShift(ctx context.Context) bool {
+	if r.IsOpenShift != nil {
+		return *r.IsOpenShift
+	}
+
+	route := &routev1.Route{}
+	route.Name = "test"
+	route.Namespace = "default"
+	err := r.Get(ctx, client.ObjectKey{Name: "test", Namespace: "default"}, route)
+
+	isOpenShift := !isNoMatchError(err)
+	r.IsOpenShift = &isOpenShift
+	r.Log.Info("Platform detected", "isOpenShift", isOpenShift)
+	return isOpenShift
+}
+
 // OperatorConfigReconciler reconciles an OperatorConfig object
 type OperatorConfigReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Log    logr.Logger
+	Scheme      *runtime.Scheme
+	Log         logr.Logger
+	IsOpenShift *bool
 }
 
 // +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=operatorconfigs,verbs=get;list;watch;create;update;patch;delete
@@ -41,6 +69,7 @@ type OperatorConfigReconciler struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=tekton.dev,resources=tasks;pipelines;pipelineruns,verbs=get;list;watch;create;update;patch;delete
 
 func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -218,7 +247,8 @@ func (r *OperatorConfigReconciler) deployWebUI(ctx context.Context, owner *autom
 
 	// Create/update deployment
 	r.Log.Info("Creating/updating webui deployment")
-	deployment := r.buildWebUIDeployment()
+	isOpenShift := r.detectOpenShift(ctx)
+	deployment := r.buildWebUIDeployment(isOpenShift)
 	if err := r.createOrUpdate(ctx, deployment, owner); err != nil {
 		r.Log.Error(err, "Failed to create/update webui deployment")
 		return fmt.Errorf("failed to create/update webui deployment: %w", err)
@@ -227,7 +257,7 @@ func (r *OperatorConfigReconciler) deployWebUI(ctx context.Context, owner *autom
 
 	// Create/update service
 	r.Log.Info("Creating/updating webui service")
-	service := r.buildWebUIService()
+	service := r.buildWebUIService(isOpenShift)
 	if err := r.createOrUpdate(ctx, service, owner); err != nil {
 		r.Log.Error(err, "Failed to create/update webui service")
 		return fmt.Errorf("failed to create/update webui service: %w", err)
@@ -254,7 +284,7 @@ func (r *OperatorConfigReconciler) deployWebUI(ctx context.Context, owner *autom
 
 	// Create/update build-api deployment
 	r.Log.Info("Creating/updating build-api deployment")
-	buildAPIDeployment := r.buildBuildAPIDeployment()
+	buildAPIDeployment := r.buildBuildAPIDeployment(isOpenShift)
 	if err := r.createOrUpdate(ctx, buildAPIDeployment, owner); err != nil {
 		r.Log.Error(err, "Failed to create/update build-api deployment")
 		return fmt.Errorf("failed to create/update build-api deployment: %w", err)
@@ -263,7 +293,7 @@ func (r *OperatorConfigReconciler) deployWebUI(ctx context.Context, owner *autom
 
 	// Create/update build-api service
 	r.Log.Info("Creating/updating build-api service")
-	buildAPIService := r.buildBuildAPIService()
+	buildAPIService := r.buildBuildAPIService(isOpenShift)
 	if err := r.createOrUpdate(ctx, buildAPIService, owner); err != nil {
 		r.Log.Error(err, "Failed to create/update build-api service")
 		return fmt.Errorf("failed to create/update build-api service: %w", err)
@@ -377,8 +407,8 @@ func (r *OperatorConfigReconciler) cleanupWebUI(ctx context.Context) error {
 	route := &routev1.Route{}
 	route.Name = "ado-webui"
 	route.Namespace = operatorNamespace
-	if err := r.Delete(ctx, route); err != nil && !errors.IsNotFound(err) {
-		return fmt.Errorf("failed to delete webui route: %w", err)
+	if err := r.Delete(ctx, route); err != nil && !errors.IsNotFound(err) && !isNoMatchError(err) {
+		r.Log.Error(err, "Failed to delete webui route (ignoring, expected on non-OpenShift clusters)")
 	}
 
 	// Delete ingress
@@ -413,12 +443,12 @@ func (r *OperatorConfigReconciler) cleanupWebUI(ctx context.Context) error {
 		return fmt.Errorf("failed to delete build-api service: %w", err)
 	}
 
-	// Delete build-api route
+	// Delete build-api route (OpenShift only - ignore errors on non-OpenShift clusters)
 	buildAPIRoute := &routev1.Route{}
 	buildAPIRoute.Name = "ado-build-api"
 	buildAPIRoute.Namespace = operatorNamespace
-	if err := r.Delete(ctx, buildAPIRoute); err != nil && !errors.IsNotFound(err) {
-		return fmt.Errorf("failed to delete build-api route: %w", err)
+	if err := r.Delete(ctx, buildAPIRoute); err != nil && !errors.IsNotFound(err) && !isNoMatchError(err) {
+		r.Log.Error(err, "Failed to delete build-api route (ignoring, expected on non-OpenShift clusters)")
 	}
 
 	// Delete build-api ingress

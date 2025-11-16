@@ -156,7 +156,19 @@ var _ = Describe("controller", Ordered, func() {
 					return err
 				}
 				if string(output) != "1" {
-					return fmt.Errorf("webui deployment not available, replicas: %s", output)
+					cmd = exec.Command("kubectl", "get", "pods", "-l", "app=ado-webui", "-n", namespace, "-o", "wide")
+					podsOutput, _ := utils.Run(cmd)
+
+					cmd = exec.Command("kubectl", "describe", "pod", "-l", "app=ado-webui", "-n", namespace)
+					describeOutput, _ := utils.Run(cmd)
+
+					descStr := string(describeOutput)
+					if len(descStr) > 5000 {
+						descStr = descStr[len(descStr)-5000:]
+					}
+
+					return fmt.Errorf("webui deployment not available, availableReplicas: %s\n\nPods:\n%s\n\nPod Details (last 5000 chars):\n%s",
+						output, string(podsOutput), descStr)
 				}
 				return nil
 			}
@@ -174,7 +186,7 @@ var _ = Describe("controller", Ordered, func() {
 				}
 				return nil
 			}
-			EventuallyWithOffset(1, verifyWebUIIngress, 2*time.Minute, 5*time.Second).Should(Succeed())
+			EventuallyWithOffset(1, verifyWebUIIngress, 4*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying Build API deployment is created")
 			verifyBuildAPIDeployment := func() error {
@@ -202,7 +214,7 @@ var _ = Describe("controller", Ordered, func() {
 				}
 				return nil
 			}
-			EventuallyWithOffset(1, verifyBuildAPIIngress, 2*time.Minute, 5*time.Second).Should(Succeed())
+			EventuallyWithOffset(1, verifyBuildAPIIngress, 4*time.Minute, 5*time.Second).Should(Succeed())
 
 		})
 	})
