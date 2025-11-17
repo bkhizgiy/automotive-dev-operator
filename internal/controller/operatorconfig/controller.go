@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	automotivev1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1"
+	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/tasks"
 )
 
@@ -76,7 +76,7 @@ func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	log := r.Log.WithValues("operatorconfig", req.NamespacedName)
 	log.Info("=== Reconciliation started ===")
 
-	config := &automotivev1.OperatorConfig{}
+	config := &automotivev1alpha1.OperatorConfig{}
 	if err := r.Get(ctx, req.NamespacedName, config); err != nil {
 		if errors.IsNotFound(err) {
 			log.Info("OperatorConfig not found, skipping reconciliation")
@@ -217,7 +217,7 @@ func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	return ctrl.Result{}, nil
 }
 
-func (r *OperatorConfigReconciler) deployWebUI(ctx context.Context, owner *automotivev1.OperatorConfig) error {
+func (r *OperatorConfigReconciler) deployWebUI(ctx context.Context, owner *automotivev1alpha1.OperatorConfig) error {
 	r.Log.Info("Starting WebUI deployment")
 
 	// Create cookie secrets for OAuth proxies
@@ -322,7 +322,7 @@ func (r *OperatorConfigReconciler) deployWebUI(ctx context.Context, owner *autom
 	return nil
 }
 
-func (r *OperatorConfigReconciler) ensureOAuthSecrets(ctx context.Context, owner *automotivev1.OperatorConfig) error {
+func (r *OperatorConfigReconciler) ensureOAuthSecrets(ctx context.Context, owner *automotivev1alpha1.OperatorConfig) error {
 	secrets := []string{"ado-webui-oauth-proxy", "ado-build-api-oauth-proxy"}
 
 	for _, secretName := range secrets {
@@ -473,7 +473,7 @@ func (r *OperatorConfigReconciler) cleanupWebUI(ctx context.Context) error {
 	return nil
 }
 
-func (r *OperatorConfigReconciler) createOrUpdate(ctx context.Context, obj client.Object, owner *automotivev1.OperatorConfig) error {
+func (r *OperatorConfigReconciler) createOrUpdate(ctx context.Context, obj client.Object, owner *automotivev1alpha1.OperatorConfig) error {
 	// Try to get the existing resource
 	key := client.ObjectKeyFromObject(obj)
 	existing := obj.DeepCopyObject().(client.Object)
@@ -492,7 +492,7 @@ func (r *OperatorConfigReconciler) createOrUpdate(ctx context.Context, obj clien
 	return r.Update(ctx, obj)
 }
 
-func (r *OperatorConfigReconciler) deployOSBuilds(ctx context.Context, config *automotivev1.OperatorConfig) error {
+func (r *OperatorConfigReconciler) deployOSBuilds(ctx context.Context, config *automotivev1alpha1.OperatorConfig) error {
 	r.Log.Info("Starting OSBuilds deployment")
 
 	// Convert OSBuildsConfig to BuildConfig for task generation
@@ -603,6 +603,6 @@ func (r *OperatorConfigReconciler) createOrUpdatePipeline(ctx context.Context, p
 
 func (r *OperatorConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&automotivev1.OperatorConfig{}).
+		For(&automotivev1alpha1.OperatorConfig{}).
 		Complete(r)
 }

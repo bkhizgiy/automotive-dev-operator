@@ -27,7 +27,7 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	automotivev1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1"
+	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	authnv1 "k8s.io/api/authentication/v1"
 )
 
@@ -224,7 +224,7 @@ func streamLogs(c *gin.Context, name string) {
 	ctx := c.Request.Context()
 	var podName string
 
-	ib := &automotivev1.ImageBuild{}
+	ib := &automotivev1alpha1.ImageBuild{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, ib); err != nil {
 		if k8serrors.IsNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
@@ -416,7 +416,7 @@ func streamLogsSSE(c *gin.Context, name string) {
 	ctx := c.Request.Context()
 	var podName string
 
-	ib := &automotivev1.ImageBuild{}
+	ib := &automotivev1alpha1.ImageBuild{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, ib); err != nil {
 		if k8serrors.IsNotFound(err) {
 			sendSSEEvent(c, "message", "", "ERROR: Build not found")
@@ -757,7 +757,7 @@ func createBuild(c *gin.Context) {
 
 	requestedBy := resolveRequester(c)
 
-	existing := &automotivev1.ImageBuild{}
+	existing := &automotivev1alpha1.ImageBuild{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: namespace}, existing); err == nil {
 		c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("ImageBuild %s already exists", req.Name)})
 		return
@@ -808,7 +808,7 @@ func createBuild(c *gin.Context) {
 
 	serveExpiryHours := int32(24)
 	{
-		operatorConfig := &automotivev1.OperatorConfig{}
+		operatorConfig := &automotivev1alpha1.OperatorConfig{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: "config", Namespace: namespace}, operatorConfig); err == nil {
 			if operatorConfig.Spec.OSBuilds != nil && operatorConfig.Spec.OSBuilds.ServeExpiryHours > 0 {
 				serveExpiryHours = operatorConfig.Spec.OSBuilds.ServeExpiryHours
@@ -826,7 +826,7 @@ func createBuild(c *gin.Context) {
 		envSecretRef = secretName
 	}
 
-	imageBuild := &automotivev1.ImageBuild{
+	imageBuild := &automotivev1alpha1.ImageBuild{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      req.Name,
 			Namespace: namespace,
@@ -835,7 +835,7 @@ func createBuild(c *gin.Context) {
 				"automotive.sdv.cloud.redhat.com/requested-by": requestedBy,
 			},
 		},
-		Spec: automotivev1.ImageBuildSpec{
+		Spec: automotivev1alpha1.ImageBuildSpec{
 			Distro:                 string(req.Distro),
 			Target:                 string(req.Target),
 			Architecture:           string(req.Architecture),
@@ -885,7 +885,7 @@ func listBuilds(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	list := &automotivev1.ImageBuildList{}
+	list := &automotivev1alpha1.ImageBuildList{}
 	if err := k8sClient.List(ctx, list, client.InNamespace(namespace)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error listing builds: %v", err)})
 		return
@@ -922,7 +922,7 @@ func getBuild(c *gin.Context, name string) {
 	}
 
 	ctx := c.Request.Context()
-	build := &automotivev1.ImageBuild{}
+	build := &automotivev1alpha1.ImageBuild{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, build); err != nil {
 		if k8serrors.IsNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
@@ -964,7 +964,7 @@ func getBuildTemplate(c *gin.Context, name string) {
 	}
 
 	ctx := c.Request.Context()
-	build := &automotivev1.ImageBuild{}
+	build := &automotivev1alpha1.ImageBuild{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, build); err != nil {
 		if k8serrors.IsNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
@@ -1047,7 +1047,7 @@ func uploadFiles(c *gin.Context, name string) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
 		return
 	}
-	build := &automotivev1.ImageBuild{}
+	build := &automotivev1alpha1.ImageBuild{}
 	if err := k8sClient.Get(c.Request.Context(), types.NamespacedName{Name: name, Namespace: namespace}, build); err != nil {
 		if k8serrors.IsNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
@@ -1164,7 +1164,7 @@ func (a *APIServer) listArtifacts(c *gin.Context, name string) {
 		return
 	}
 
-	build := &automotivev1.ImageBuild{}
+	build := &automotivev1alpha1.ImageBuild{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, build); err != nil {
 		if k8serrors.IsNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
@@ -1300,7 +1300,7 @@ func (a *APIServer) streamArtifactPart(c *gin.Context, name, file string) {
 		return
 	}
 
-	build := &automotivev1.ImageBuild{}
+	build := &automotivev1alpha1.ImageBuild{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, build); err != nil {
 		if k8serrors.IsNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
@@ -1445,7 +1445,7 @@ func (a *APIServer) streamDefaultArtifact(c *gin.Context, name string) {
 		return
 	}
 
-	build := &automotivev1.ImageBuild{}
+	build := &automotivev1alpha1.ImageBuild{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, build); err != nil {
 		if k8serrors.IsNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
@@ -1649,7 +1649,7 @@ func (a *APIServer) streamArtifactByFilename(c *gin.Context, name, filename stri
 		return
 	}
 
-	build := &automotivev1.ImageBuild{}
+	build := &automotivev1alpha1.ImageBuild{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, build); err != nil {
 		if k8serrors.IsNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
@@ -1860,13 +1860,13 @@ func copyFileToPod(config *rest.Config, namespace, podName, containerName, local
 	return executor.StreamWithContext(context.Background(), remotecommand.StreamOptions{Stdin: pr, Stdout: io.Discard, Stderr: io.Discard})
 }
 
-func setOwnerRef(ctx context.Context, c client.Client, namespace, configMapName string, owner *automotivev1.ImageBuild) error {
+func setOwnerRef(ctx context.Context, c client.Client, namespace, configMapName string, owner *automotivev1alpha1.ImageBuild) error {
 	cm := &corev1.ConfigMap{}
 	if err := c.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: namespace}, cm); err != nil {
 		return err
 	}
 	cm.OwnerReferences = []metav1.OwnerReference{
-		*metav1.NewControllerRef(owner, automotivev1.GroupVersion.WithKind("ImageBuild")),
+		*metav1.NewControllerRef(owner, automotivev1alpha1.GroupVersion.WithKind("ImageBuild")),
 	}
 	return c.Update(ctx, cm)
 }
@@ -1912,7 +1912,7 @@ func getClientFromRequest(c *gin.Context) (client.Client, error) {
 	}
 
 	scheme := runtime.NewScheme()
-	if err := automotivev1.AddToScheme(scheme); err != nil {
+	if err := automotivev1alpha1.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("failed to add automotive scheme: %w", err)
 	}
 	if err := corev1.AddToScheme(scheme); err != nil {

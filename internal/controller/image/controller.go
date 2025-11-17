@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	automotivev1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1"
+	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -30,7 +30,7 @@ type ImageReconciler struct {
 func (r *ImageReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log.WithValues("image", req.NamespacedName)
 
-	image := &automotivev1.Image{}
+	image := &automotivev1alpha1.Image{}
 	if err := r.Get(ctx, req.NamespacedName, image); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -51,14 +51,14 @@ func (r *ImageReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 }
 
-func (r *ImageReconciler) handleInitialState(ctx context.Context, image *automotivev1.Image) (ctrl.Result, error) {
+func (r *ImageReconciler) handleInitialState(ctx context.Context, image *automotivev1alpha1.Image) (ctrl.Result, error) {
 	if err := r.updateStatus(ctx, image, "Verifying", "Starting image location verification"); err != nil {
 		return ctrl.Result{RequeueAfter: time.Second * 5}, nil
 	}
 	return ctrl.Result{Requeue: true}, nil
 }
 
-func (r *ImageReconciler) handleVerifyingState(ctx context.Context, image *automotivev1.Image) (ctrl.Result, error) {
+func (r *ImageReconciler) handleVerifyingState(ctx context.Context, image *automotivev1alpha1.Image) (ctrl.Result, error) {
 	log := r.Log.WithValues("image", types.NamespacedName{Name: image.Name, Namespace: image.Namespace})
 
 	// Verify the image location is accessible
@@ -88,7 +88,7 @@ func (r *ImageReconciler) handleVerifyingState(ctx context.Context, image *autom
 	return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 }
 
-func (r *ImageReconciler) handleAvailableState(ctx context.Context, image *automotivev1.Image) (ctrl.Result, error) {
+func (r *ImageReconciler) handleAvailableState(ctx context.Context, image *automotivev1alpha1.Image) (ctrl.Result, error) {
 	// Periodically re-verify the image is still accessible
 	accessible, err := r.verifyImageLocation(ctx, image)
 	if err != nil || !accessible {
@@ -106,7 +106,7 @@ func (r *ImageReconciler) handleAvailableState(ctx context.Context, image *autom
 	return ctrl.Result{RequeueAfter: time.Hour * 1}, nil // Recheck every hour
 }
 
-func (r *ImageReconciler) handleUnavailableState(ctx context.Context, image *automotivev1.Image) (ctrl.Result, error) {
+func (r *ImageReconciler) handleUnavailableState(ctx context.Context, image *automotivev1alpha1.Image) (ctrl.Result, error) {
 	// Try to verify again after some time
 	if err := r.updateStatus(ctx, image, "Verifying", "Retrying image location verification"); err != nil {
 		return ctrl.Result{RequeueAfter: time.Second * 5}, nil
@@ -114,7 +114,7 @@ func (r *ImageReconciler) handleUnavailableState(ctx context.Context, image *aut
 	return ctrl.Result{Requeue: true}, nil
 }
 
-func (r *ImageReconciler) verifyImageLocation(ctx context.Context, image *automotivev1.Image) (bool, error) {
+func (r *ImageReconciler) verifyImageLocation(ctx context.Context, image *automotivev1alpha1.Image) (bool, error) {
 	switch image.Spec.Location.Type {
 	case "registry":
 		return r.verifyRegistryLocation(ctx, image)
@@ -123,7 +123,7 @@ func (r *ImageReconciler) verifyImageLocation(ctx context.Context, image *automo
 	}
 }
 
-func (r *ImageReconciler) verifyRegistryLocation(ctx context.Context, image *automotivev1.Image) (bool, error) {
+func (r *ImageReconciler) verifyRegistryLocation(ctx context.Context, image *automotivev1alpha1.Image) (bool, error) {
 	if image.Spec.Location.Registry == nil {
 		return false, fmt.Errorf("registry location configuration is nil")
 	}
@@ -135,8 +135,8 @@ func (r *ImageReconciler) verifyRegistryLocation(ctx context.Context, image *aut
 	return true, nil // Placeholder - assume accessible for now
 }
 
-func (r *ImageReconciler) updateStatus(ctx context.Context, image *automotivev1.Image, phase, message string) error {
-	fresh := &automotivev1.Image{}
+func (r *ImageReconciler) updateStatus(ctx context.Context, image *automotivev1alpha1.Image, phase, message string) error {
+	fresh := &automotivev1alpha1.Image{}
 	if err := r.Get(ctx, types.NamespacedName{
 		Name:      image.Name,
 		Namespace: image.Namespace,
@@ -182,8 +182,8 @@ func (r *ImageReconciler) updateStatus(ctx context.Context, image *automotivev1.
 	return r.Status().Patch(ctx, fresh, patch)
 }
 
-func (r *ImageReconciler) updateLastVerified(ctx context.Context, image *automotivev1.Image) error {
-	fresh := &automotivev1.Image{}
+func (r *ImageReconciler) updateLastVerified(ctx context.Context, image *automotivev1alpha1.Image) error {
+	fresh := &automotivev1alpha1.Image{}
 	if err := r.Get(ctx, types.NamespacedName{
 		Name:      image.Name,
 		Namespace: image.Namespace,
@@ -201,6 +201,6 @@ func (r *ImageReconciler) updateLastVerified(ctx context.Context, image *automot
 // SetupWithManager sets up the controller with the Manager.
 func (r *ImageReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&automotivev1.Image{}).
+		For(&automotivev1alpha1.Image{}).
 		Complete(r)
 }

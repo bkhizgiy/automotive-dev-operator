@@ -1,4 +1,4 @@
-apiVersion: automotive.sdv.cloud.redhat.com/v1
+apiVersion: automotive.sdv.cloud.redhat.com/v1alpha1
 kind: Image
 metadata:
   labels:
@@ -35,7 +35,7 @@ spec:
       "automotive.io/arch": "aarch64"
       "automotive.io/type": "installer"
 ---
-apiVersion: automotive.sdv.cloud.redhat.com/v1
+apiVersion: automotive.sdv.cloud.redhat.com/v1alpha1
 kind: Image
 metadata:
   labels:

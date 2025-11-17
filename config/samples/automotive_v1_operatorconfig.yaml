@@ -1,4 +1,4 @@
-apiVersion: automotive.sdv.cloud.redhat.com/v1
+apiVersion: automotive.sdv.cloud.redhat.com/v1alpha1
 kind: OperatorConfig
 metadata:
   labels:
@@ -7,8 +7,31 @@ metadata:
   name: automotive-dev
   namespace: automotive-dev-operator-system
 spec:
+  # WebUI determines if the web UI should be deployed
   webUI: true
+
+  # OSBuilds configuration for OS build operations
   osBuilds:
+    # Enable Tekton tasks for OS builds
     enabled: true
+
+    # Size for persistent volume claims created for build workspaces
+    # Default: "8Gi"
     pvcSize: "8Gi"
+
+    # How long to serve build artifacts before automatic cleanup (in hours)
+    # Default: 24
     serveExpiryHours: 24
+
+    # Optional: Use memory-backed volumes for faster builds
+    # Requires memoryVolumeSize to be set if enabled
+    # useMemoryVolumes: false
+
+    # Optional: Size limit for memory-backed volumes (only if useMemoryVolumes is true)
+    # Example: "2Gi"
+    # memoryVolumeSize: "2Gi"
+
+    # Optional: Runtime class to use for build pods
+    # Useful for kata containers or other alternative runtimes
+    # More info: https://kubernetes.io/docs/concepts/containers/runtime-class/
+    # runtimeClassName: "kata"

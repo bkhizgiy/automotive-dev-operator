@@ -1,4 +1,4 @@
-apiVersion: automotive.sdv.cloud.redhat.com/v1
+apiVersion: automotive.sdv.cloud.redhat.com/v1alpha1
 kind: ImageBuild
 metadata:
   labels:

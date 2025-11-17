@@ -5,25 +5,7 @@ metadata:
     alm-examples: |-
       [
         {
-          "apiVersion": "automotive.sdv.cloud.redhat.com/v1",
-          "kind": "AutomotiveDevConfig",
-          "metadata": {
-            "labels": {
-              "app.kubernetes.io/managed-by": "kustomize",
-              "app.kubernetes.io/name": "automotive-dev-operator",
-              "environment": "development"
-            },
-            "name": "config",
-            "namespace": "automotive-dev-operator-system"
-          },
-          "spec": {
-            "buildConfig": {
-              "pvcSize": "8Gi"
-            }
-          }
-        },
-        {
-          "apiVersion": "automotive.sdv.cloud.redhat.com/v1",
+          "apiVersion": "automotive.sdv.cloud.redhat.com/v1alpha1",
           "kind": "ImageBuild",
           "metadata": {
             "annotations": {
@@ -48,16 +30,22 @@ metadata:
           }
         },
         {
-          "apiVersion": "automotive.sdv.cloud.redhat.com/v1",
+          "apiVersion": "automotive.sdv.cloud.redhat.com/v1alpha1",
           "kind": "OperatorConfig",
           "metadata": {
             "labels": {
               "app.kubernetes.io/managed-by": "kustomize",
               "app.kubernetes.io/name": "automotive-dev-operator"
             },
-            "name": "config"
+            "name": "automotive-dev",
+            "namespace": "automotive-dev-operator-system"
           },
           "spec": {
+            "osBuilds": {
+              "enabled": true,
+              "pvcSize": "8Gi",
+              "serveExpiryHours": 24
+            },
             "webUI": true
           }
         }
@@ -65,9 +53,9 @@ metadata:
     capabilities: Basic Install
     categories: Developer Tools
     containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
-    createdAt: "2025-11-09T10:38:33Z"
+    createdAt: "2025-11-17T10:26:25Z"
     operatorframework.io/suggested-namespace: automotive-dev-operator-system
-    operators.operatorframework.io/builder: operator-sdk-v1.39.1
+    operators.operatorframework.io/builder: operator-sdk-v1.42.0
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
     repository: https://github.com/centos-automotive-suite/automotive-dev-operator
     support: Red Hat
@@ -77,27 +65,21 @@ spec:
   apiservicedefinitions: {}
   customresourcedefinitions:
     owned:
-    - description: AutomotiveDevConfig is the Schema for the automotivedevconfigs
-        API
-      displayName: Automotive Dev Config
-      kind: AutomotiveDevConfig
-      name: automotivedevconfigs.automotive.sdv.cloud.redhat.com
-      version: v1
     - description: ImageBuild is the Schema for the imagebuilds API
       displayName: Image Build
       kind: ImageBuild
       name: imagebuilds.automotive.sdv.cloud.redhat.com
-      version: v1
+      version: v1alpha1
     - description: Image is the Schema for the images API
       displayName: Image
       kind: Image
       name: images.automotive.sdv.cloud.redhat.com
-      version: v1
+      version: v1alpha1
     - description: OperatorConfig is the Schema for the operatorconfigs API
       displayName: Operator Config
       kind: OperatorConfig
       name: operatorconfigs.automotive.sdv.cloud.redhat.com
-      version: v1
+      version: v1alpha1
   description: CentOS Automotive Suite
   displayName: CentOS Automotive Suite
   icon:
@@ -160,7 +142,6 @@ spec:
         - apiGroups:
           - automotive.sdv.cloud.redhat.com
           resources:
-          - automotivedevconfigs
           - imagebuilds
           - images
           - operatorconfigs
@@ -175,7 +156,6 @@ spec:
         - apiGroups:
           - automotive.sdv.cloud.redhat.com
           resources:
-          - automotivedevconfigs/finalizers
           - imagebuilds/finalizers
           - images/finalizers
           - operatorconfigs/finalizers
@@ -184,7 +164,6 @@ spec:
         - apiGroups:
           - automotive.sdv.cloud.redhat.com
           resources:
-          - automotivedevconfigs/status
           - imagebuilds/status
           - images/status
           - operatorconfigs/status
@@ -192,6 +171,18 @@ spec:
           - get
           - patch
           - update
+        - apiGroups:
+          - networking.k8s.io
+          resources:
+          - ingresses
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
         - apiGroups:
           - rbac.authorization.k8s.io
           resources:
@@ -293,7 +284,7 @@ spec:
                     fieldRef:
                       fieldPath: metadata.namespace
                 image: default-route-openshift-image-registry.apps.automotive1.ocp.automotive.sig.centos.org/automotive-dev-operator-system/automotive-dev-operator:latest
-                imagePullPolicy: Always
+                imagePullPolicy: IfNotPresent
                 livenessProbe:
                   httpGet:
                     path: /healthz
@@ -331,7 +322,7 @@ spec:
                     fieldRef:
                       fieldPath: metadata.namespace
                 image: default-route-openshift-image-registry.apps.automotive1.ocp.automotive.sig.centos.org/automotive-dev-operator-system/automotive-dev-operator:latest
-                imagePullPolicy: Always
+                imagePullPolicy: IfNotPresent
                 name: init-oauth-secrets
                 resources:
                   limits:

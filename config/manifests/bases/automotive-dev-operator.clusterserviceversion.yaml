@@ -6,29 +6,6 @@ metadata:
       [
         {
           "apiVersion": "automotive.sdv.cloud.redhat.com/v1",
-          "kind": "AutomotiveDevConfig",
-          "metadata": {
-            "labels": {
-              "app.kubernetes.io/managed-by": "kustomize",
-              "app.kubernetes.io/name": "automotive-dev-operator",
-              "environment": "development"
-            },
-            "name": "automotive-dev",
-            "namespace": "automotive-dev-operator-system"
-          },
-          "spec": {
-            "buildConfig": {
-              "pvcSize": "8Gi"
-            }
-          },
-          "status": {
-            "phase": "Ready",
-            "message": "AutomotiveDevConfig environment is ready",
-            "lastUpdated": "2024-01-15T10:30:00Z"
-          }
-        },
-        {
-          "apiVersion": "automotive.sdv.cloud.redhat.com/v1",
           "kind": "ImageBuild",
           "metadata": {
             "annotations": {
@@ -105,12 +82,6 @@ spec:
   apiservicedefinitions: {}
   customresourcedefinitions:
     owned:
-    - description: AutomotiveDevConfig is the Schema for the automotivedevconfigs
-        API
-      displayName: Automotive Dev Config
-      kind: AutomotiveDevConfig
-      name: automotivedevconfigs.automotive.sdv.cloud.redhat.com
-      version: v1
     - description: ImageBuild is the Schema for the imagebuilds API
       displayName: Image Build
       kind: ImageBuild
@@ -126,6 +97,21 @@ spec:
       kind: OperatorConfig
       name: operatorconfigs.automotive.sdv.cloud.redhat.com
       version: v1
+    - description: ImageBuild is the Schema for the imagebuilds API
+      displayName: Image Build
+      kind: ImageBuild
+      name: imagebuilds.automotive.sdv.cloud.redhat.com
+      version: v1alpha1
+    - description: Image is the Schema for the images API
+      displayName: Image
+      kind: Image
+      name: images.automotive.sdv.cloud.redhat.com
+      version: v1alpha1
+    - description: OperatorConfig is the Schema for the operatorconfigs API
+      displayName: Operator Config
+      kind: OperatorConfig
+      name: operatorconfigs.automotive.sdv.cloud.redhat.com
+      version: v1alpha1
   description: CentOS Automotive Suite
   displayName: CentOS Automotive Suite
   icon:

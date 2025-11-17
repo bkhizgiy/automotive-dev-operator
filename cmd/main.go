@@ -37,7 +37,7 @@ import (
 	securityv1 "github.com/openshift/api/security/v1"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 
-	automotivev1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1"
+	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/image"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/imagebuild"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/operatorconfig"
@@ -52,7 +52,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
-	utilruntime.Must(automotivev1.AddToScheme(scheme))
+	utilruntime.Must(automotivev1alpha1.AddToScheme(scheme))
 	utilruntime.Must(securityv1.AddToScheme(scheme))
 	utilruntime.Must(tektonv1.AddToScheme(scheme))
 	utilruntime.Must(routev1.Install(scheme))

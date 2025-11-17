@@ -18,17 +18,8 @@ resources:
   domain: sdv.cloud.redhat.com
   group: automotive
   kind: ImageBuild
-  path: github.com/centos-automotive-suite/automotive-dev-operator/api/v1
-  version: v1
-- api:
-    crdVersion: v1
-    namespaced: true
-  controller: true
-  domain: sdv.cloud.redhat.com
-  group: automotive
-  kind: AutomotiveDevConfig
-  path: github.com/centos-automotive-suite/automotive-dev-operator/api/v1
-  version: v1
+  path: github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1
+  version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
@@ -36,8 +27,8 @@ resources:
   domain: sdv.cloud.redhat.com
   group: automotive
   kind: Image
-  path: github.com/centos-automotive-suite/automotive-dev-operator/api/v1
-  version: v1
+  path: github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1
+  version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
@@ -45,6 +36,6 @@ resources:
   domain: sdv.cloud.redhat.com
   group: automotive
   kind: OperatorConfig
-  path: github.com/centos-automotive-suite/automotive-dev-operator/api/v1
-  version: v1
+  path: github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1
+  version: v1alpha1
 version: "3"

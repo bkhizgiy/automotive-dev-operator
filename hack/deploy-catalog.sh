@@ -1,6 +1,22 @@
 #!/bin/bash
 set -e
 
+# Parse command line options
+UNINSTALL=false
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --uninstall)
+            UNINSTALL=true
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [--uninstall]"
+            exit 1
+            ;;
+    esac
+done
+
 # Configuration
 VERSION=${VERSION:-0.0.1}
 NAMESPACE=${NAMESPACE:-automotive-dev-operator-system}
@@ -36,6 +52,35 @@ OPERATOR_IMG="${REGISTRY}/${NAMESPACE}/automotive-dev-operator:latest"
 BUNDLE_IMG="${REGISTRY}/${CATALOG_NAMESPACE}/automotive-dev-operator-bundle:v${VERSION}"
 CATALOG_IMG="${REGISTRY}/${CATALOG_NAMESPACE}/automotive-dev-operator-catalog:v${VERSION}"
 CONTAINER_TOOL=${CONTAINER_TOOL:-podman}
+
+uninstall_operator() {
+    echo "=========================================="
+    echo "Uninstalling existing operator"
+    echo "=========================================="
+
+    echo "Checking for existing subscription..."
+    if oc get subscription -n ${NAMESPACE} 2>/dev/null | grep -q automotive-dev-operator; then
+        echo "Deleting subscription..."
+        oc delete subscription automotive-dev-operator -n ${NAMESPACE} --ignore-not-found=true
+    fi
+
+    echo "Checking for existing CSVs..."
+    CSVS=$(oc get csv -n ${NAMESPACE} -o name 2>/dev/null | grep automotive-dev-operator || true)
+    if [ -n "$CSVS" ]; then
+        echo "Deleting CSVs..."
+        echo "$CSVS" | xargs -r oc delete -n ${NAMESPACE}
+    fi
+
+    echo "Waiting for operator pods to terminate..."
+    oc wait --for=delete pod -l control-plane=controller-manager -n ${NAMESPACE} --timeout=60s 2>/dev/null || true
+
+    echo "Operator uninstall complete."
+    echo ""
+}
+
+if [ "$UNINSTALL" = true ]; then
+    uninstall_operator
+fi
 
 echo "=========================================="
 echo "Building and Deploying Operator Catalog"
@@ -77,6 +122,13 @@ make bundle-build BUNDLE_IMG=${BUNDLE_IMG}
 echo ""
 echo "Pushing bundle image to OpenShift registry..."
 ${CONTAINER_TOOL} push ${BUNDLE_IMG} --tls-verify=false
+
+echo ""
+echo "Ensuring opm is available..."
+if [ ! -f "./bin/opm" ]; then
+    echo "opm not found, downloading..."
+    make opm
+fi
 
 echo ""
 echo "Regenerating catalog..."
@@ -127,4 +179,3 @@ echo ""
 echo "To view the catalog pods:"
 echo "  oc get pods -n openshift-marketplace | grep automotive-dev-operator"
 echo ""
-

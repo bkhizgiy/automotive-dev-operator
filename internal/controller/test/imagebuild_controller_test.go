@@ -28,7 +28,7 @@ import (
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/imagebuild"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	automotivev1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1"
+	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 )
 
 var _ = Describe("ImageBuild Controller", func() {
@@ -41,13 +41,13 @@ var _ = Describe("ImageBuild Controller", func() {
 			Name:      resourceName,
 			Namespace: "default", // TODO(user):Modify as needed
 		}
-		ib := &automotivev1.ImageBuild{}
+		ib := &automotivev1alpha1.ImageBuild{}
 
 		BeforeEach(func() {
 			By("creating the custom resource for the Kind ImageBuild")
 			err := k8sClient.Get(ctx, typeNamespacedName, ib)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &automotivev1.ImageBuild{
+				resource := &automotivev1alpha1.ImageBuild{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
@@ -60,7 +60,7 @@ var _ = Describe("ImageBuild Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &automotivev1.ImageBuild{}
+			resource := &automotivev1alpha1.ImageBuild{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 

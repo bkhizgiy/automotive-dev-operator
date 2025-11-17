@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	automotivev1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1"
+	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/tasks"
 	"github.com/go-logr/logr"
 	routev1 "github.com/openshift/api/route/v1"
@@ -57,7 +57,7 @@ type ImageBuildReconciler struct {
 func (r *ImageBuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log.WithValues("imagebuild", req.NamespacedName)
 
-	imageBuild := &automotivev1.ImageBuild{}
+	imageBuild := &automotivev1alpha1.ImageBuild{}
 	if err := r.Get(ctx, req.NamespacedName, imageBuild); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -79,7 +79,7 @@ func (r *ImageBuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 }
 
-func (r *ImageBuildReconciler) handleInitialState(ctx context.Context, imageBuild *automotivev1.ImageBuild) (ctrl.Result, error) {
+func (r *ImageBuildReconciler) handleInitialState(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) (ctrl.Result, error) {
 	if imageBuild.Spec.InputFilesServer {
 		if err := r.createUploadPod(ctx, imageBuild); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to create upload server: %w", err)
@@ -96,7 +96,7 @@ func (r *ImageBuildReconciler) handleInitialState(ctx context.Context, imageBuil
 	return ctrl.Result{Requeue: true}, nil
 }
 
-func (r *ImageBuildReconciler) handleUploadingState(ctx context.Context, imageBuild *automotivev1.ImageBuild) (ctrl.Result, error) {
+func (r *ImageBuildReconciler) handleUploadingState(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) (ctrl.Result, error) {
 	uploadsComplete := imageBuild.Annotations != nil &&
 		imageBuild.Annotations["automotive.sdv.cloud.redhat.com/uploads-complete"] == "true"
 
@@ -114,7 +114,7 @@ func (r *ImageBuildReconciler) handleUploadingState(ctx context.Context, imageBu
 	return ctrl.Result{Requeue: true}, nil
 }
 
-func (r *ImageBuildReconciler) handleBuildingState(ctx context.Context, imageBuild *automotivev1.ImageBuild) (ctrl.Result, error) {
+func (r *ImageBuildReconciler) handleBuildingState(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) (ctrl.Result, error) {
 	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
 
 	if imageBuild.Status.TaskRunName != "" {
@@ -134,7 +134,7 @@ func (r *ImageBuildReconciler) handleBuildingState(ctx context.Context, imageBui
 		if tr.DeletionTimestamp == nil {
 			log.Info("Found existing TaskRun for this ImageBuild", "taskRun", tr.Name)
 
-			latestImageBuild := &automotivev1.ImageBuild{}
+			latestImageBuild := &automotivev1alpha1.ImageBuild{}
 			if err := r.Get(ctx, types.NamespacedName{
 				Name:      imageBuild.Name,
 				Namespace: imageBuild.Namespace,
@@ -158,7 +158,7 @@ func (r *ImageBuildReconciler) handleBuildingState(ctx context.Context, imageBui
 	return r.startNewBuild(ctx, imageBuild)
 }
 
-func (r *ImageBuildReconciler) handleCompletedState(ctx context.Context, imageBuild *automotivev1.ImageBuild) (ctrl.Result, error) {
+func (r *ImageBuildReconciler) handleCompletedState(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) (ctrl.Result, error) {
 	if !imageBuild.Spec.ServeArtifact {
 		return ctrl.Result{}, nil
 	}
@@ -204,7 +204,7 @@ func (r *ImageBuildReconciler) handleCompletedState(ctx context.Context, imageBu
 		log.Error(err, "failed to delete nginx ConfigMap", "configMap", cmName)
 	}
 
-	fresh := &automotivev1.ImageBuild{}
+	fresh := &automotivev1alpha1.ImageBuild{}
 	if err := r.Get(ctx, types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}, fresh); err == nil {
 		patch := client.MergeFrom(fresh.DeepCopy())
 		fresh.Status.ArtifactURL = ""
@@ -219,7 +219,7 @@ func (r *ImageBuildReconciler) handleCompletedState(ctx context.Context, imageBu
 	return ctrl.Result{}, nil
 }
 
-func (r *ImageBuildReconciler) checkBuildProgress(ctx context.Context, imageBuild *automotivev1.ImageBuild) (ctrl.Result, error) {
+func (r *ImageBuildReconciler) checkBuildProgress(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) (ctrl.Result, error) {
 	taskRun := &tektonv1.TaskRun{}
 	err := r.Get(ctx, types.NamespacedName{
 		Name:      imageBuild.Status.TaskRunName,
@@ -258,7 +258,7 @@ func (r *ImageBuildReconciler) checkBuildProgress(ctx context.Context, imageBuil
 			}
 		}
 
-		fresh := &automotivev1.ImageBuild{}
+		fresh := &automotivev1alpha1.ImageBuild{}
 		if err := r.Get(ctx, types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}, fresh); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -294,14 +294,14 @@ func (r *ImageBuildReconciler) checkBuildProgress(ctx context.Context, imageBuil
 	return ctrl.Result{}, nil
 }
 
-func (r *ImageBuildReconciler) startNewBuild(ctx context.Context, imageBuild *automotivev1.ImageBuild) (ctrl.Result, error) {
+func (r *ImageBuildReconciler) startNewBuild(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) (ctrl.Result, error) {
 	pvcName, err := r.getOrCreateWorkspacePVC(ctx, imageBuild)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to get or create workspace PVC: %w", err)
 	}
 
 	if imageBuild.Status.PVCName != pvcName {
-		fresh := &automotivev1.ImageBuild{}
+		fresh := &automotivev1alpha1.ImageBuild{}
 		if err := r.Get(ctx, types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}, fresh); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to get fresh ImageBuild: %w", err)
 		}
@@ -321,12 +321,12 @@ func (r *ImageBuildReconciler) startNewBuild(ctx context.Context, imageBuild *au
 	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 }
 
-func (r *ImageBuildReconciler) createBuildTaskRun(ctx context.Context, imageBuild *automotivev1.ImageBuild) error {
+func (r *ImageBuildReconciler) createBuildTaskRun(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) error {
 	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
 	log.Info("Creating TaskRun for ImageBuild")
 
 	// Fetch OperatorConfig from the operator namespace to get build configuration
-	operatorConfig := &automotivev1.OperatorConfig{}
+	operatorConfig := &automotivev1alpha1.OperatorConfig{}
 	err := r.Get(ctx, types.NamespacedName{Name: "config", Namespace: OperatorNamespace}, operatorConfig)
 	if err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to get OperatorConfig configuration: %w", err)
@@ -351,7 +351,7 @@ func (r *ImageBuildReconciler) createBuildTaskRun(ctx context.Context, imageBuil
 			return err
 		}
 
-		fresh := &automotivev1.ImageBuild{}
+		fresh := &automotivev1alpha1.ImageBuild{}
 		if err := r.Get(ctx, types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}, fresh); err != nil {
 			return fmt.Errorf("failed to get fresh ImageBuild: %w", err)
 		}
@@ -492,7 +492,7 @@ func (r *ImageBuildReconciler) createBuildTaskRun(ctx context.Context, imageBuil
 		return fmt.Errorf("failed to create TaskRun: %w", err)
 	}
 
-	fresh := &automotivev1.ImageBuild{}
+	fresh := &automotivev1alpha1.ImageBuild{}
 	if err := r.Get(ctx, types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}, fresh); err != nil {
 		return fmt.Errorf("failed to get fresh ImageBuild: %w", err)
 	}
@@ -506,10 +506,10 @@ func (r *ImageBuildReconciler) createBuildTaskRun(ctx context.Context, imageBuil
 	return nil
 }
 
-func (r *ImageBuildReconciler) updateArtifactInfo(ctx context.Context, imageBuild *automotivev1.ImageBuild) (ctrl.Result, error) {
+func (r *ImageBuildReconciler) updateArtifactInfo(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) (ctrl.Result, error) {
 	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
 
-	latestImageBuild := &automotivev1.ImageBuild{}
+	latestImageBuild := &automotivev1alpha1.ImageBuild{}
 	if err := r.Get(ctx, types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}, latestImageBuild); err != nil {
 		log.Error(err, "Failed to get latest ImageBuild")
 		return ctrl.Result{}, err
@@ -589,7 +589,7 @@ func (r *ImageBuildReconciler) updateArtifactInfo(ctx context.Context, imageBuil
 		artifactURL := fmt.Sprintf("%s://%s", scheme, route.Status.Ingress[0].Host)
 		log.Info("setting artifact URL in status", "url", artifactURL)
 
-		freshBuild := &automotivev1.ImageBuild{}
+		freshBuild := &automotivev1alpha1.ImageBuild{}
 		if err := r.Get(ctx, types.NamespacedName{Name: latestImageBuild.Name, Namespace: latestImageBuild.Namespace}, freshBuild); err != nil {
 			log.Error(err, "Failed to get fresh ImageBuild for URL update")
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
@@ -609,7 +609,7 @@ func (r *ImageBuildReconciler) updateArtifactInfo(ctx context.Context, imageBuil
 	return ctrl.Result{}, nil
 }
 
-func (r *ImageBuildReconciler) createArtifactPod(ctx context.Context, imageBuild *automotivev1.ImageBuild) error {
+func (r *ImageBuildReconciler) createArtifactPod(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) error {
 	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
 
 	podName := fmt.Sprintf("%s-artifact-pod", imageBuild.Name)
@@ -636,7 +636,7 @@ func (r *ImageBuildReconciler) createArtifactPod(ctx context.Context, imageBuild
 			return err
 		}
 
-		fresh := &automotivev1.ImageBuild{}
+		fresh := &automotivev1alpha1.ImageBuild{}
 		if err := r.Get(ctx, types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}, fresh); err != nil {
 			return fmt.Errorf("failed to get fresh ImageBuild: %w", err)
 		}
@@ -765,7 +765,7 @@ func (r *ImageBuildReconciler) createArtifactPod(ctx context.Context, imageBuild
 	return nil
 }
 
-func (r *ImageBuildReconciler) createNginxConfigMap(ctx context.Context, imageBuild *automotivev1.ImageBuild) (string, error) {
+func (r *ImageBuildReconciler) createNginxConfigMap(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) (string, error) {
 	configMapName := fmt.Sprintf("%s-nginx-config", imageBuild.Name)
 
 	configMap := &corev1.ConfigMap{
@@ -822,7 +822,7 @@ server {
 
 func (r *ImageBuildReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&automotivev1.ImageBuild{}).
+		For(&automotivev1alpha1.ImageBuild{}).
 		Owns(&tektonv1.TaskRun{}).
 		Owns(&corev1.Pod{}).
 		Complete(r)
@@ -841,7 +841,7 @@ func isTaskRunSuccessful(taskRun *tektonv1.TaskRun) bool {
 	return conditions[0].Status == corev1.ConditionTrue
 }
 
-func (r *ImageBuildReconciler) createUploadPod(ctx context.Context, imageBuild *automotivev1.ImageBuild) error {
+func (r *ImageBuildReconciler) createUploadPod(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) error {
 	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
 
 	podName := fmt.Sprintf("%s-upload-pod", imageBuild.Name)
@@ -866,7 +866,7 @@ func (r *ImageBuildReconciler) createUploadPod(ctx context.Context, imageBuild *
 	}
 
 	if imageBuild.Status.PVCName != workspacePVCName {
-		fresh := &automotivev1.ImageBuild{}
+		fresh := &automotivev1alpha1.ImageBuild{}
 		if err := r.Get(ctx, types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}, fresh); err != nil {
 			return fmt.Errorf("failed to get fresh ImageBuild: %w", err)
 		}
@@ -969,8 +969,8 @@ func (r *ImageBuildReconciler) createUploadPod(ctx context.Context, imageBuild *
 	return nil
 }
 
-func (r *ImageBuildReconciler) updateStatus(ctx context.Context, imageBuild *automotivev1.ImageBuild, phase, message string) error {
-	fresh := &automotivev1.ImageBuild{}
+func (r *ImageBuildReconciler) updateStatus(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild, phase, message string) error {
+	fresh := &automotivev1alpha1.ImageBuild{}
 	if err := r.Get(ctx, types.NamespacedName{
 		Name:      imageBuild.Name,
 		Namespace: imageBuild.Namespace,
@@ -994,7 +994,7 @@ func (r *ImageBuildReconciler) updateStatus(ctx context.Context, imageBuild *aut
 	return r.Status().Patch(ctx, fresh, patch)
 }
 
-func (r *ImageBuildReconciler) getOrCreateWorkspacePVC(ctx context.Context, imageBuild *automotivev1.ImageBuild) (string, error) {
+func (r *ImageBuildReconciler) getOrCreateWorkspacePVC(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) (string, error) {
 	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
 
 	if imageBuild.Status.PVCName != "" {
@@ -1014,7 +1014,7 @@ func (r *ImageBuildReconciler) getOrCreateWorkspacePVC(ctx context.Context, imag
 	}
 
 	// Fetch OperatorConfig to get PVC size configuration
-	operatorConfig := &automotivev1.OperatorConfig{}
+	operatorConfig := &automotivev1alpha1.OperatorConfig{}
 	err := r.Get(ctx, types.NamespacedName{Name: "config", Namespace: OperatorNamespace}, operatorConfig)
 
 	storageSize := resource.MustParse("8Gi")
@@ -1069,7 +1069,7 @@ func (r *ImageBuildReconciler) getOrCreateWorkspacePVC(ctx context.Context, imag
 	return uniquePVCName, nil
 }
 
-func (r *ImageBuildReconciler) shutdownUploadPod(ctx context.Context, imageBuild *automotivev1.ImageBuild) error {
+func (r *ImageBuildReconciler) shutdownUploadPod(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) error {
 	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
 
 	podName := fmt.Sprintf("%s-upload-pod", imageBuild.Name)
@@ -1088,7 +1088,7 @@ func (r *ImageBuildReconciler) shutdownUploadPod(ctx context.Context, imageBuild
 	return nil
 }
 
-func (r *ImageBuildReconciler) createArtifactServingResources(ctx context.Context, imageBuild *automotivev1.ImageBuild) error {
+func (r *ImageBuildReconciler) createArtifactServingResources(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) error {
 	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
 
 	podList := &corev1.PodList{}

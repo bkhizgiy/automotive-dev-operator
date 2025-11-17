@@ -104,7 +104,7 @@ Download the pinned manifest from the release and apply it:
 TAG=v0.0.10
 curl -L -o install-$TAG.yaml https://github.com/centos-automotive-suite/automotive-dev-operator/releases/download/$TAG/install-$TAG.yaml
 kubectl apply -f install-$TAG.yaml
-kubectl apply -f config/samples/automotive_v1_automotivedev.yaml # to add the image building tasks
+kubectl apply -f config/samples/automotive_v1_operatorconfig.yaml # to configure the operator
 ```
 
 Verify rollout:

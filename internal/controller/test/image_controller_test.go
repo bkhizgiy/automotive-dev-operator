@@ -28,7 +28,7 @@ import (
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/image"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	automotivev1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1"
+	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 )
 
 var _ = Describe("Image Controller", func() {
@@ -41,26 +41,26 @@ var _ = Describe("Image Controller", func() {
 			Name:      resourceName,
 			Namespace: "default",
 		}
-		img := &automotivev1.Image{}
+		img := &automotivev1alpha1.Image{}
 
 		BeforeEach(func() {
 			By("creating the custom resource for the Kind Image")
 			err := k8sClient.Get(ctx, typeNamespacedName, img)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &automotivev1.Image{
+				resource := &automotivev1alpha1.Image{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					Spec: automotivev1.ImageSpec{
+					Spec: automotivev1alpha1.ImageSpec{
 						Distro:       "autosd",
 						Target:       "qemu",
 						Architecture: "amd64",
 						ExportFormat: "qcow2",
 						Version:      "1.0.0",
-						Location: automotivev1.ImageLocation{
+						Location: automotivev1alpha1.ImageLocation{
 							Type: "registry",
-							Registry: &automotivev1.RegistryLocation{
+							Registry: &automotivev1alpha1.RegistryLocation{
 								URL:    "quay.io/test/test-image:latest",
 								Digest: "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
 							},
@@ -73,7 +73,7 @@ var _ = Describe("Image Controller", func() {
 		})
 
 		AfterEach(func() {
-			resource := &automotivev1.Image{}
+			resource := &automotivev1alpha1.Image{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 
