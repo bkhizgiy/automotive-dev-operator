@@ -85,7 +85,7 @@ func main() {
 	buildCmd.Flags().StringVar(&distro, "distro", "autosd", "distribution to build")
 	buildCmd.Flags().StringVar(&target, "target", "qemu", "target platform (qemu, etc)")
 	buildCmd.Flags().StringVar(&architecture, "arch", "arm64", "architecture (amd64, arm64)")
-	buildCmd.Flags().StringVar(&exportFormat, "export-format", "image", "export format (image, qcow2, etc)")
+	buildCmd.Flags().StringVar(&exportFormat, "export", "image", "export format (image, qcow2, etc)")
 	buildCmd.Flags().StringVar(&mode, "mode", "image", "build mode")
 	buildCmd.Flags().StringVar(&automotiveImageBuilder, "automotive-image-builder", "quay.io/centos-sig-automotive/automotive-image-builder:1.0.0", "container image for automotive-image-builder")
 	buildCmd.Flags().StringVar(&storageClass, "storage-class", "", "storage class to use for build workspace PVC")

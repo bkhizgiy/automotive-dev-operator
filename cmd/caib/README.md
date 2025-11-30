@@ -27,7 +27,7 @@ bin/caib build \
   --name my-build \
   --manifest simple.aib.yml \
   --arch arm64 \
-  --export-format image \
+  --export image \
   --follow --download
 ```
 
@@ -58,7 +58,7 @@ Common options:
 - `--target`: Target platform (default: `qemu`).
 - `--arch`: Architecture, e.g., `arm64` or `amd64` (default: `arm64`).
 - `--mode`: Build mode (default: `image`).
-- `--export-format`: `image` (raw) or `qcow2` (default: `image`).
+- `--export`: `image` (raw) or `qcow2` (default: `image`).
 - `--automotive-image-builder`: Container image for AIB (default: `quay.io/centos-sig-automotive/automotive-image-builder:1.0.0`).
 - `--storage-class`: Storage class to use for build workspace PVC (optional).
 - `--define`: Repeatable `KEY=VALUE` custom definitions passed to AIB.
@@ -84,7 +84,7 @@ bin/caib build \
   --name demo-qcow2 \
   --manifest simple.aib.yml \
   --arch arm64 \
-  --export-format qcow2 \
+  --export qcow2 \
   --automotive-image-builder quay.io/centos-sig-automotive/automotive-image-builder:latest \
   --aib-args "--fusa" \
   --follow --download
