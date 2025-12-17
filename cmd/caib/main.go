@@ -47,6 +47,18 @@ var (
 	compressArtifacts      bool
 	compressionAlgo        string
 	authToken              string
+	pushRepository         string
+	registryURL            string
+	registryUsername       string
+	registryPassword       string
+
+	containerPush  string
+	buildDiskImage bool
+	diskFormat     string
+	exportOCI      string
+	builderImage   string
+
+	downloadFile string
 )
 
 func main() {
@@ -59,10 +71,27 @@ func main() {
 	rootCmd.InitDefaultVersionFlag()
 	rootCmd.SetVersionTemplate("caib version: {{.Version}}\n")
 
+	// New subcommands
+	buildBootcCmd := &cobra.Command{
+		Use:   "build-bootc <manifest.aib.yml>",
+		Short: "Build bootc container image with optional disk image",
+		Args:  cobra.ExactArgs(1),
+		Run:   runBuildBootc,
+	}
+
+	buildTraditionalCmd := &cobra.Command{
+		Use:   "build-traditional <manifest.aib.yml>",
+		Short: "Build traditional disk image (ostree or package-based)",
+		Args:  cobra.ExactArgs(1),
+		Run:   runBuildTraditional,
+	}
+
+	// Legacy build command (deprecated)
 	buildCmd := &cobra.Command{
-		Use:   "build",
-		Short: "Create an ImageBuild resource",
-		Run:   runBuild,
+		Use:        "build",
+		Short:      "Create an ImageBuild resource (deprecated, use build-bootc or build-traditional)",
+		Run:        runBuild,
+		Deprecated: "use 'build-bootc' or 'build-traditional' instead",
 	}
 
 	downloadCmd := &cobra.Command{
@@ -85,8 +114,8 @@ func main() {
 	buildCmd.Flags().StringVar(&distro, "distro", "autosd", "distribution to build")
 	buildCmd.Flags().StringVar(&target, "target", "qemu", "target platform (qemu, etc)")
 	buildCmd.Flags().StringVar(&architecture, "arch", "arm64", "architecture (amd64, arm64)")
-	buildCmd.Flags().StringVar(&exportFormat, "export", "image", "export format (image, qcow2, etc)")
-	buildCmd.Flags().StringVar(&mode, "mode", "image", "build mode")
+	buildCmd.Flags().StringVar(&exportFormat, "format", "qcow2", "disk image format (qcow2, raw, etc)")
+	buildCmd.Flags().StringVar(&mode, "mode", "bootc", "build mode (bootc, image, package)")
 	buildCmd.Flags().StringVar(&automotiveImageBuilder, "automotive-image-builder", "quay.io/centos-sig-automotive/automotive-image-builder:1.0.0", "container image for automotive-image-builder")
 	buildCmd.Flags().StringVar(&storageClass, "storage-class", "", "storage class to use for build workspace PVC")
 	buildCmd.Flags().IntVar(&timeout, "timeout", 60, "timeout in minutes when waiting for build completion")
@@ -98,6 +127,10 @@ func main() {
 	buildCmd.Flags().StringVar(&aibExtraArgs, "aib-args", "", "extra arguments passed to automotive-image-builder (space-separated)")
 	buildCmd.Flags().StringVar(&aibOverrideArgs, "override", "", "override arguments passed as-is to automotive-image-builder")
 	buildCmd.Flags().StringVar(&compressionAlgo, "compression", "gzip", "artifact compression algorithm (lz4|gzip)")
+	buildCmd.Flags().StringVar(&pushRepository, "push", "", "push artifact to OCI registry (e.g., quay.io/myorg/myimage:tag)")
+	buildCmd.Flags().StringVar(&registryURL, "registry-url", "", "registry URL for authentication (optional, extracted from --push if not set)")
+	buildCmd.Flags().StringVar(&registryUsername, "registry-username", "", "registry username for push authentication")
+	buildCmd.Flags().StringVar(&registryPassword, "registry-password", "", "registry password for push authentication")
 	_ = buildCmd.MarkFlagRequired("arch")
 
 	downloadCmd.Flags().StringVar(&serverURL, "server", os.Getenv("CAIB_SERVER"), "REST API server base URL (e.g. https://api.example)")
@@ -110,11 +143,391 @@ func main() {
 	listCmd.Flags().StringVar(&serverURL, "server", os.Getenv("CAIB_SERVER"), "REST API server base URL (e.g. https://api.example)")
 	listCmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication (e.g., OpenShift access token)")
 
-	rootCmd.AddCommand(buildCmd, downloadCmd, listCmd)
+	// build-bootc flags
+	buildBootcCmd.Flags().StringVar(&serverURL, "server", os.Getenv("CAIB_SERVER"), "REST API server base URL")
+	buildBootcCmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication")
+	buildBootcCmd.Flags().StringVar(&buildName, "name", "", "name for the ImageBuild")
+	buildBootcCmd.Flags().StringVar(&distro, "distro", "autosd", "distribution to build")
+	buildBootcCmd.Flags().StringVar(&target, "target", "qemu", "target platform")
+	buildBootcCmd.Flags().StringVar(&architecture, "arch", "arm64", "architecture (amd64, arm64)")
+	buildBootcCmd.Flags().StringVar(&containerPush, "push", "", "push bootc container to registry (e.g., quay.io/org/image:tag)")
+	buildBootcCmd.Flags().BoolVar(&buildDiskImage, "build-disk-image", false, "also build disk image from container")
+	buildBootcCmd.Flags().StringVar(&diskFormat, "format", "qcow2", "disk image format (qcow2, raw, simg)")
+	buildBootcCmd.Flags().StringVar(&compressionAlgo, "compress", "gzip", "compression algorithm (gzip, lz4, xz)")
+	buildBootcCmd.Flags().StringVar(&exportOCI, "export-oci", "", "push disk image as OCI artifact to registry")
+	buildBootcCmd.Flags().StringVar(&registryUsername, "registry-username", "", "registry username for push/export")
+	buildBootcCmd.Flags().StringVar(&registryPassword, "registry-password", "", "registry password for push/export")
+	buildBootcCmd.Flags().StringVar(&automotiveImageBuilder, "automotive-image-builder", "quay.io/centos-sig-automotive/automotive-image-builder:latest", "container image for aib")
+	buildBootcCmd.Flags().StringVar(&builderImage, "builder-image", "", "custom aib-build container")
+	buildBootcCmd.Flags().StringVar(&storageClass, "storage-class", "", "storage class for build workspace PVC")
+	buildBootcCmd.Flags().StringArrayVar(&customDefs, "define", []string{}, "custom definition KEY=VALUE")
+	buildBootcCmd.Flags().IntVar(&timeout, "timeout", 60, "timeout in minutes")
+	buildBootcCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", false, "wait for build to complete")
+	buildBootcCmd.Flags().BoolVarP(&followLogs, "follow", "f", false, "follow build logs")
+	_ = buildBootcCmd.MarkFlagRequired("name")
+	_ = buildBootcCmd.MarkFlagRequired("arch")
+
+	// build-traditional flags
+	buildTraditionalCmd.Flags().StringVar(&serverURL, "server", os.Getenv("CAIB_SERVER"), "REST API server base URL")
+	buildTraditionalCmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication")
+	buildTraditionalCmd.Flags().StringVar(&buildName, "name", "", "name for the ImageBuild")
+	buildTraditionalCmd.Flags().StringVar(&distro, "distro", "autosd", "distribution to build")
+	buildTraditionalCmd.Flags().StringVar(&target, "target", "qemu", "target platform")
+	buildTraditionalCmd.Flags().StringVar(&architecture, "arch", "arm64", "architecture (amd64, arm64)")
+	buildTraditionalCmd.Flags().StringVar(&mode, "mode", "image", "traditional mode (image, package)")
+	buildTraditionalCmd.Flags().StringVar(&exportFormat, "export", "qcow2", "export format (qcow2, raw, simg)")
+	buildTraditionalCmd.Flags().StringVar(&compressionAlgo, "compress", "gzip", "compression algorithm (gzip, lz4, xz)")
+	buildTraditionalCmd.Flags().StringVar(&downloadFile, "download", "", "download artifact to local file")
+	buildTraditionalCmd.Flags().StringVar(&exportOCI, "push", "", "push disk image as OCI artifact to registry")
+	buildTraditionalCmd.Flags().StringVar(&registryUsername, "registry-username", "", "registry username for push")
+	buildTraditionalCmd.Flags().StringVar(&registryPassword, "registry-password", "", "registry password for push")
+	buildTraditionalCmd.Flags().StringVar(&automotiveImageBuilder, "automotive-image-builder", "quay.io/centos-sig-automotive/automotive-image-builder:latest", "container image for aib")
+	buildTraditionalCmd.Flags().StringVar(&storageClass, "storage-class", "", "storage class for build workspace PVC")
+	buildTraditionalCmd.Flags().StringArrayVar(&customDefs, "define", []string{}, "custom definition KEY=VALUE")
+	buildTraditionalCmd.Flags().IntVar(&timeout, "timeout", 60, "timeout in minutes")
+	buildTraditionalCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", false, "wait for build to complete")
+	buildTraditionalCmd.Flags().BoolVarP(&followLogs, "follow", "f", false, "follow build logs")
+	_ = buildTraditionalCmd.MarkFlagRequired("name")
+	_ = buildTraditionalCmd.MarkFlagRequired("arch")
+
+	rootCmd.AddCommand(buildBootcCmd, buildTraditionalCmd, buildCmd, downloadCmd, listCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
+	}
+}
+
+func runBuildBootc(cmd *cobra.Command, args []string) {
+	ctx := context.Background()
+	manifest = args[0]
+
+	if serverURL == "" {
+		handleError(fmt.Errorf("--server is required"))
+	}
+	if buildName == "" {
+		handleError(fmt.Errorf("--name is required"))
+	}
+
+	if strings.TrimSpace(authToken) == "" {
+		if tok, err := loadTokenFromKubeconfig(); err == nil && strings.TrimSpace(tok) != "" {
+			authToken = tok
+		}
+	}
+
+	var opts []buildapiclient.Option
+	if strings.TrimSpace(authToken) != "" {
+		opts = append(opts, buildapiclient.WithAuthToken(strings.TrimSpace(authToken)))
+	}
+	api, err := buildapiclient.New(serverURL, opts...)
+	if err != nil {
+		handleError(err)
+	}
+
+	manifestBytes, err := os.ReadFile(manifest)
+	if err != nil {
+		handleError(fmt.Errorf("error reading manifest: %w", err))
+	}
+
+	// Extract registry URL from push if not empty
+	effectiveRegistryURL := ""
+	if containerPush != "" || exportOCI != "" {
+		if registryUsername == "" || registryPassword == "" {
+			handleError(fmt.Errorf("--registry-username and --registry-password are required when --push or --export-oci is specified"))
+		}
+		pushTarget := containerPush
+		if pushTarget == "" {
+			pushTarget = exportOCI
+		}
+		parts := strings.SplitN(pushTarget, "/", 2)
+		if len(parts) > 0 && strings.Contains(parts[0], ".") {
+			effectiveRegistryURL = parts[0]
+		} else {
+			effectiveRegistryURL = "docker.io"
+		}
+	}
+
+	req := buildapitypes.BuildRequest{
+		Name:                   buildName,
+		Manifest:               string(manifestBytes),
+		ManifestFileName:       filepath.Base(manifest),
+		Distro:                 buildapitypes.Distro(distro),
+		Target:                 buildapitypes.Target(target),
+		Architecture:           buildapitypes.Architecture(architecture),
+		ExportFormat:           buildapitypes.ExportFormat(diskFormat),
+		Mode:                   buildapitypes.ModeBootc,
+		AutomotiveImageBuilder: automotiveImageBuilder,
+		StorageClass:           storageClass,
+		CustomDefs:             customDefs,
+		Compression:            compressionAlgo,
+		ContainerPush:          containerPush,
+		BuildDiskImage:         buildDiskImage,
+		ExportOCI:              exportOCI,
+		BuilderImage:           builderImage,
+	}
+
+	if effectiveRegistryURL != "" {
+		req.RegistryCredentials = &buildapitypes.RegistryCredentials{
+			Enabled:     true,
+			AuthType:    "username-password",
+			RegistryURL: effectiveRegistryURL,
+			Username:    registryUsername,
+			Password:    registryPassword,
+		}
+	}
+
+	resp, err := api.CreateBuild(ctx, req)
+	if err != nil {
+		handleError(err)
+	}
+	fmt.Printf("Build %s accepted: %s - %s\n", resp.Name, resp.Phase, resp.Message)
+
+	// Handle local file uploads if needed
+	localRefs, err := findLocalFileReferences(string(manifestBytes))
+	if err != nil {
+		handleError(fmt.Errorf("manifest file reference error: %w", err))
+	}
+	if len(localRefs) > 0 {
+		handleFileUploads(ctx, api, resp.Name, localRefs)
+	}
+
+	if waitForBuild || followLogs {
+		waitForBuildCompletion(ctx, api, resp.Name, "")
+	}
+}
+
+func runBuildTraditional(cmd *cobra.Command, args []string) {
+	ctx := context.Background()
+	manifest = args[0]
+
+	if serverURL == "" {
+		handleError(fmt.Errorf("--server is required"))
+	}
+	if buildName == "" {
+		handleError(fmt.Errorf("--name is required"))
+	}
+
+	if strings.TrimSpace(authToken) == "" {
+		if tok, err := loadTokenFromKubeconfig(); err == nil && strings.TrimSpace(tok) != "" {
+			authToken = tok
+		}
+	}
+
+	var opts []buildapiclient.Option
+	if strings.TrimSpace(authToken) != "" {
+		opts = append(opts, buildapiclient.WithAuthToken(strings.TrimSpace(authToken)))
+	}
+	api, err := buildapiclient.New(serverURL, opts...)
+	if err != nil {
+		handleError(err)
+	}
+
+	manifestBytes, err := os.ReadFile(manifest)
+	if err != nil {
+		handleError(fmt.Errorf("error reading manifest: %w", err))
+	}
+
+	// Validate mode
+	parsedMode := buildapitypes.ModeImage
+	if mode == "package" {
+		parsedMode = buildapitypes.ModePackage
+	}
+
+	effectiveRegistryURL := ""
+	if exportOCI != "" {
+		if registryUsername == "" || registryPassword == "" {
+			handleError(fmt.Errorf("--registry-username and --registry-password are required when --push is specified"))
+		}
+		parts := strings.SplitN(exportOCI, "/", 2)
+		if len(parts) > 0 && strings.Contains(parts[0], ".") {
+			effectiveRegistryURL = parts[0]
+		} else {
+			effectiveRegistryURL = "docker.io"
+		}
+	}
+
+	req := buildapitypes.BuildRequest{
+		Name:                   buildName,
+		Manifest:               string(manifestBytes),
+		ManifestFileName:       filepath.Base(manifest),
+		Distro:                 buildapitypes.Distro(distro),
+		Target:                 buildapitypes.Target(target),
+		Architecture:           buildapitypes.Architecture(architecture),
+		ExportFormat:           buildapitypes.ExportFormat(exportFormat),
+		Mode:                   parsedMode,
+		AutomotiveImageBuilder: automotiveImageBuilder,
+		StorageClass:           storageClass,
+		CustomDefs:             customDefs,
+		Compression:            compressionAlgo,
+		ServeArtifact:          downloadFile != "",
+		ExportOCI:              exportOCI,
+	}
+
+	if effectiveRegistryURL != "" {
+		req.RegistryCredentials = &buildapitypes.RegistryCredentials{
+			Enabled:     true,
+			AuthType:    "username-password",
+			RegistryURL: effectiveRegistryURL,
+			Username:    registryUsername,
+			Password:    registryPassword,
+		}
+	}
+
+	resp, err := api.CreateBuild(ctx, req)
+	if err != nil {
+		handleError(err)
+	}
+	fmt.Printf("Build %s accepted: %s - %s\n", resp.Name, resp.Phase, resp.Message)
+
+	// Handle local file uploads if needed
+	localRefs, err := findLocalFileReferences(string(manifestBytes))
+	if err != nil {
+		handleError(fmt.Errorf("manifest file reference error: %w", err))
+	}
+	if len(localRefs) > 0 {
+		handleFileUploads(ctx, api, resp.Name, localRefs)
+	}
+
+	if waitForBuild || followLogs || downloadFile != "" {
+		waitForBuildCompletion(ctx, api, resp.Name, downloadFile)
+	}
+}
+
+func handleFileUploads(ctx context.Context, api *buildapiclient.Client, buildName string, localRefs []map[string]string) {
+	for _, ref := range localRefs {
+		if _, err := os.Stat(ref["source_path"]); err != nil {
+			handleError(fmt.Errorf("referenced file %s does not exist: %w", ref["source_path"], err))
+		}
+	}
+
+	fmt.Println("Waiting for upload server to be ready...")
+	readyCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	for {
+		if err := readyCtx.Err(); err != nil {
+			handleError(fmt.Errorf("timed out waiting for upload server to be ready"))
+		}
+		reqCtx, c := context.WithTimeout(ctx, 15*time.Second)
+		st, err := api.GetBuild(reqCtx, buildName)
+		c()
+		if err == nil {
+			if st.Phase == "Uploading" {
+				break
+			}
+			if st.Phase == "Failed" {
+				handleError(fmt.Errorf("build failed while waiting for upload server: %s", st.Message))
+			}
+		}
+		time.Sleep(3 * time.Second)
+	}
+
+	uploads := make([]buildapiclient.Upload, 0, len(localRefs))
+	for _, ref := range localRefs {
+		uploads = append(uploads, buildapiclient.Upload{SourcePath: ref["source_path"], DestPath: ref["source_path"]})
+	}
+
+	uploadDeadline := time.Now().Add(10 * time.Minute)
+	for {
+		if err := api.UploadFiles(ctx, buildName, uploads); err != nil {
+			lower := strings.ToLower(err.Error())
+			if time.Now().After(uploadDeadline) {
+				handleError(fmt.Errorf("upload files failed: %w", err))
+			}
+			if strings.Contains(lower, "503") || strings.Contains(lower, "service unavailable") || strings.Contains(lower, "upload pod not ready") {
+				fmt.Println("Upload server not ready yet. Retrying...")
+				time.Sleep(5 * time.Second)
+				continue
+			}
+			handleError(fmt.Errorf("upload files failed: %w", err))
+		}
+		break
+	}
+	fmt.Println("Local files uploaded. Build will proceed.")
+}
+
+func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, name, downloadTo string) {
+	fmt.Println("Waiting for build to complete...")
+	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Minute)
+	defer cancel()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	userFollowRequested := followLogs
+	var lastPhase, lastMessage string
+	logFollowWarned := false
+
+	logClient := &http.Client{
+		Timeout: 10 * time.Minute,
+		Transport: &http.Transport{
+			ResponseHeaderTimeout: 30 * time.Second,
+			IdleConnTimeout:       2 * time.Minute,
+		},
+	}
+
+	for {
+		select {
+		case <-timeoutCtx.Done():
+			handleError(fmt.Errorf("timed out waiting for build"))
+		case <-ticker.C:
+			if followLogs {
+				req, _ := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(serverURL, "/")+"/v1/builds/"+url.PathEscape(name)+"/logs?follow=1", nil)
+				if strings.TrimSpace(authToken) != "" {
+					req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(authToken))
+				}
+				resp, err := logClient.Do(req)
+				if err == nil && resp.StatusCode == http.StatusOK {
+					fmt.Println("Streaming logs...")
+					io.Copy(os.Stdout, resp.Body)
+					resp.Body.Close()
+					followLogs = userFollowRequested
+				} else if resp != nil {
+					body, _ := io.ReadAll(resp.Body)
+					msg := strings.TrimSpace(string(body))
+					if resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusGatewayTimeout {
+						if !logFollowWarned {
+							fmt.Println("log stream not ready (HTTP", resp.StatusCode, "). Retrying...")
+							logFollowWarned = true
+						}
+					} else {
+						if msg != "" {
+							fmt.Printf("log stream error (%d): %s\n", resp.StatusCode, msg)
+						} else {
+							fmt.Printf("log stream error: HTTP %d\n", resp.StatusCode)
+						}
+						followLogs = false
+					}
+					resp.Body.Close()
+				}
+			}
+			reqCtx, cancelReq := context.WithTimeout(ctx, 2*time.Minute)
+			st, err := api.GetBuild(reqCtx, name)
+			cancelReq()
+			if err != nil {
+				fmt.Printf("status check failed: %v\n", err)
+				continue
+			}
+			if !userFollowRequested {
+				if st.Phase != lastPhase || st.Message != lastMessage {
+					fmt.Printf("status: %s - %s\n", st.Phase, st.Message)
+					lastPhase = st.Phase
+					lastMessage = st.Message
+				}
+			}
+			if st.Phase == "Completed" {
+				if downloadTo != "" {
+					outDir := filepath.Dir(downloadTo)
+					if outDir == "" || outDir == "." {
+						outDir = "./output"
+					}
+					if err := downloadArtifactViaAPI(ctx, serverURL, name, outDir); err != nil {
+						fmt.Printf("Download failed: %v\n", err)
+					}
+				}
+				return
+			}
+			if st.Phase == "Failed" {
+				handleError(fmt.Errorf("build failed: %s", st.Message))
+			}
+		}
 	}
 }
 
@@ -195,6 +608,33 @@ func runBuild(cmd *cobra.Command, args []string) {
 			AIBOverrideArgs:        aibOverrideArray,
 			ServeArtifact:          download,
 			Compression:            compressionAlgo,
+			PushRepository:         pushRepository,
+		}
+
+		// Add registry credentials if push is configured
+		if pushRepository != "" {
+			if registryUsername == "" || registryPassword == "" {
+				handleError(fmt.Errorf("--registry-username and --registry-password are required when --push is specified"))
+			}
+			// Extract registry URL from push repository if not explicitly provided
+			effectiveRegistryURL := registryURL
+			if effectiveRegistryURL == "" {
+				// Extract registry from push repository (e.g., "quay.io/org/image:tag" -> "quay.io")
+				parts := strings.SplitN(pushRepository, "/", 2)
+				if len(parts) > 0 && strings.Contains(parts[0], ".") {
+					effectiveRegistryURL = parts[0]
+				} else {
+					// Default to docker.io for short names
+					effectiveRegistryURL = "docker.io"
+				}
+			}
+			req.RegistryCredentials = &buildapitypes.RegistryCredentials{
+				Enabled:     true,
+				AuthType:    "username-password",
+				RegistryURL: effectiveRegistryURL,
+				Username:    registryUsername,
+				Password:    registryPassword,
+			}
 		}
 
 		resp, err := api.CreateBuild(ctx, req)

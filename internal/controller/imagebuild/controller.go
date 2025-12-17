@@ -41,7 +41,7 @@ type ImageBuildReconciler struct {
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=security.openshift.io,resources=securitycontextconstraints,verbs=get;list;watch;create;update;patch;delete;use
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings;clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
@@ -69,6 +69,8 @@ func (r *ImageBuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return r.handleUploadingState(ctx, imageBuild)
 	case "Building":
 		return r.handleBuildingState(ctx, imageBuild)
+	case "Pushing":
+		return r.handlePushingState(ctx, imageBuild)
 	case "Completed":
 		return r.handleCompletedState(ctx, imageBuild)
 	case "Failed":
@@ -121,18 +123,19 @@ func (r *ImageBuildReconciler) handleBuildingState(ctx context.Context, imageBui
 		return r.checkBuildProgress(ctx, imageBuild)
 	}
 
-	taskRunList := &tektonv1.TaskRunList{}
-	if err := r.List(ctx, taskRunList,
+	// Look for existing PipelineRuns for this ImageBuild
+	pipelineRunList := &tektonv1.PipelineRunList{}
+	if err := r.List(ctx, pipelineRunList,
 		client.InNamespace(imageBuild.Namespace),
 		client.MatchingLabels{
 			"automotive.sdv.cloud.redhat.com/imagebuild-name": imageBuild.Name,
 		}); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to list existing task runs: %w", err)
+		return ctrl.Result{}, fmt.Errorf("failed to list existing pipeline runs: %w", err)
 	}
 
-	for _, tr := range taskRunList.Items {
-		if tr.DeletionTimestamp == nil {
-			log.Info("Found existing TaskRun for this ImageBuild", "taskRun", tr.Name)
+	for _, pr := range pipelineRunList.Items {
+		if pr.DeletionTimestamp == nil {
+			log.Info("Found existing PipelineRun for this ImageBuild", "pipelineRun", pr.Name)
 
 			latestImageBuild := &automotivev1alpha1.ImageBuild{}
 			if err := r.Get(ctx, types.NamespacedName{
@@ -144,10 +147,10 @@ func (r *ImageBuildReconciler) handleBuildingState(ctx context.Context, imageBui
 			}
 
 			patch := client.MergeFrom(latestImageBuild.DeepCopy())
-			latestImageBuild.Status.TaskRunName = tr.Name
+			latestImageBuild.Status.TaskRunName = pr.Name
 
 			if err := r.Status().Patch(ctx, latestImageBuild, patch); err != nil {
-				log.Error(err, "Failed to patch ImageBuild with existing TaskRun name")
+				log.Error(err, "Failed to patch ImageBuild with existing PipelineRun name")
 				return ctrl.Result{RequeueAfter: time.Second * 5}, nil
 			}
 
@@ -220,11 +223,11 @@ func (r *ImageBuildReconciler) handleCompletedState(ctx context.Context, imageBu
 }
 
 func (r *ImageBuildReconciler) checkBuildProgress(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) (ctrl.Result, error) {
-	taskRun := &tektonv1.TaskRun{}
+	pipelineRun := &tektonv1.PipelineRun{}
 	err := r.Get(ctx, types.NamespacedName{
 		Name:      imageBuild.Status.TaskRunName,
 		Namespace: imageBuild.Namespace,
-	}, taskRun)
+	}, pipelineRun)
 	if err != nil && !errors.IsNotFound(err) {
 		return ctrl.Result{}, err
 	}
@@ -233,15 +236,24 @@ func (r *ImageBuildReconciler) checkBuildProgress(ctx context.Context, imageBuil
 		return r.startNewBuild(ctx, imageBuild)
 	}
 
-	if !isTaskRunCompleted(taskRun) {
+	if !isPipelineRunCompleted(pipelineRun) {
 		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 	}
 
-	if isTaskRunSuccessful(taskRun) {
+	if isPipelineRunSuccessful(pipelineRun) {
 		var artifactFileName string
-		for _, res := range taskRun.Status.TaskRunStatusFields.Results {
-			if res.Name == "artifact-filename" && res.Value.StringVal != "" {
-				artifactFileName = res.Value.StringVal
+		// Get results from the build-image task in the pipeline
+		for _, childStatus := range pipelineRun.Status.ChildReferences {
+			if childStatus.PipelineTaskName == "build-image" {
+				taskRun := &tektonv1.TaskRun{}
+				if err := r.Get(ctx, types.NamespacedName{Name: childStatus.Name, Namespace: imageBuild.Namespace}, taskRun); err == nil {
+					for _, res := range taskRun.Status.TaskRunStatusFields.Results {
+						if res.Name == "artifact-filename" && res.Value.StringVal != "" {
+							artifactFileName = res.Value.StringVal
+							break
+						}
+					}
+				}
 				break
 			}
 		}
@@ -269,6 +281,27 @@ func (r *ImageBuildReconciler) checkBuildProgress(ctx context.Context, imageBuil
 			fresh.Status.ArtifactFileName = artifactFileName
 		}
 
+		// Check if push is configured
+		if imageBuild.Spec.Publishers != nil && imageBuild.Spec.Publishers.Registry != nil {
+			// Start push task
+			if err := r.createPushTaskRun(ctx, imageBuild); err != nil {
+				r.Log.Error(err, "Failed to create push TaskRun")
+				fresh.Status.Phase = "Failed"
+				fresh.Status.Message = fmt.Sprintf("Failed to start push: %v", err)
+				if err := r.Status().Patch(ctx, fresh, patch); err != nil {
+					return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+				}
+				return ctrl.Result{}, nil
+			}
+
+			fresh.Status.Phase = "Pushing"
+			fresh.Status.Message = "Pushing artifact to registry"
+			if err := r.Status().Patch(ctx, fresh, patch); err != nil {
+				return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+			}
+			return ctrl.Result{RequeueAfter: time.Second * 10}, nil
+		}
+
 		fresh.Status.Phase = "Completed"
 		fresh.Status.Message = "Build completed successfully"
 		if fresh.Status.CompletionTime == nil {
@@ -280,6 +313,9 @@ func (r *ImageBuildReconciler) checkBuildProgress(ctx context.Context, imageBuil
 			return ctrl.Result{RequeueAfter: time.Second * 5}, nil
 		}
 
+		// Cleanup transient secrets
+		r.cleanupTransientSecrets(ctx, imageBuild, r.Log)
+
 		// Update artifact info after status is set
 		if imageBuild.Spec.ServeArtifact {
 			return r.updateArtifactInfo(ctx, imageBuild)
@@ -287,6 +323,9 @@ func (r *ImageBuildReconciler) checkBuildProgress(ctx context.Context, imageBuil
 
 		return ctrl.Result{}, nil
 	}
+
+	// Build failed - cleanup transient secrets
+	r.cleanupTransientSecrets(ctx, imageBuild, r.Log)
 
 	if err := r.updateStatus(ctx, imageBuild, "Failed", "Build failed"); err != nil {
 		return ctrl.Result{RequeueAfter: time.Second * 5}, nil
@@ -323,7 +362,7 @@ func (r *ImageBuildReconciler) startNewBuild(ctx context.Context, imageBuild *au
 
 func (r *ImageBuildReconciler) createBuildTaskRun(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) error {
 	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
-	log.Info("Creating TaskRun for ImageBuild")
+	log.Info("Creating PipelineRun for ImageBuild")
 
 	// Fetch OperatorConfig from the operator namespace to get build configuration
 	operatorConfig := &automotivev1alpha1.OperatorConfig{}
@@ -343,7 +382,7 @@ func (r *ImageBuildReconciler) createBuildTaskRun(ctx context.Context, imageBuil
 			ServeExpiryHours: operatorConfig.Spec.OSBuilds.ServeExpiryHours,
 		}
 	}
-	buildTask := tasks.GenerateBuildAutomotiveImageTask(OperatorNamespace, buildConfig, imageBuild.Spec.EnvSecretRef)
+	_ = buildConfig // buildConfig used for PVC sizing if needed
 
 	if imageBuild.Status.PVCName == "" {
 		workspacePVCName, err := r.getOrCreateWorkspacePVC(ctx, imageBuild)
@@ -416,9 +455,64 @@ func (r *ImageBuildReconciler) createBuildTaskRun(ctx context.Context, imageBuil
 				StringVal: imageBuild.Spec.Compression,
 			},
 		},
+		{
+			Name: "container-push",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: imageBuild.Spec.ContainerPush,
+			},
+		},
+		{
+			Name: "build-disk-image",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: fmt.Sprintf("%t", imageBuild.Spec.BuildDiskImage),
+			},
+		},
+		{
+			Name: "export-oci",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: imageBuild.Spec.ExportOCI,
+			},
+		},
+		{
+			Name: "builder-image",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: imageBuild.Spec.BuilderImage,
+			},
+		},
+		{
+			Name: "secret-ref",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: imageBuild.Spec.EnvSecretRef,
+			},
+		},
 	}
 
-	workspaces := []tektonv1.WorkspaceBinding{
+	clusterRegistryRoute := ""
+	if operatorConfig.Spec.OSBuilds != nil && operatorConfig.Spec.OSBuilds.ClusterRegistryRoute != "" {
+		clusterRegistryRoute = operatorConfig.Spec.OSBuilds.ClusterRegistryRoute
+	} else {
+		route := &routev1.Route{}
+		if err := r.Get(ctx, types.NamespacedName{Name: "default-route", Namespace: "openshift-image-registry"}, route); err == nil {
+			clusterRegistryRoute = route.Spec.Host
+			log.Info("Auto-detected cluster registry route", "route", clusterRegistryRoute)
+		}
+	}
+	if clusterRegistryRoute != "" {
+		params = append(params, tektonv1.Param{
+			Name: "cluster-registry-route",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: clusterRegistryRoute,
+			},
+		})
+	}
+
+	pipelineWorkspaces := []tektonv1.WorkspaceBinding{
 		{
 			Name: "shared-workspace",
 			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
@@ -433,6 +527,15 @@ func (r *ImageBuildReconciler) createBuildTaskRun(ctx context.Context, imageBuil
 				},
 			},
 		},
+	}
+
+	if imageBuild.Spec.EnvSecretRef != "" {
+		pipelineWorkspaces = append(pipelineWorkspaces, tektonv1.WorkspaceBinding{
+			Name: "registry-auth",
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: imageBuild.Spec.EnvSecretRef,
+			},
+		})
 	}
 
 	nodeAffinity := &corev1.NodeAffinity{
@@ -462,7 +565,7 @@ func (r *ImageBuildReconciler) createBuildTaskRun(ctx context.Context, imageBuil
 		log.Info("Setting RuntimeClassName from ImageBuild spec", "runtimeClassName", imageBuild.Spec.RuntimeClassName)
 		podTemplate.RuntimeClassName = &imageBuild.Spec.RuntimeClassName
 	}
-	taskRun := &tektonv1.TaskRun{
+	pipelineRun := &tektonv1.PipelineRun{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("%s-build-", imageBuild.Name),
 			Namespace:    imageBuild.Namespace,
@@ -480,16 +583,20 @@ func (r *ImageBuildReconciler) createBuildTaskRun(ctx context.Context, imageBuil
 				},
 			},
 		},
-		Spec: tektonv1.TaskRunSpec{
-			TaskSpec:    &buildTask.Spec,
-			Params:      params,
-			Workspaces:  workspaces,
-			PodTemplate: podTemplate,
+		Spec: tektonv1.PipelineRunSpec{
+			PipelineRef: &tektonv1.PipelineRef{
+				Name: "automotive-build-pipeline",
+			},
+			Params:     params,
+			Workspaces: pipelineWorkspaces,
+			TaskRunTemplate: tektonv1.PipelineTaskRunTemplate{
+				PodTemplate: podTemplate,
+			},
 		},
 	}
 
-	if err := r.Create(ctx, taskRun); err != nil {
-		return fmt.Errorf("failed to create TaskRun: %w", err)
+	if err := r.Create(ctx, pipelineRun); err != nil {
+		return fmt.Errorf("failed to create PipelineRun: %w", err)
 	}
 
 	fresh := &automotivev1alpha1.ImageBuild{}
@@ -497,13 +604,179 @@ func (r *ImageBuildReconciler) createBuildTaskRun(ctx context.Context, imageBuil
 		return fmt.Errorf("failed to get fresh ImageBuild: %w", err)
 	}
 
-	fresh.Status.TaskRunName = taskRun.Name
+	fresh.Status.TaskRunName = pipelineRun.Name
 	if err := r.Status().Update(ctx, fresh); err != nil {
-		return fmt.Errorf("failed to update ImageBuild with TaskRun name: %w", err)
+		return fmt.Errorf("failed to update ImageBuild with PipelineRun name: %w", err)
 	}
 
-	log.Info("Successfully created TaskRun", "name", taskRun.Name)
+	log.Info("Successfully created PipelineRun", "name", pipelineRun.Name)
 	return nil
+}
+
+func (r *ImageBuildReconciler) createPushTaskRun(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) error {
+	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
+	log.Info("Creating push TaskRun for ImageBuild")
+
+	if imageBuild.Spec.Publishers == nil || imageBuild.Spec.Publishers.Registry == nil {
+		return fmt.Errorf("no registry publisher configured")
+	}
+
+	pushTask := tasks.GeneratePushArtifactRegistryTask(OperatorNamespace)
+
+	params := []tektonv1.Param{
+		{
+			Name: "distro",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: imageBuild.Spec.Distro,
+			},
+		},
+		{
+			Name: "target",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: imageBuild.Spec.Target,
+			},
+		},
+		{
+			Name: "export-format",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: imageBuild.Spec.ExportFormat,
+			},
+		},
+		{
+			Name: "secret-ref",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: imageBuild.Spec.EnvSecretRef,
+			},
+		},
+	}
+
+	workspaces := []tektonv1.WorkspaceBinding{
+		{
+			Name: "shared-workspace",
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: imageBuild.Status.PVCName,
+			},
+		},
+	}
+
+	taskRun := &tektonv1.TaskRun{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: fmt.Sprintf("%s-push-", imageBuild.Name),
+			Namespace:    imageBuild.Namespace,
+			Labels: map[string]string{
+				tektonv1.ManagedByLabelKey:                        "automotive-dev-operator",
+				"automotive.sdv.cloud.redhat.com/imagebuild-name": imageBuild.Name,
+				"automotive.sdv.cloud.redhat.com/task-type":       "push",
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: imageBuild.APIVersion,
+					Kind:       imageBuild.Kind,
+					Name:       imageBuild.Name,
+					UID:        imageBuild.UID,
+					Controller: ptr.To(true),
+				},
+			},
+		},
+		Spec: tektonv1.TaskRunSpec{
+			TaskSpec:   &pushTask.Spec,
+			Params:     params,
+			Workspaces: workspaces,
+		},
+	}
+
+	if err := r.Create(ctx, taskRun); err != nil {
+		return fmt.Errorf("failed to create push TaskRun: %w", err)
+	}
+
+	fresh := &automotivev1alpha1.ImageBuild{}
+	if err := r.Get(ctx, types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}, fresh); err != nil {
+		return fmt.Errorf("failed to get fresh ImageBuild: %w", err)
+	}
+
+	fresh.Status.PushTaskRunName = taskRun.Name
+	if err := r.Status().Update(ctx, fresh); err != nil {
+		return fmt.Errorf("failed to update ImageBuild with push TaskRun name: %w", err)
+	}
+
+	log.Info("Successfully created push TaskRun", "name", taskRun.Name)
+	return nil
+}
+
+func (r *ImageBuildReconciler) handlePushingState(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) (ctrl.Result, error) {
+	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
+
+	if imageBuild.Status.PushTaskRunName == "" {
+		// No push TaskRun yet, create one
+		if err := r.createPushTaskRun(ctx, imageBuild); err != nil {
+			log.Error(err, "Failed to create push TaskRun")
+			if err := r.updateStatus(ctx, imageBuild, "Failed", fmt.Sprintf("Failed to create push TaskRun: %v", err)); err != nil {
+				return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+			}
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{RequeueAfter: time.Second * 10}, nil
+	}
+
+	// Check push TaskRun status
+	taskRun := &tektonv1.TaskRun{}
+	err := r.Get(ctx, types.NamespacedName{
+		Name:      imageBuild.Status.PushTaskRunName,
+		Namespace: imageBuild.Namespace,
+	}, taskRun)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// TaskRun was deleted, try to recreate
+			imageBuild.Status.PushTaskRunName = ""
+			if err := r.Status().Update(ctx, imageBuild); err != nil {
+				return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+			}
+			return ctrl.Result{Requeue: true}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	if !isTaskRunCompleted(taskRun) {
+		return ctrl.Result{RequeueAfter: time.Second * 15}, nil
+	}
+
+	// Push completed - cleanup transient secrets and update status
+	r.cleanupTransientSecrets(ctx, imageBuild, log)
+
+	fresh := &automotivev1alpha1.ImageBuild{}
+	if err := r.Get(ctx, types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}, fresh); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	patch := client.MergeFrom(fresh.DeepCopy())
+
+	if isTaskRunSuccessful(taskRun) {
+		fresh.Status.Phase = "Completed"
+		fresh.Status.Message = "Build and push completed successfully"
+	} else {
+		fresh.Status.Phase = "Failed"
+		fresh.Status.Message = "Push to registry failed"
+	}
+
+	if fresh.Status.CompletionTime == nil {
+		now := metav1.Now()
+		fresh.Status.CompletionTime = &now
+	}
+
+	if err := r.Status().Patch(ctx, fresh, patch); err != nil {
+		return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+	}
+
+	// Update artifact info if serving
+	if imageBuild.Spec.ServeArtifact && isTaskRunSuccessful(taskRun) {
+		return r.updateArtifactInfo(ctx, imageBuild)
+	}
+
+	return ctrl.Result{}, nil
 }
 
 func (r *ImageBuildReconciler) updateArtifactInfo(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) (ctrl.Result, error) {
@@ -820,9 +1093,46 @@ server {
 	return configMapName, nil
 }
 
+// cleanupTransientSecrets deletes any transient secrets created for this build
+func (r *ImageBuildReconciler) cleanupTransientSecrets(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild, log logr.Logger) {
+	// Cleanup registry auth secret (EnvSecretRef)
+	if imageBuild.Spec.EnvSecretRef != "" {
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      imageBuild.Spec.EnvSecretRef,
+				Namespace: imageBuild.Namespace,
+			},
+		}
+		if err := r.Delete(ctx, secret); err != nil && !errors.IsNotFound(err) {
+			log.Error(err, "Failed to delete registry auth secret", "secret", imageBuild.Spec.EnvSecretRef)
+		} else if err == nil {
+			log.Info("Deleted registry auth secret", "secret", imageBuild.Spec.EnvSecretRef)
+		}
+	}
+
+	// Cleanup push secret (Publishers.Registry.Secret)
+	if imageBuild.Spec.Publishers != nil && imageBuild.Spec.Publishers.Registry != nil {
+		secretName := imageBuild.Spec.Publishers.Registry.Secret
+		if secretName != "" {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      secretName,
+					Namespace: imageBuild.Namespace,
+				},
+			}
+			if err := r.Delete(ctx, secret); err != nil && !errors.IsNotFound(err) {
+				log.Error(err, "Failed to delete push secret", "secret", secretName)
+			} else if err == nil {
+				log.Info("Deleted push secret", "secret", secretName)
+			}
+		}
+	}
+}
+
 func (r *ImageBuildReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&automotivev1alpha1.ImageBuild{}).
+		Owns(&tektonv1.PipelineRun{}).
 		Owns(&tektonv1.TaskRun{}).
 		Owns(&corev1.Pod{}).
 		Complete(r)
@@ -830,6 +1140,24 @@ func (r *ImageBuildReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 func isTaskRunCompleted(taskRun *tektonv1.TaskRun) bool {
 	return taskRun.Status.CompletionTime != nil
+}
+
+func isPipelineRunCompleted(pipelineRun *tektonv1.PipelineRun) bool {
+	return pipelineRun.Status.CompletionTime != nil
+}
+
+func isPipelineRunSuccessful(pipelineRun *tektonv1.PipelineRun) bool {
+	conditions := pipelineRun.Status.Conditions
+	if len(conditions) == 0 {
+		return false
+	}
+
+	for _, condition := range conditions {
+		if condition.Type == "Succeeded" {
+			return condition.Status == "True"
+		}
+	}
+	return false
 }
 
 func isTaskRunSuccessful(taskRun *tektonv1.TaskRun) bool {

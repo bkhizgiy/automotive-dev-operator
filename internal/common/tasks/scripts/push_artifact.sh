@@ -1,19 +1,50 @@
 #!/bin/sh
 set -ex
 
-if [ "$(params.export-format)" = "image" ]; then
-  file_extension=".raw"
-elif [ "$(params.export-format)" = "qcow2" ]; then
-  file_extension=".qcow2"
-else
-  file_extension="$(params.export-format)"
+# Trim whitespace/newlines from the filename
+exportFile=$(echo "$(params.artifact-filename)" | tr -d '[:space:]')
+
+if [ -z "$exportFile" ]; then
+  echo "ERROR: artifact-filename param is empty"
+  echo "Available files in workspace:"
+  ls -la /workspace/shared/
+  exit 1
 fi
 
-exportFile=$(params.distro)-$(params.target)-$(params.export-format)${file_extension}
+if [ ! -f "$exportFile" ]; then
+  echo "ERROR: Artifact file not found: $exportFile"
+  echo "Available files in workspace:"
+  ls -la /workspace/shared/
+  exit 1
+fi
 
-echo "Pushing image to $(params.repository-url)"
+case "$exportFile" in
+  *.gz)
+    mediaType="application/gzip"
+    ;;
+  *.lz4)
+    mediaType="application/x-lz4"
+    ;;
+  *.xz)
+    mediaType="application/x-xz"
+    ;;
+  *.qcow2)
+    mediaType="application/x-qcow2"
+    ;;
+  *.raw|*.img)
+    mediaType="application/x-raw-disk-image"
+    ;;
+  *)
+    mediaType="application/octet-stream"
+    ;;
+esac
+
+echo "Pushing artifact to $(params.repository-url)"
+echo "File: ${exportFile}"
+echo "Media type: ${mediaType}"
+
 oras push --disable-path-validation \
   $(params.repository-url) \
-  $exportFile:application/vnd.oci.image.layer.v1.tar
+  ${exportFile}:${mediaType}
 
-echo "Image pushed successfully to registry"
+echo "Artifact pushed successfully to registry"

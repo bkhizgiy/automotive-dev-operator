@@ -74,9 +74,21 @@ type ImageBuildSpec struct {
 	EnvSecretRef string `json:"envSecretRef,omitempty"`
 
 	// Compression specifies the compression algorithm for artifacts
-	// +kubebuilder:validation:Enum=lz4;gzip
+	// +kubebuilder:validation:Enum=lz4;gzip;xz
 	// +kubebuilder:default=gzip
 	Compression string `json:"compression,omitempty"`
+
+	// ContainerPush is the registry URL to push the bootc container image
+	ContainerPush string `json:"containerPush,omitempty"`
+
+	// BuildDiskImage indicates whether to build a disk image from the bootc container
+	BuildDiskImage bool `json:"buildDiskImage,omitempty"`
+
+	// ExportOCI is the registry URL to push the disk image as an OCI artifact
+	ExportOCI string `json:"exportOci,omitempty"`
+
+	// BuilderImage is a custom builder image to use
+	BuilderImage string `json:"builderImage,omitempty"`
 }
 
 // Publishers defines the configuration for artifact publishing
@@ -119,6 +131,9 @@ type ImageBuildStatus struct {
 
 	// TaskRunName is the name of the active TaskRun for this build
 	TaskRunName string `json:"taskRunName,omitempty"`
+
+	// PushTaskRunName is the name of the TaskRun for pushing artifacts to registry
+	PushTaskRunName string `json:"pushTaskRunName,omitempty"`
 
 	// ArtifactURL is the route URL created to expose the artifacts
 	ArtifactURL string `json:"artifactURL,omitempty"`

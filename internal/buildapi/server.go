@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"context"
 	_ "embed"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -643,6 +645,20 @@ func createRegistrySecret(ctx context.Context, k8sClient client.Client, namespac
 		secretData["REGISTRY_URL"] = []byte(creds.RegistryURL)
 		secretData["REGISTRY_USERNAME"] = []byte(creds.Username)
 		secretData["REGISTRY_PASSWORD"] = []byte(creds.Password)
+
+		// Also create dockerconfigjson format for tools that need it (oras, skopeo, etc.)
+		auth := base64.StdEncoding.EncodeToString([]byte(creds.Username + ":" + creds.Password))
+		dockerConfig, err := json.Marshal(map[string]interface{}{
+			"auths": map[string]interface{}{
+				creds.RegistryURL: map[string]string{
+					"auth": auth,
+				},
+			},
+		})
+		if err != nil {
+			return "", fmt.Errorf("failed to create docker config: %w", err)
+		}
+		secretData[".dockerconfigjson"] = dockerConfig
 	case "token":
 		if creds.RegistryURL == "" || creds.Token == "" {
 			return "", fmt.Errorf("registry URL and token are required for token authentication")
@@ -654,6 +670,7 @@ func createRegistrySecret(ctx context.Context, k8sClient client.Client, namespac
 			return "", fmt.Errorf("docker config is required for docker-config authentication")
 		}
 		secretData["REGISTRY_AUTH_FILE_CONTENT"] = []byte(creds.DockerConfig)
+		secretData[".dockerconfigjson"] = []byte(creds.DockerConfig)
 	default:
 		return "", fmt.Errorf("unsupported authentication type: %s", creds.AuthType)
 	}
@@ -676,6 +693,85 @@ func createRegistrySecret(ctx context.Context, k8sClient client.Client, namespac
 
 	if err := k8sClient.Create(ctx, secret); err != nil {
 		return "", fmt.Errorf("failed to create registry secret: %w", err)
+	}
+
+	return secretName, nil
+}
+
+// createPushSecret creates a kubernetes.io/dockerconfigjson secret for pushing artifacts to a registry
+func createPushSecret(ctx context.Context, k8sClient client.Client, namespace, buildName string, creds *RegistryCredentials) (string, error) {
+	if creds == nil || !creds.Enabled {
+		return "", fmt.Errorf("registry credentials are required for push")
+	}
+
+	secretName := fmt.Sprintf("%s-push-auth", buildName)
+
+	var dockerConfigJSON []byte
+	var err error
+
+	switch creds.AuthType {
+	case "username-password":
+		if creds.RegistryURL == "" || creds.Username == "" || creds.Password == "" {
+			return "", fmt.Errorf("registry URL, username, and password are required for push")
+		}
+		// Create dockerconfigjson format
+		auth := base64.StdEncoding.EncodeToString([]byte(creds.Username + ":" + creds.Password))
+		dockerConfigJSON, err = json.Marshal(map[string]interface{}{
+			"auths": map[string]interface{}{
+				creds.RegistryURL: map[string]string{
+					"auth": auth,
+				},
+			},
+		})
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal docker config: %w", err)
+		}
+	case "token":
+		if creds.RegistryURL == "" || creds.Token == "" {
+			return "", fmt.Errorf("registry URL and token are required for push with token auth")
+		}
+		// For token auth, use the token as password with empty username
+		auth := base64.StdEncoding.EncodeToString([]byte(":" + creds.Token))
+		dockerConfigJSON, err = json.Marshal(map[string]interface{}{
+			"auths": map[string]interface{}{
+				creds.RegistryURL: map[string]string{
+					"auth": auth,
+				},
+			},
+		})
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal docker config: %w", err)
+		}
+	case "docker-config":
+		if creds.DockerConfig == "" {
+			return "", fmt.Errorf("docker config is required for push with docker-config auth")
+		}
+		dockerConfigJSON = []byte(creds.DockerConfig)
+	default:
+		return "", fmt.Errorf("unsupported authentication type for push: %s", creds.AuthType)
+	}
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by":                  "build-api",
+				"app.kubernetes.io/part-of":                     "automotive-dev",
+				"app.kubernetes.io/created-by":                  "automotive-dev-build-api",
+				"automotive.sdv.cloud.redhat.com/resource-type": "push-auth",
+				"automotive.sdv.cloud.redhat.com/build-name":    buildName,
+				"automotive.sdv.cloud.redhat.com/transient":     "true",
+			},
+		},
+		Type: corev1.SecretTypeDockerConfigJson,
+		Data: map[string][]byte{
+			".dockerconfigjson": dockerConfigJSON,
+		},
+	}
+
+	if err := k8sClient.Create(ctx, secret); err != nil {
+		return "", fmt.Errorf("failed to create push secret: %w", err)
 	}
 
 	return secretName, nil
@@ -708,7 +804,7 @@ func createBuild(c *gin.Context) {
 		req.ExportFormat = "image"
 	}
 	if req.Mode == "" {
-		req.Mode = "image"
+		req.Mode = ModeBootc
 	}
 
 	if strings.TrimSpace(req.Compression) == "" {
@@ -826,6 +922,28 @@ func createBuild(c *gin.Context) {
 		envSecretRef = secretName
 	}
 
+	// Handle push configuration
+	var publishers *automotivev1alpha1.Publishers
+	var pushSecretName string
+	if req.PushRepository != "" {
+		if req.RegistryCredentials == nil || !req.RegistryCredentials.Enabled {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "registry credentials are required when push repository is specified"})
+			return
+		}
+		var err error
+		pushSecretName, err = createPushSecret(ctx, k8sClient, namespace, req.Name, req.RegistryCredentials)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error creating push secret: %v", err)})
+			return
+		}
+		publishers = &automotivev1alpha1.Publishers{
+			Registry: &automotivev1alpha1.RegistryPublisher{
+				RepositoryURL: req.PushRepository,
+				Secret:        pushSecretName,
+			},
+		}
+	}
+
 	imageBuild := &automotivev1alpha1.ImageBuild{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      req.Name,
@@ -850,6 +968,11 @@ func createBuild(c *gin.Context) {
 			InputFilesServer:       needsUpload,
 			EnvSecretRef:           envSecretRef,
 			Compression:            req.Compression,
+			Publishers:             publishers,
+			ContainerPush:          req.ContainerPush,
+			BuildDiskImage:         req.BuildDiskImage,
+			ExportOCI:              req.ExportOCI,
+			BuilderImage:           req.BuilderImage,
 		},
 	}
 	if err := k8sClient.Create(ctx, imageBuild); err != nil {
@@ -863,6 +986,12 @@ func createBuild(c *gin.Context) {
 
 	if envSecretRef != "" {
 		if err := setOwnerRef(ctx, k8sClient, namespace, envSecretRef, imageBuild); err != nil {
+			// best-effort
+		}
+	}
+
+	if pushSecretName != "" {
+		if err := setOwnerRef(ctx, k8sClient, namespace, pushSecretName, imageBuild); err != nil {
 			// best-effort
 		}
 	}

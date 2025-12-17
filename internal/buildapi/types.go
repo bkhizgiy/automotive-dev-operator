@@ -31,8 +31,27 @@ func (e ExportFormat) IsValid() bool {
 
 type Mode string
 
+const (
+	// ModeBootc creates immutable, container-based OS images using bootc (default)
+	ModeBootc Mode = "bootc"
+	// ModeImage creates traditional ostree-based disk images
+	ModeImage Mode = "image"
+	// ModePackage creates traditional, mutable, package-based disk images
+	ModePackage Mode = "package"
+)
+
 func (m Mode) IsValid() bool {
 	return strings.TrimSpace(string(m)) != ""
+}
+
+// IsBootc returns true if this is bootc mode
+func (m Mode) IsBootc() bool {
+	return m == ModeBootc
+}
+
+// IsTraditional returns true if this is a traditional (non-bootc) mode
+func (m Mode) IsTraditional() bool {
+	return m == ModeImage || m == ModePackage
 }
 
 func ParseDistro(s string) (Distro, error) {
@@ -70,7 +89,8 @@ func ParseExportFormat(s string) (ExportFormat, error) {
 func ParseMode(s string) (Mode, error) {
 	m := Mode(s)
 	if !m.IsValid() {
-		return "", fmt.Errorf("mode cannot be empty")
+		// Default to bootc if not specified
+		return ModeBootc, nil
 	}
 	return m, nil
 }
@@ -93,6 +113,12 @@ type BuildRequest struct {
 	ServeArtifact          bool                 `json:"serveArtifact"`
 	Compression            string               `json:"compression,omitempty"`
 	RegistryCredentials    *RegistryCredentials `json:"registryCredentials,omitempty"`
+	PushRepository         string               `json:"pushRepository,omitempty"`
+
+	ContainerPush  string `json:"containerPush,omitempty"`  // Registry URL to push bootc container
+	BuildDiskImage bool   `json:"buildDiskImage,omitempty"` // Build disk image from bootc container
+	ExportOCI      string `json:"exportOci,omitempty"`      // Registry URL to push disk as OCI artifact
+	BuilderImage   string `json:"builderImage,omitempty"`   // Custom builder image
 }
 
 type RegistryCredentials struct {
