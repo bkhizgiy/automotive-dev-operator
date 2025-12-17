@@ -46,12 +46,24 @@ spec:
                 description: AutomotiveImageBuilder specifies the image to use for
                   building
                 type: string
+              buildDiskImage:
+                description: BuildDiskImage indicates whether to build a disk image
+                  from the bootc container
+                type: boolean
+              builderImage:
+                description: BuilderImage is a custom builder image to use
+                type: string
               compression:
                 default: gzip
                 description: Compression specifies the compression algorithm for artifacts
                 enum:
                 - lz4
                 - gzip
+                - xz
+                type: string
+              containerPush:
+                description: ContainerPush is the registry URL to push the bootc container
+                  image
                 type: string
               distro:
                 description: Distro specifies the distribution to build for (e.g.,
@@ -65,6 +77,10 @@ spec:
                 type: string
               exportFormat:
                 description: ExportFormat specifies the output format (image, qcow2)
+                type: string
+              exportOci:
+                description: ExportOCI is the registry URL to push the disk image
+                  as an OCI artifact
                 type: string
               exposeRoute:
                 description: ExposeRoute indicates whether to expose the a route for
@@ -145,6 +161,10 @@ spec:
               phase:
                 description: Phase represents the current phase of the build (Building,
                   Completed, Failed)
+                type: string
+              pushTaskRunName:
+                description: PushTaskRunName is the name of the TaskRun for pushing
+                  artifacts to registry
                 type: string
               pvcName:
                 description: PVCName is the name of the PVC where the artifact is

@@ -58,18 +58,34 @@ uninstall_operator() {
     echo "Uninstalling existing operator"
     echo "=========================================="
 
-    echo "Checking for existing subscription..."
-    if oc get subscription -n ${NAMESPACE} 2>/dev/null | grep -q automotive-dev-operator; then
-        echo "Deleting subscription..."
-        oc delete subscription automotive-dev-operator -n ${NAMESPACE} --ignore-not-found=true
-    fi
+    echo "Removing finalizers from OperatorConfig CRs..."
+    for oc_name in $(oc get operatorconfig -n ${NAMESPACE} -o name 2>/dev/null); do
+        oc patch ${oc_name} -n ${NAMESPACE} --type=merge -p '{"metadata":{"finalizers":[]}}' 2>/dev/null || true
+    done
+    echo "Deleting OperatorConfig CRs..."
+    oc delete operatorconfig --all -n ${NAMESPACE} --ignore-not-found=true --timeout=10s 2>/dev/null || true
 
-    echo "Checking for existing CSVs..."
+    echo "Deleting subscription (if exists)..."
+    oc delete subscriptions.operators.coreos.com automotive-dev-operator -n ${NAMESPACE} --ignore-not-found=true
+
+    echo "Deleting CSVs (if exist)..."
+    oc delete csv -n ${NAMESPACE} -l operators.coreos.com/automotive-dev-operator.${NAMESPACE}= --ignore-not-found=true 2>/dev/null || true
+    # Also try by name pattern
     CSVS=$(oc get csv -n ${NAMESPACE} -o name 2>/dev/null | grep automotive-dev-operator || true)
     if [ -n "$CSVS" ]; then
-        echo "Deleting CSVs..."
-        echo "$CSVS" | xargs -r oc delete -n ${NAMESPACE}
+        echo "$CSVS" | xargs -r oc delete -n ${NAMESPACE} --ignore-not-found=true
     fi
+
+    echo "Deleting InstallPlans (if exist)..."
+    oc delete installplan -n ${NAMESPACE} --all --ignore-not-found=true 2>/dev/null || true
+
+    echo "Deleting operator-managed resources..."
+    oc delete deployment ado-webui ado-build-api ado-controller-manager -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
+    oc delete service ado-webui ado-build-api -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
+    oc delete route ado-webui ado-build-api -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
+    oc delete serviceaccount ado-controller-manager ado-webui -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
+    oc delete configmap ado-webui-nginx-config -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
+    oc delete secret ado-oauth-secrets -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
 
     echo "Waiting for operator pods to terminate..."
     oc wait --for=delete pod -l control-plane=controller-manager -n ${NAMESPACE} --timeout=60s 2>/dev/null || true
@@ -116,6 +132,14 @@ echo "Generating bundle..."
 make bundle IMG=${OPERATOR_IMG} VERSION=${VERSION}
 
 echo ""
+echo "Fixing OPERATOR_IMAGE env var in bundle..."
+# The bundle generator doesn't replace env var values, only container images
+# We need to manually update the OPERATOR_IMAGE env var to use the internal registry
+OPERATOR_IMG_INTERNAL="image-registry.openshift-image-registry.svc:5000/${NAMESPACE}/automotive-dev-operator:latest"
+sed -i.bak "s|value: controller:latest|value: ${OPERATOR_IMG_INTERNAL}|g" bundle/manifests/automotive-dev-operator.clusterserviceversion.yaml
+rm -f bundle/manifests/automotive-dev-operator.clusterserviceversion.yaml.bak
+
+echo ""
 echo "Building bundle image..."
 make bundle-build BUNDLE_IMG=${BUNDLE_IMG}
 
@@ -147,8 +171,8 @@ entries:
 ---
 EOF
 ./bin/opm render bundle/ --output yaml >> catalog/automotive-dev-operator.yaml
-# Update bundle image reference to internal registry
-sed -i.bak "s|image:.*automotive-dev-operator-bundle.*|image: ${BUNDLE_IMG_INTERNAL}|g" catalog/automotive-dev-operator.yaml
+# Update bundle image reference to internal registry (handles both empty and existing image refs)
+sed -i.bak "s|^image:.*|image: ${BUNDLE_IMG_INTERNAL}|g" catalog/automotive-dev-operator.yaml
 rm -f catalog/automotive-dev-operator.yaml.bak
 
 echo ""

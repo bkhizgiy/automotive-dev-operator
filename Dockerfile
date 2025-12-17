@@ -22,6 +22,7 @@ USER 1001
 RUN go mod download
 
 ENV CGO_ENABLED=0
+ENV GOCACHE=/workspace/.cache
 RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags "-s -w" -o manager cmd/main.go
 RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags "-s -w" -o build-api cmd/build-api/main.go
 RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags "-s -w" -o init-secrets cmd/init-secrets/main.go

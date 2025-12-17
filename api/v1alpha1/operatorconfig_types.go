@@ -86,6 +86,12 @@ type OSBuildsConfig struct {
 	// Default: 24
 	// +optional
 	ServeExpiryHours int32 `json:"serveExpiryHours,omitempty"`
+
+	// ClusterRegistryRoute is the external route for the cluster's internal image registry
+	// Required for bootc builds to allow nested containers to pull builder images
+	// Example: "default-route-openshift-image-registry.apps.mycluster.example.com"
+	// +optional
+	ClusterRegistryRoute string `json:"clusterRegistryRoute,omitempty"`
 }
 
 // OperatorConfigStatus defines the observed state of OperatorConfig

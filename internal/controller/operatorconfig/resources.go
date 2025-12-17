@@ -3,6 +3,7 @@ package operatorconfig
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"os"
 
 	routev1 "github.com/openshift/api/route/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -17,6 +18,14 @@ const (
 	defaultWebUIImage    = "quay.io/rh-sdv-cloud/aib-webui:latest"
 	defaultOperatorImage = "quay.io/rh-sdv-cloud/automotive-dev-operator:latest"
 )
+
+// getOperatorImage returns the operator image from env var or default
+func getOperatorImage() string {
+	if img := os.Getenv("OPERATOR_IMAGE"); img != "" {
+		return img
+	}
+	return defaultOperatorImage
+}
 
 // buildWebUIContainers builds the container list for WebUI deployment, conditionally including oauth-proxy
 func (r *OperatorConfigReconciler) buildWebUIContainers(isOpenShift bool) []corev1.Container {
@@ -157,7 +166,7 @@ func (r *OperatorConfigReconciler) buildBuildAPIContainers(isOpenShift bool) []c
 	containers := []corev1.Container{
 		{
 			Name:            "build-api",
-			Image:           "quay.io/rh-sdv-cloud/automotive-dev-operator:latest",
+			Image:           getOperatorImage(),
 			ImagePullPolicy: corev1.PullAlways,
 			Command:         []string{"/build-api"},
 			Resources: corev1.ResourceRequirements{
@@ -211,6 +220,7 @@ func (r *OperatorConfigReconciler) buildBuildAPIContainers(isOpenShift bool) []c
 				"--pass-user-headers=true",
 				"--request-logging=true",
 				"--skip-auth-regex=^/healthz",
+				"--skip-auth-regex=^/v1/",
 				"--email-domain=*",
 				"--skip-provider-button=true",
 				"--upstream-timeout=0",
@@ -547,7 +557,7 @@ func (r *OperatorConfigReconciler) buildBuildAPIDeployment(isOpenShift bool) *ap
 					InitContainers: []corev1.Container{
 						{
 							Name:            "init-secrets",
-							Image:           "quay.io/rh-sdv-cloud/automotive-dev-operator:latest",
+							Image:           getOperatorImage(),
 							ImagePullPolicy: corev1.PullAlways,
 							Command:         []string{"/init-secrets"},
 							Env: []corev1.EnvVar{

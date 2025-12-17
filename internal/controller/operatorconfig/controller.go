@@ -511,6 +511,7 @@ func (r *OperatorConfigReconciler) deployOSBuilds(ctx context.Context, config *a
 	tektonTasks := []*tektonv1.Task{
 		tasks.GenerateBuildAutomotiveImageTask(operatorNamespace, buildConfig, ""),
 		tasks.GeneratePushArtifactRegistryTask(operatorNamespace),
+		tasks.GeneratePrepareBuilderTask(operatorNamespace),
 	}
 
 	for _, task := range tektonTasks {

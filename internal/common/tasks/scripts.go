@@ -12,3 +12,6 @@ var BuildImageScript string
 
 //go:embed scripts/push_artifact.sh
 var PushArtifactScript string
+
+//go:embed scripts/build_builder.sh
+var BuildBuilderScript string

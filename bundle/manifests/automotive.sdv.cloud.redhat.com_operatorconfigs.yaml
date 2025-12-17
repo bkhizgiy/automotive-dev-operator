@@ -55,6 +55,12 @@ spec:
               osBuilds:
                 description: OSBuilds defines the configuration for OS build operations
                 properties:
+                  clusterRegistryRoute:
+                    description: |-
+                      ClusterRegistryRoute is the external route for the cluster's internal image registry
+                      Required for bootc builds to allow nested containers to pull builder images
+                      Example: "default-route-openshift-image-registry.apps.mycluster.example.com"
+                    type: string
                   enabled:
                     default: true
                     description: Enabled determines if Tekton tasks for OS builds

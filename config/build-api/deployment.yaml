@@ -68,6 +68,7 @@ spec:
         - --pass-user-headers=true
         - --request-logging=true
         - --skip-auth-regex=^/healthz
+        - --skip-auth-regex=^/v1/
         - --email-domain=*
         - --skip-provider-button=true
         - --upstream-timeout=0

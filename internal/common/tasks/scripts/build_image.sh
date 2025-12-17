@@ -10,6 +10,32 @@ cat > /etc/containers/registries.conf << EOF
 registries = ['image-registry.openshift-image-registry.svc:5000']
 EOF
 
+if [ -e /dev/fuse ]; then
+  if ! command -v fuse-overlayfs >/dev/null 2>&1; then
+    echo "Installing fuse-overlayfs..."
+    dnf install -y fuse-overlayfs 2>/dev/null || yum install -y fuse-overlayfs 2>/dev/null || true
+  fi
+
+  if command -v fuse-overlayfs >/dev/null 2>&1; then
+    echo "Configuring fuse-overlayfs for container storage..."
+    cat > /etc/containers/storage.conf << EOF
+[storage]
+driver = "overlay"
+runroot = "/run/containers/storage"
+graphroot = "/var/lib/containers/storage"
+
+[storage.options.overlay]
+mount_program = "/usr/bin/fuse-overlayfs"
+EOF
+  else
+    echo "Warning: fuse-overlayfs install failed, using vfs driver"
+    export STORAGE_DRIVER=vfs
+  fi
+else
+  echo "Warning: /dev/fuse not available, using vfs driver"
+  export STORAGE_DRIVER=vfs
+fi
+
 TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
 REGISTRY="image-registry.openshift-image-registry.svc:5000"
 NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
@@ -28,6 +54,24 @@ EOF
 export REGISTRY_AUTH_FILE=$HOME/.authjson
 export CONTAINERS_REGISTRIES_CONF="/etc/containers/registries.conf"
 
+# Read registry credentials from workspace if available
+REGISTRY_AUTH_DIR="/workspace/registry-auth"
+if [ -f "$REGISTRY_AUTH_DIR/REGISTRY_URL" ]; then
+    REGISTRY_URL=$(cat "$REGISTRY_AUTH_DIR/REGISTRY_URL")
+fi
+if [ -f "$REGISTRY_AUTH_DIR/REGISTRY_USERNAME" ]; then
+    REGISTRY_USERNAME=$(cat "$REGISTRY_AUTH_DIR/REGISTRY_USERNAME")
+fi
+if [ -f "$REGISTRY_AUTH_DIR/REGISTRY_PASSWORD" ]; then
+    REGISTRY_PASSWORD=$(cat "$REGISTRY_AUTH_DIR/REGISTRY_PASSWORD")
+fi
+if [ -f "$REGISTRY_AUTH_DIR/REGISTRY_TOKEN" ]; then
+    REGISTRY_TOKEN=$(cat "$REGISTRY_AUTH_DIR/REGISTRY_TOKEN")
+fi
+if [ -f "$REGISTRY_AUTH_DIR/REGISTRY_AUTH_FILE_CONTENT" ]; then
+    REGISTRY_AUTH_FILE_CONTENT=$(cat "$REGISTRY_AUTH_DIR/REGISTRY_AUTH_FILE_CONTENT")
+fi
+
 if [ -n "$REGISTRY_AUTH_FILE_CONTENT" ]; then
     echo "Using provided registry auth file content"
     echo "$REGISTRY_AUTH_FILE_CONTENT" > $HOME/.custom_authjson
@@ -41,9 +85,6 @@ elif [ -n "$REGISTRY_USERNAME" ] && [ -n "$REGISTRY_PASSWORD" ] && [ -n "$REGIST
   "auths": {
     "$REGISTRY_URL": {
       "auth": "$AUTH_STRING"
-    },
-    "$REGISTRY": {
-      "auth": "$(echo -n "serviceaccount:$TOKEN" | base64 -w0)"
     }
   }
 }
@@ -122,9 +163,9 @@ fi
 cleanName=$(params.distro)-$(params.target)
 exportFile=${cleanName}${file_extension}
 
-mode_param=""
-if [ -n "$(params.mode)" ]; then
-  mode_param="--mode $(params.mode)"
+BUILD_MODE="$(params.mode)"
+if [ -z "$BUILD_MODE" ]; then
+  BUILD_MODE="bootc"
 fi
 
 CUSTOM_DEFS=""
@@ -177,57 +218,144 @@ get_flag_value() {
 USE_OVERRIDE=false
 if [ -f "$AIB_OVERRIDE_ARGS_FILE" ]; then
   USE_OVERRIDE=true
-  override_export=$(get_flag_value "--export" $AIB_ARGS)
+  override_format=$(get_flag_value "--format" $AIB_ARGS)
+  if [ -z "$override_format" ]; then
+    override_format=$(get_flag_value "--export" $AIB_ARGS)
+  fi
   override_distro=$(get_flag_value "--distro" $AIB_ARGS)
   override_target=$(get_flag_value "--target" $AIB_ARGS)
   [ -n "$override_distro" ] && cleanName="$override_distro-${cleanName#*-}"
   [ -n "$override_target" ] && cleanName="${cleanName%-*}-$override_target"
-  if [ -n "$override_export" ]; then
-    case "$override_export" in
-      image)
+  if [ -n "$override_format" ]; then
+    case "$override_format" in
+      image|raw)
         file_extension=".raw" ;;
       qcow2)
         file_extension=".qcow2" ;;
       *)
-        file_extension=".$override_export" ;;
+        file_extension=".$override_format" ;;
     esac
   fi
   exportFile=${cleanName}${file_extension}
 fi
 
-if [ "$USE_OVERRIDE" = true ]; then
-  build_command="automotive-image-builder --verbose \
-  build \
-  $CUSTOM_DEFS \
-  --build-dir=/output/_build \
-  --osbuild-manifest=/output/image.json \
-  $AIB_ARGS \
-  $MANIFEST_FILE \
-  /output/${exportFile}"
-else
-  build_command="automotive-image-builder --verbose \
-  build \
-  $CUSTOM_DEFS \
-  --distro $(params.distro) \
-  --target $(params.target) \
-  --arch=${arch} \
-  --build-dir=/output/_build \
-  --export $(params.export-format) \
-  --osbuild-manifest=/output/image.json \
-  $mode_param \
-  $AIB_ARGS \
-  $MANIFEST_FILE \
-  /output/${exportFile}"
+CONTAINER_PUSH="$(params.container-push)"
+BUILD_DISK_IMAGE="$(params.build-disk-image)"
+EXPORT_OCI="$(params.export-oci)"
+BUILDER_IMAGE="$(params.builder-image)"
+
+BOOTC_CONTAINER_NAME="localhost/aib-build:$(params.distro)-$(params.target)"
+
+BUILD_CONTAINER_ARG=""
+LOCAL_BUILDER_IMAGE="localhost/aib-build:$(params.distro)"
+if [ -n "$BUILDER_IMAGE" ] && [ "$BUILD_MODE" = "bootc" ]; then
+  echo "Pulling builder image to local storage: $BUILDER_IMAGE"
+
+  TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null || echo "")
+  if [ -n "$TOKEN" ]; then
+    REGISTRY_HOST=$(echo "$BUILDER_IMAGE" | cut -d'/' -f1)
+    cat > /tmp/builder-auth.json <<EOF
+{
+  "auths": {
+    "$REGISTRY_HOST": {
+      "auth": "$(echo -n "serviceaccount:$TOKEN" | base64 -w0)"
+    }
+  }
+}
+EOF
+    skopeo copy --authfile=/tmp/builder-auth.json \
+      "docker://$BUILDER_IMAGE" \
+      "containers-storage:$LOCAL_BUILDER_IMAGE"
+  else
+    skopeo copy \
+      "docker://$BUILDER_IMAGE" \
+      "containers-storage:$LOCAL_BUILDER_IMAGE"
+  fi
+
+  echo "Builder image ready in local storage: $LOCAL_BUILDER_IMAGE"
+  BUILD_CONTAINER_ARG="--build-container $LOCAL_BUILDER_IMAGE"
 fi
 
-echo "contents of shared workspace before build:"
-ls -la $(workspaces.shared-workspace.path)/
-echo "contents of working manifest:"
-cat "$MANIFEST_FILE"
+if [ "$USE_OVERRIDE" = true ]; then
+  build_command="aib --verbose \
+  build \
+  $CUSTOM_DEFS \
+  --build-dir=/output/_build \
+  --osbuild-manifest=/output/image.json \
+  $AIB_ARGS \
+  $MANIFEST_FILE \
+  /output/${exportFile}"
+  echo "Running the build command (override): $build_command"
+  eval "$build_command"
+else
+  case "$BUILD_MODE" in
+    bootc)
+      build_command="aib --verbose build \
+      --distro $(params.distro) \
+      --target $(params.target) \
+      --arch=${arch} \
+      --build-dir=/output/_build \
+      --osbuild-manifest=/output/image.json \
+      $BUILD_CONTAINER_ARG \
+      $CUSTOM_DEFS \
+      $AIB_ARGS \
+      $MANIFEST_FILE \
+      $BOOTC_CONTAINER_NAME \
+      /output/${exportFile}"
+      echo "Running bootc build: $build_command"
+      eval "$build_command"
 
+      if [ -n "$CONTAINER_PUSH" ]; then
+        echo "Pushing container to registry: $CONTAINER_PUSH"
+        skopeo copy \
+          --authfile="$REGISTRY_AUTH_FILE" \
+          "containers-storage:$BOOTC_CONTAINER_NAME" \
+          "docker://$CONTAINER_PUSH"
+        echo "Container pushed successfully to $CONTAINER_PUSH"
+      fi
+      ;;
+    image)
+      build_command="aib --verbose \
+      build \
+      $CUSTOM_DEFS \
+      --distro $(params.distro) \
+      --target $(params.target) \
+      --arch=${arch} \
+      --export $(params.export-format) \
+      --mode image \
+      --build-dir=/output/_build \
+      --osbuild-manifest=/output/image.json \
+      $AIB_ARGS \
+      $MANIFEST_FILE \
+      /output/${exportFile}"
+      echo "Running the build command: $build_command"
+      eval "$build_command"
+      ;;
+    package)
+      build_command="aib-dev --verbose \
+      build \
+      $CUSTOM_DEFS \
+      --distro $(params.distro) \
+      --target $(params.target) \
+      --arch=${arch} \
+      --format $(params.export-format) \
+      --build-dir=/output/_build \
+      --osbuild-manifest=/output/image.json \
+      $AIB_ARGS \
+      $MANIFEST_FILE \
+      /output/${exportFile}"
+      echo "Running the build command: $build_command"
+      eval "$build_command"
+      ;;
+    *)
+      echo "Error: Unknown build mode '$BUILD_MODE'. Supported modes: bootc, image, package"
+      exit 1
+      ;;
+  esac
+fi
 
-echo "Running the build command: $build_command"
-eval "$build_command"
+echo "Build completed. Contents of output directory:"
+ls -la /output/ || true
 
 pushd /output
 ln -sf ./${exportFile} ./disk.img
@@ -398,7 +526,7 @@ else
   echo "Warning: final_name is empty, no artifact filename will be recorded"
 fi
 
-# Ensure all filesystem writes are flushed to disk before task completes
+
 echo "Syncing filesystem to ensure all artifacts are written..."
 sync
 echo "Filesystem sync completed"
