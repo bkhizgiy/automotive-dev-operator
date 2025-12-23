@@ -544,6 +544,14 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 							},
 						},
 					},
+					// Only run prepare-builder for bootc builds
+					When: []tektonv1.WhenExpression{
+						{
+							Input:    "$(params.mode)",
+							Operator: "in",
+							Values:   []string{"bootc"},
+						},
+					},
 					Params: []tektonv1.Param{
 						{
 							Name: "distro",
@@ -606,7 +614,8 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 							},
 						},
 					},
-					RunAfter: []string{"prepare-builder"},
+					// Wait for prepare-builder if it runs (bootc mode), otherwise start immediately
+					RunAfter: []string{},
 					Params: []tektonv1.Param{
 						{
 							Name: "target-architecture",
@@ -681,8 +690,11 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 						{
 							Name: "builder-image",
 							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(tasks.prepare-builder.results.builder-image-ref)",
+								Type: tektonv1.ParamTypeString,
+								// Use pipeline param directly - controller sets this based on mode
+								// For bootc: points to cluster registry where prepare-builder cached the image
+								// For traditional: empty (not needed)
+								StringVal: "$(params.builder-image)",
 							},
 						},
 					},

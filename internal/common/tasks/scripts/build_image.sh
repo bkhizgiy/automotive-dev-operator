@@ -315,14 +315,13 @@ else
       fi
       ;;
     image)
-      build_command="aib --verbose \
+      build_command="aib-dev --verbose \
       build \
       $CUSTOM_DEFS \
       --distro $(params.distro) \
       --target $(params.target) \
       --arch=${arch} \
-      --export $(params.export-format) \
-      --mode image \
+      --format $(params.export-format) \
       --build-dir=/output/_build \
       --osbuild-manifest=/output/image.json \
       $AIB_ARGS \
