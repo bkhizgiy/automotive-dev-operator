@@ -54,7 +54,7 @@ spec:
       initContainers:
       - name: init-oauth-secrets
         image: controller:latest
-        imagePullPolicy: Always
+        imagePullPolicy: IfNotPresent
         command:
         - /init-secrets
         env:
@@ -82,7 +82,7 @@ spec:
           - --health-probe-bind-address=:8081
           - --metrics-bind-address=0
         image: controller:latest
-        imagePullPolicy: Always
+        imagePullPolicy: IfNotPresent
         name: manager
         env:
         - name: BUILD_API_NAMESPACE

@@ -167,7 +167,7 @@ func (r *OperatorConfigReconciler) buildBuildAPIContainers(isOpenShift bool) []c
 		{
 			Name:            "build-api",
 			Image:           getOperatorImage(),
-			ImagePullPolicy: corev1.PullAlways,
+			ImagePullPolicy: corev1.PullIfNotPresent,
 			Command:         []string{"/build-api"},
 			Resources: corev1.ResourceRequirements{
 				Requests: corev1.ResourceList{
@@ -296,7 +296,7 @@ func (r *OperatorConfigReconciler) buildWebUIDeployment(isOpenShift bool) *appsv
 						{
 							Name:            "init-secrets",
 							Image:           defaultOperatorImage,
-							ImagePullPolicy: corev1.PullAlways,
+							ImagePullPolicy: corev1.PullIfNotPresent,
 							Command:         []string{"/init-secrets"},
 							Env: []corev1.EnvVar{
 								{
@@ -558,7 +558,7 @@ func (r *OperatorConfigReconciler) buildBuildAPIDeployment(isOpenShift bool) *ap
 						{
 							Name:            "init-secrets",
 							Image:           getOperatorImage(),
-							ImagePullPolicy: corev1.PullAlways,
+							ImagePullPolicy: corev1.PullIfNotPresent,
 							Command:         []string{"/init-secrets"},
 							Env: []corev1.EnvVar{
 								{
