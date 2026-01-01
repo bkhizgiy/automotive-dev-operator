@@ -3,15 +3,20 @@ set -e
 
 # Parse command line options
 UNINSTALL=false
+INSTALL=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         --uninstall)
             UNINSTALL=true
             shift
             ;;
+        --install)
+            INSTALL=true
+            shift
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--uninstall]"
+            echo "Usage: $0 [--uninstall] [--install]"
             exit 1
             ;;
     esac
@@ -120,12 +125,53 @@ echo "Logging in to OpenShift registry..."
 ${CONTAINER_TOOL} login -u $(oc whoami) -p $(oc whoami -t) ${REGISTRY} --tls-verify=false
 
 echo ""
-echo "Building operator image..."
-make docker-build IMG=${OPERATOR_IMG}
+echo "Ensuring namespace ${NAMESPACE} exists..."
+oc create namespace ${NAMESPACE} --dry-run=client -o yaml | oc apply -f -
 
 echo ""
-echo "Pushing operator image..."
-${CONTAINER_TOOL} push ${OPERATOR_IMG} --tls-verify=false
+echo "Detecting cluster architectures..."
+CLUSTER_ARCHS=$(oc get nodes -o jsonpath='{.items[*].status.nodeInfo.architecture}' 2>/dev/null | tr ' ' '\n' | sort -u | tr '\n' ' ')
+echo "Found architectures: ${CLUSTER_ARCHS}"
+
+# Build multi-arch manifest if cluster has multiple architectures
+ARCHS_ARRAY=(${CLUSTER_ARCHS})
+if [ ${#ARCHS_ARRAY[@]} -gt 1 ]; then
+    echo ""
+    echo "Multi-arch cluster detected. Building for all architectures..."
+
+    # Build and push each architecture
+    for arch in ${CLUSTER_ARCHS}; do
+        echo ""
+        echo "Building for linux/${arch}..."
+        ${CONTAINER_TOOL} buildx build --platform linux/${arch} --load -t ${OPERATOR_IMG}-${arch} .
+        echo "Pushing ${OPERATOR_IMG}-${arch}..."
+        ${CONTAINER_TOOL} push ${OPERATOR_IMG}-${arch} --tls-verify=false
+    done
+
+    echo ""
+    echo "Creating multi-arch manifest..."
+    # Remove any existing manifest or image with this name
+    ${CONTAINER_TOOL} manifest rm ${OPERATOR_IMG} 2>/dev/null || true
+    ${CONTAINER_TOOL} rmi ${OPERATOR_IMG} 2>/dev/null || true
+
+    MANIFEST_ARGS=""
+    for arch in ${CLUSTER_ARCHS}; do
+        MANIFEST_ARGS="${MANIFEST_ARGS} ${OPERATOR_IMG}-${arch}"
+    done
+    ${CONTAINER_TOOL} manifest create ${OPERATOR_IMG} ${MANIFEST_ARGS}
+    ${CONTAINER_TOOL} manifest push ${OPERATOR_IMG} --tls-verify=false
+else
+    BUILD_PLATFORM="linux/${ARCHS_ARRAY[0]}"
+    echo "Single architecture cluster. Building for: ${BUILD_PLATFORM}"
+
+    echo ""
+    echo "Building operator image..."
+    make docker-build IMG=${OPERATOR_IMG} BUILD_PLATFORM=${BUILD_PLATFORM}
+
+    echo ""
+    echo "Pushing operator image..."
+    ${CONTAINER_TOOL} push ${OPERATOR_IMG} --tls-verify=false
+fi
 
 echo ""
 echo "Generating bundle..."
@@ -195,7 +241,7 @@ oc apply -f catalogsource.yaml -n ${CATALOG_NAMESPACE}
 
 echo ""
 echo "=========================================="
-echo "Deployment Complete!"
+echo "Catalog Deployment Complete!"
 echo "=========================================="
 echo ""
 echo "Your operator catalog has been deployed to OpenShift."
@@ -203,3 +249,78 @@ echo ""
 echo "To view the catalog pods:"
 echo "  oc get pods -n openshift-marketplace | grep automotive-dev-operator"
 echo ""
+
+if [ "$INSTALL" = true ]; then
+    echo ""
+    echo "=========================================="
+    echo "Installing Operator"
+    echo "=========================================="
+
+    echo ""
+    echo "Waiting for catalog pod to be ready..."
+    for i in {1..60}; do
+        CATALOG_POD=$(oc get pods -n ${CATALOG_NAMESPACE} -l olm.catalogSource=automotive-dev-operator-catalog -o name 2>/dev/null || echo "")
+        if [ -n "$CATALOG_POD" ]; then
+            oc wait --for=condition=Ready ${CATALOG_POD} -n ${CATALOG_NAMESPACE} --timeout=120s && break
+        fi
+        sleep 2
+    done
+
+    echo ""
+    echo "Creating OperatorGroup..."
+    oc apply -f config/samples/operatorgroup.yaml
+
+    echo ""
+    echo "Creating Subscription..."
+    oc apply -f config/samples/subscription.yaml
+
+    echo ""
+    echo "Waiting for CSV to be installed..."
+    for i in {1..60}; do
+        CSV=$(oc get csv -n ${NAMESPACE} -o name 2>/dev/null | grep automotive-dev-operator || echo "")
+        if [ -n "$CSV" ]; then
+            PHASE=$(oc get ${CSV} -n ${NAMESPACE} -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+            echo "  CSV phase: ${PHASE}"
+            if [ "$PHASE" = "Succeeded" ]; then
+                break
+            elif [ "$PHASE" = "Failed" ]; then
+                echo "ERROR: CSV installation failed!"
+                oc get ${CSV} -n ${NAMESPACE} -o jsonpath='{.status.message}'
+                echo ""
+                exit 1
+            fi
+        else
+            echo "  Waiting for CSV to be created..."
+        fi
+        sleep 5
+    done
+
+    echo ""
+    echo "Waiting for operator deployment to be available..."
+    for i in {1..30}; do
+        if oc get deployment ado-controller-manager -n ${NAMESPACE} &>/dev/null; then
+            oc wait --for=condition=Available deployment/ado-controller-manager -n ${NAMESPACE} --timeout=300s && break
+        fi
+        echo "  Deployment not yet created, checking pod status..."
+        oc get pods -n ${NAMESPACE} 2>/dev/null | grep -v "^NAME" || true
+        sleep 5
+    done
+
+    echo ""
+    echo "Creating sample OperatorConfig..."
+    oc apply -f config/samples/automotive_v1_operatorconfig.yaml
+
+    echo ""
+    echo "=========================================="
+    echo "Installation Complete!"
+    echo "=========================================="
+    echo ""
+    echo "The operator is now installed and configured."
+    echo ""
+    echo "To check operator status:"
+    echo "  oc get pods -n ${NAMESPACE}"
+    echo ""
+    echo "To check OperatorConfig:"
+    echo "  oc get operatorconfig -n ${NAMESPACE}"
+    echo ""
+fi

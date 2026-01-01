@@ -209,6 +209,15 @@ func GenerateBuildAutomotiveImageTask(namespace string, buildConfig *BuildConfig
 						StringVal: "",
 					},
 				},
+				{
+					Name:        "cluster-registry-route",
+					Type:        tektonv1.ParamTypeString,
+					Description: "External route for cluster image registry (for builder image lookup)",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "",
+					},
+				},
 			},
 			Results: []tektonv1.TaskResult{
 				{
@@ -695,6 +704,13 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 								// For bootc: points to cluster registry where prepare-builder cached the image
 								// For traditional: empty (not needed)
 								StringVal: "$(params.builder-image)",
+							},
+						},
+						{
+							Name: "cluster-registry-route",
+							Value: tektonv1.ParamValue{
+								Type:      tektonv1.ParamTypeString,
+								StringVal: "$(params.cluster-registry-route)",
 							},
 						},
 					},
