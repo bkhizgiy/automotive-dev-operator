@@ -107,9 +107,27 @@ mount --bind "$destPath" "$osbuildPath"
 echo "Running: aib build-builder --distro $DISTRO"
 aib --verbose build-builder --distro "$DISTRO"
 
+# Find what image was actually created by aib (it might use distro-target naming)
+echo "Checking for created builder images..."
+ACTUAL_IMAGE=""
+for img in $(podman images --format "{{.Repository}}:{{.Tag}}" | grep "localhost/aib-build:"); do
+    echo "Found image: $img"
+    if [[ "$img" == *"$DISTRO"* ]]; then
+        ACTUAL_IMAGE="$img"
+        echo "Using image: $ACTUAL_IMAGE"
+        break
+    fi
+done
+
+if [ -z "$ACTUAL_IMAGE" ]; then
+    echo "ERROR: Could not find builder image containing '$DISTRO'"
+    podman images | grep aib-build || echo "No aib-build images found"
+    exit 1
+fi
+
 echo "Pushing to cluster registry: $TARGET_IMAGE"
 skopeo copy --authfile="$REGISTRY_AUTH_FILE" \
-  "containers-storage:$LOCAL_IMAGE" \
+  "containers-storage:$ACTUAL_IMAGE" \
   "docker://$TARGET_IMAGE"
 
 echo "Builder image ready: $TARGET_IMAGE"

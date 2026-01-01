@@ -511,16 +511,8 @@ func (r *ImageBuildReconciler) createBuildTaskRun(ctx context.Context, imageBuil
 			},
 		})
 
-		if imageBuild.Spec.Mode == "bootc" && imageBuild.Spec.BuildDiskImage && imageBuild.Spec.BuilderImage == "" {
-			builderImagePath := fmt.Sprintf("%s/%s/aib-build:%s", clusterRegistryRoute, imageBuild.Namespace, imageBuild.Spec.Distro)
-			for i, p := range params {
-				if p.Name == "builder-image" {
-					params[i].Value.StringVal = builderImagePath
-					break
-				}
-			}
-			log.Info("Set builder image path for bootc build", "path", builderImagePath)
-		}
+		// Let prepare-builder task handle building the image automatically
+		// when builder-image is empty for bootc builds
 	}
 
 	pipelineWorkspaces := []tektonv1.WorkspaceBinding{

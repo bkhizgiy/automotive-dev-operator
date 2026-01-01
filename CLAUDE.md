@@ -34,7 +34,10 @@ cd webui && npm install       # Install dependencies
 cd webui && npm start         # Start dev server (set WEBUI_PROXY_TARGET and DEV_BEARER_TOKEN)
 make webui-build              # Build for production
 
-# Kubernetes deployment
+# Kubernetes deployment (preferred method)
+./hack/deploy-catalog.sh --uninstall --install  # Redeploy operator (use this for testing changes)
+
+# Alternative deployment
 make install                  # Install CRDs
 make deploy IMG=<registry>/automotive-dev-operator:tag
 make undeploy

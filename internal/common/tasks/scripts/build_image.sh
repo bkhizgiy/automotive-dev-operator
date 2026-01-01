@@ -243,11 +243,21 @@ CONTAINER_PUSH="$(params.container-push)"
 BUILD_DISK_IMAGE="$(params.build-disk-image)"
 EXPORT_OCI="$(params.export-oci)"
 BUILDER_IMAGE="$(params.builder-image)"
+CLUSTER_REGISTRY_ROUTE="$(params.cluster-registry-route)"
 
 BOOTC_CONTAINER_NAME="localhost/aib-build:$(params.distro)-$(params.target)"
 
 BUILD_CONTAINER_ARG=""
 LOCAL_BUILDER_IMAGE="localhost/aib-build:$(params.distro)"
+
+# For bootc builds, if no builder-image is provided but cluster-registry-route is set,
+# use the image that prepare-builder cached in the cluster registry
+if [ -z "$BUILDER_IMAGE" ] && [ "$BUILD_MODE" = "bootc" ] && [ -n "$CLUSTER_REGISTRY_ROUTE" ]; then
+  NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+  BUILDER_IMAGE="${CLUSTER_REGISTRY_ROUTE}/${NAMESPACE}/aib-build:$(params.distro)"
+  echo "Using builder image from cluster registry: $BUILDER_IMAGE"
+fi
+
 if [ -n "$BUILDER_IMAGE" ] && [ "$BUILD_MODE" = "bootc" ]; then
   echo "Pulling builder image to local storage: $BUILDER_IMAGE"
 
