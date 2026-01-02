@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/containers/image/v5/copy"
+	"github.com/containers/image/v5/docker"
+	"github.com/containers/image/v5/oci/layout"
+	"github.com/containers/image/v5/signature"
+	"github.com/containers/image/v5/types"
 	"gopkg.in/yaml.v3"
 
 	buildapitypes "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi"
@@ -155,8 +161,8 @@ func main() {
 	buildBootcCmd.Flags().StringVar(&diskFormat, "format", "qcow2", "disk image format (qcow2, raw, simg)")
 	buildBootcCmd.Flags().StringVar(&compressionAlgo, "compress", "gzip", "compression algorithm (gzip, lz4, xz)")
 	buildBootcCmd.Flags().StringVar(&exportOCI, "export-oci", "", "push disk image as OCI artifact to registry")
-	buildBootcCmd.Flags().StringVar(&registryUsername, "registry-username", "", "registry username for push/export")
-	buildBootcCmd.Flags().StringVar(&registryPassword, "registry-password", "", "registry password for push/export")
+	buildBootcCmd.Flags().StringVar(&registryUsername, "registry-username", "", "registry username for push/export (or set REGISTRY_USERNAME env var)")
+	buildBootcCmd.Flags().StringVar(&registryPassword, "registry-password", "", "registry password for push/export (or set REGISTRY_PASSWORD env var, or use docker/podman auth)")
 	buildBootcCmd.Flags().StringVar(&automotiveImageBuilder, "automotive-image-builder", "quay.io/centos-sig-automotive/automotive-image-builder:latest", "container image for aib")
 	buildBootcCmd.Flags().StringVar(&builderImage, "builder-image", "", "custom aib-build container")
 	buildBootcCmd.Flags().StringVar(&storageClass, "storage-class", "", "storage class for build workspace PVC")
@@ -164,6 +170,7 @@ func main() {
 	buildBootcCmd.Flags().IntVar(&timeout, "timeout", 60, "timeout in minutes")
 	buildBootcCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", false, "wait for build to complete")
 	buildBootcCmd.Flags().BoolVarP(&followLogs, "follow", "f", false, "follow build logs")
+	buildBootcCmd.Flags().StringVar(&downloadFile, "download", "", "download disk image artifact to local file (requires --export-oci)")
 	_ = buildBootcCmd.MarkFlagRequired("name")
 	_ = buildBootcCmd.MarkFlagRequired("arch")
 
@@ -179,8 +186,8 @@ func main() {
 	buildTraditionalCmd.Flags().StringVar(&compressionAlgo, "compress", "gzip", "compression algorithm (gzip, lz4, xz)")
 	buildTraditionalCmd.Flags().StringVar(&downloadFile, "download", "", "download artifact to local file")
 	buildTraditionalCmd.Flags().StringVar(&exportOCI, "push", "", "push disk image as OCI artifact to registry")
-	buildTraditionalCmd.Flags().StringVar(&registryUsername, "registry-username", "", "registry username for push")
-	buildTraditionalCmd.Flags().StringVar(&registryPassword, "registry-password", "", "registry password for push")
+	buildTraditionalCmd.Flags().StringVar(&registryUsername, "registry-username", "", "registry username for push (or set REGISTRY_USERNAME env var)")
+	buildTraditionalCmd.Flags().StringVar(&registryPassword, "registry-password", "", "registry password for push (or set REGISTRY_PASSWORD env var, or use docker/podman auth)")
 	buildTraditionalCmd.Flags().StringVar(&automotiveImageBuilder, "automotive-image-builder", "quay.io/centos-sig-automotive/automotive-image-builder:latest", "container image for aib")
 	buildTraditionalCmd.Flags().StringVar(&storageClass, "storage-class", "", "storage class for build workspace PVC")
 	buildTraditionalCmd.Flags().StringArrayVar(&customDefs, "define", []string{}, "custom definition KEY=VALUE")
@@ -208,6 +215,9 @@ func runBuildBootc(cmd *cobra.Command, args []string) {
 	if buildName == "" {
 		handleError(fmt.Errorf("--name is required"))
 	}
+	if downloadFile != "" && exportOCI == "" {
+		handleError(fmt.Errorf("--download requires --export-oci (the disk image must be pushed to a registry first)"))
+	}
 
 	if strings.TrimSpace(authToken) == "" {
 		if tok, err := loadTokenFromKubeconfig(); err == nil && strings.TrimSpace(tok) != "" {
@@ -232,8 +242,18 @@ func runBuildBootc(cmd *cobra.Command, args []string) {
 	// Extract registry URL from push if not empty
 	effectiveRegistryURL := ""
 	if containerPush != "" || exportOCI != "" {
+		// Try environment variables if command line flags are empty
+		if registryUsername == "" {
+			registryUsername = os.Getenv("REGISTRY_USERNAME")
+		}
+		if registryPassword == "" {
+			registryPassword = os.Getenv("REGISTRY_PASSWORD")
+		}
+
+		// Note: Docker/Podman auth files will be tried as fallback in pullOCIArtifact
 		if registryUsername == "" || registryPassword == "" {
-			handleError(fmt.Errorf("--registry-username and --registry-password are required when --push or --export-oci is specified"))
+			fmt.Println("Warning: No registry credentials provided via flags or environment variables.")
+			fmt.Println("Will attempt to use Docker/Podman auth files as fallback.")
 		}
 		pushTarget := containerPush
 		if pushTarget == "" {
@@ -291,9 +311,158 @@ func runBuildBootc(cmd *cobra.Command, args []string) {
 		handleFileUploads(ctx, api, resp.Name, localRefs)
 	}
 
-	if waitForBuild || followLogs {
+	if waitForBuild || followLogs || downloadFile != "" {
 		waitForBuildCompletion(ctx, api, resp.Name, "")
 	}
+
+	if downloadFile != "" {
+		if err := pullOCIArtifact(exportOCI, downloadFile, registryUsername, registryPassword); err != nil {
+			handleError(fmt.Errorf("failed to download OCI artifact: %w", err))
+		}
+	}
+}
+
+func pullOCIArtifact(ociRef, destPath, username, password string) error {
+	fmt.Printf("Pulling OCI artifact %s to %s\n", ociRef, destPath)
+
+	// Ensure output directory exists
+	destDir := filepath.Dir(destPath)
+	if destDir != "" && destDir != "." {
+		if err := os.MkdirAll(destDir, 0755); err != nil {
+			return fmt.Errorf("create output dir: %w", err)
+		}
+	}
+
+	ctx := context.Background()
+
+	// Set up system context with authentication
+	systemCtx := &types.SystemContext{}
+	if username != "" && password != "" {
+		fmt.Printf("Using provided username/password credentials\n")
+		systemCtx.DockerAuthConfig = &types.DockerAuthConfig{
+			Username: username,
+			Password: password,
+		}
+	} else {
+		fmt.Printf("No explicit credentials provided, will use Docker/Podman auth files if available\n")
+		// containers/image will automatically use:
+		// - $HOME/.docker/config.json
+		// - $XDG_RUNTIME_DIR/containers/auth.json
+		// - /run/containers/$UID/auth.json
+		// - $HOME/.config/containers/auth.json
+	}
+
+	// Set up policy context (allow all)
+	policyCtx, err := signature.NewPolicyContext(&signature.Policy{Default: []signature.PolicyRequirement{signature.NewPRInsecureAcceptAnything()}})
+	if err != nil {
+		return fmt.Errorf("create policy context: %w", err)
+	}
+
+	// Source: docker registry reference
+	srcRef, err := docker.ParseReference("//" + ociRef)
+	if err != nil {
+		return fmt.Errorf("parse source reference: %w", err)
+	}
+
+	// Create temporary directory for OCI layout
+	tempDir, err := os.MkdirTemp("", "oci-pull-*")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Destination: local OCI layout
+	destRef, err := layout.ParseReference(tempDir + ":latest")
+	if err != nil {
+		return fmt.Errorf("parse destination reference: %w", err)
+	}
+
+	// Copy the image from registry to local OCI layout
+	fmt.Printf("Downloading OCI artifact...")
+	_, err = copy.Image(ctx, policyCtx, destRef, srcRef, &copy.Options{
+		ReportWriter:   os.Stdout,
+		SourceCtx:      systemCtx,
+		DestinationCtx: systemCtx,
+	})
+	if err != nil {
+		return fmt.Errorf("copy image: %w", err)
+	}
+
+	fmt.Printf("\nExtracting artifact to %s\n", destPath)
+
+	// Extract the artifact blob to the destination file
+	if err := extractOCIArtifactBlob(tempDir, destPath); err != nil {
+		return fmt.Errorf("extract artifact: %w", err)
+	}
+
+	fmt.Printf("Downloaded to %s\n", destPath)
+	return nil
+}
+
+func extractOCIArtifactBlob(ociLayoutPath, destPath string) error {
+	// Read the index.json to find the manifest
+	indexPath := filepath.Join(ociLayoutPath, "index.json")
+	indexData, err := os.ReadFile(indexPath)
+	if err != nil {
+		return fmt.Errorf("read index.json: %w", err)
+	}
+
+	var index struct {
+		Manifests []struct {
+			Digest string `json:"digest"`
+		} `json:"manifests"`
+	}
+	if err := json.Unmarshal(indexData, &index); err != nil {
+		return fmt.Errorf("parse index.json: %w", err)
+	}
+
+	if len(index.Manifests) == 0 {
+		return fmt.Errorf("no manifests found in index")
+	}
+
+	// Get the manifest digest and read the manifest
+	manifestDigest := strings.TrimPrefix(index.Manifests[0].Digest, "sha256:")
+	manifestPath := filepath.Join(ociLayoutPath, "blobs", "sha256", manifestDigest)
+	manifestData, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return fmt.Errorf("read manifest: %w", err)
+	}
+
+	var manifest struct {
+		Layers []struct {
+			Digest string `json:"digest"`
+		} `json:"layers"`
+	}
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		return fmt.Errorf("parse manifest: %w", err)
+	}
+
+	if len(manifest.Layers) == 0 {
+		return fmt.Errorf("no layers found in manifest")
+	}
+
+	// Extract the first layer (should contain the disk image)
+	layerDigest := strings.TrimPrefix(manifest.Layers[0].Digest, "sha256:")
+	layerPath := filepath.Join(ociLayoutPath, "blobs", "sha256", layerDigest)
+
+	// Copy the layer blob to destination
+	src, err := os.Open(layerPath)
+	if err != nil {
+		return fmt.Errorf("open layer blob: %w", err)
+	}
+	defer src.Close()
+
+	dst, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("create destination file: %w", err)
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, src); err != nil {
+		return fmt.Errorf("copy layer blob: %w", err)
+	}
+
+	return nil
 }
 
 func runBuildTraditional(cmd *cobra.Command, args []string) {
@@ -335,8 +504,18 @@ func runBuildTraditional(cmd *cobra.Command, args []string) {
 
 	effectiveRegistryURL := ""
 	if exportOCI != "" {
+		// Try environment variables if command line flags are empty
+		if registryUsername == "" {
+			registryUsername = os.Getenv("REGISTRY_USERNAME")
+		}
+		if registryPassword == "" {
+			registryPassword = os.Getenv("REGISTRY_PASSWORD")
+		}
+
+		// Note: Docker/Podman auth files will be tried as fallback
 		if registryUsername == "" || registryPassword == "" {
-			handleError(fmt.Errorf("--registry-username and --registry-password are required when --push is specified"))
+			fmt.Println("Warning: No registry credentials provided via flags or environment variables.")
+			fmt.Println("Will attempt to use Docker/Podman auth files as fallback.")
 		}
 		parts := strings.SplitN(exportOCI, "/", 2)
 		if len(parts) > 0 && strings.Contains(parts[0], ".") {

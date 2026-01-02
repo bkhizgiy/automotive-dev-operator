@@ -96,6 +96,10 @@ type OSBuildsConfig struct {
 
 // OperatorConfigStatus defines the observed state of OperatorConfig
 type OperatorConfigStatus struct {
+	// ObservedGeneration is the most recent generation observed by the controller.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
 	// Phase represents the current phase (Ready, Reconciling, Failed)
 	Phase string `json:"phase,omitempty"`
 

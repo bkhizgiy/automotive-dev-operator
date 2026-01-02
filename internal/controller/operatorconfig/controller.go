@@ -605,5 +605,11 @@ func (r *OperatorConfigReconciler) createOrUpdatePipeline(ctx context.Context, p
 func (r *OperatorConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&automotivev1alpha1.OperatorConfig{}).
+		Owns(&appsv1.Deployment{}).
+		Owns(&corev1.Service{}).
+		Owns(&corev1.ConfigMap{}).
+		Owns(&corev1.ServiceAccount{}).
+		Owns(&tektonv1.Task{}).
+		Owns(&tektonv1.Pipeline{}).
 		Complete(r)
 }

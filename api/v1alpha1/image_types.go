@@ -111,6 +111,10 @@ type ImageMetadata struct {
 
 // ImageStatus defines the observed state of Image
 type ImageStatus struct {
+	// ObservedGeneration is the most recent generation observed by the controller.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
 	// Phase represents the current phase of the image (Available, Unavailable, Verifying)
 	Phase string `json:"phase,omitempty"`
 

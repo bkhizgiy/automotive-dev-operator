@@ -108,7 +108,12 @@ type RegistryPublisher struct {
 
 // ImageBuildStatus defines the observed state of ImageBuild
 type ImageBuildStatus struct {
+	// ObservedGeneration is the most recent generation observed by the controller.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
 	// Phase represents the current phase of the build (Building, Completed, Failed)
+	// +kubebuilder:validation:Enum=Pending;Uploading;Building;Pushing;Completed;Failed
 	Phase string `json:"phase,omitempty"`
 
 	// StartTime is when the build started
@@ -129,14 +134,18 @@ type ImageBuildStatus struct {
 	// ArtifactFileName is the name of the artifact file inside the PVC
 	ArtifactFileName string `json:"artifactFileName,omitempty"`
 
-	// TaskRunName is the name of the active TaskRun for this build
-	TaskRunName string `json:"taskRunName,omitempty"`
+	// PipelineRunName is the name of the active PipelineRun for this build
+	PipelineRunName string `json:"pipelineRunName,omitempty"`
 
 	// PushTaskRunName is the name of the TaskRun for pushing artifacts to registry
 	PushTaskRunName string `json:"pushTaskRunName,omitempty"`
 
 	// ArtifactURL is the route URL created to expose the artifacts
 	ArtifactURL string `json:"artifactURL,omitempty"`
+
+	// Conditions represent the latest available observations of the ImageBuild's state
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true

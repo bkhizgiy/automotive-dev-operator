@@ -235,7 +235,7 @@ func streamLogs(c *gin.Context, name string) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	tr := strings.TrimSpace(ib.Status.TaskRunName)
+	tr := strings.TrimSpace(ib.Status.PipelineRunName)
 	if tr == "" {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "logs not available yet"})
 		return
@@ -428,7 +428,7 @@ func streamLogsSSE(c *gin.Context, name string) {
 		c.Writer.Flush()
 		return
 	}
-	tr := strings.TrimSpace(ib.Status.TaskRunName)
+	tr := strings.TrimSpace(ib.Status.PipelineRunName)
 	if tr == "" {
 		sendSSEEvent(c, "waiting", "", "Build not started yet, waiting for logs...")
 		c.Writer.Flush()
