@@ -307,6 +307,14 @@ if [ "$INSTALL" = true ]; then
     done
 
     echo ""
+    echo "Force-updating CRDs to ensure schema is current..."
+    echo "(OLM may skip CRD updates for same-version reinstalls)"
+    for crd in bundle/manifests/automotive.sdv.cloud.redhat.com_*.yaml; do
+        echo "  Applying $(basename $crd)..."
+        oc apply -f "$crd"
+    done
+
+    echo ""
     echo "Creating sample OperatorConfig..."
     oc apply -f config/samples/automotive_v1_operatorconfig.yaml
 
