@@ -623,8 +623,8 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 							},
 						},
 					},
-					// Wait for prepare-builder if it runs (bootc mode), otherwise start immediately
-					RunAfter: []string{},
+					// Wait for prepare-builder task (when it runs for bootc mode)
+					RunAfter: []string{"prepare-builder"},
 					Params: []tektonv1.Param{
 						{
 							Name: "target-architecture",
