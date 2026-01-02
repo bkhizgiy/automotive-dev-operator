@@ -18,7 +18,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -82,23 +81,29 @@ func (r *ImageBuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 }
 
 func (r *ImageBuildReconciler) handleInitialState(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) (ctrl.Result, error) {
+	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
+
 	if imageBuild.Spec.InputFilesServer {
 		if err := r.createUploadPod(ctx, imageBuild); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to create upload server: %w", err)
 		}
 		if err := r.updateStatus(ctx, imageBuild, "Uploading", "Waiting for file uploads"); err != nil {
-			return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+			log.Error(err, "Failed to update status to Uploading")
+			return ctrl.Result{}, err
 		}
 		return ctrl.Result{Requeue: true}, nil
 	}
 
 	if err := r.updateStatus(ctx, imageBuild, "Building", "Build started"); err != nil {
-		return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+		log.Error(err, "Failed to update status to Building")
+		return ctrl.Result{}, err
 	}
 	return ctrl.Result{Requeue: true}, nil
 }
 
 func (r *ImageBuildReconciler) handleUploadingState(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) (ctrl.Result, error) {
+	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
+
 	uploadsComplete := imageBuild.Annotations != nil &&
 		imageBuild.Annotations["automotive.sdv.cloud.redhat.com/uploads-complete"] == "true"
 
@@ -107,11 +112,12 @@ func (r *ImageBuildReconciler) handleUploadingState(ctx context.Context, imageBu
 	}
 
 	if err := r.shutdownUploadPod(ctx, imageBuild); err != nil {
-		return ctrl.Result{RequeueAfter: time.Second * 5}, fmt.Errorf("failed to shutdown upload server: %w", err)
+		return ctrl.Result{}, fmt.Errorf("failed to shutdown upload server: %w", err)
 	}
 
 	if err := r.updateStatus(ctx, imageBuild, "Building", "Build started"); err != nil {
-		return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+		log.Error(err, "Failed to update status to Building")
+		return ctrl.Result{}, err
 	}
 	return ctrl.Result{Requeue: true}, nil
 }
@@ -119,7 +125,7 @@ func (r *ImageBuildReconciler) handleUploadingState(ctx context.Context, imageBu
 func (r *ImageBuildReconciler) handleBuildingState(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) (ctrl.Result, error) {
 	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
 
-	if imageBuild.Status.TaskRunName != "" {
+	if imageBuild.Status.PipelineRunName != "" {
 		return r.checkBuildProgress(ctx, imageBuild)
 	}
 
@@ -143,15 +149,15 @@ func (r *ImageBuildReconciler) handleBuildingState(ctx context.Context, imageBui
 				Namespace: imageBuild.Namespace,
 			}, latestImageBuild); err != nil {
 				log.Error(err, "Failed to get latest ImageBuild")
-				return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+				return ctrl.Result{}, err
 			}
 
 			patch := client.MergeFrom(latestImageBuild.DeepCopy())
-			latestImageBuild.Status.TaskRunName = pr.Name
+			latestImageBuild.Status.PipelineRunName = pr.Name
 
 			if err := r.Status().Patch(ctx, latestImageBuild, patch); err != nil {
 				log.Error(err, "Failed to patch ImageBuild with existing PipelineRun name")
-				return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+				return ctrl.Result{}, err
 			}
 
 			return ctrl.Result{RequeueAfter: time.Second * 10}, nil
@@ -223,9 +229,11 @@ func (r *ImageBuildReconciler) handleCompletedState(ctx context.Context, imageBu
 }
 
 func (r *ImageBuildReconciler) checkBuildProgress(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) (ctrl.Result, error) {
+	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
+
 	pipelineRun := &tektonv1.PipelineRun{}
 	err := r.Get(ctx, types.NamespacedName{
-		Name:      imageBuild.Status.TaskRunName,
+		Name:      imageBuild.Status.PipelineRunName,
 		Namespace: imageBuild.Namespace,
 	}, pipelineRun)
 	if err != nil && !errors.IsNotFound(err) {
@@ -285,11 +293,12 @@ func (r *ImageBuildReconciler) checkBuildProgress(ctx context.Context, imageBuil
 		if imageBuild.Spec.Publishers != nil && imageBuild.Spec.Publishers.Registry != nil {
 			// Start push task
 			if err := r.createPushTaskRun(ctx, imageBuild); err != nil {
-				r.Log.Error(err, "Failed to create push TaskRun")
+				log.Error(err, "Failed to create push TaskRun")
 				fresh.Status.Phase = "Failed"
 				fresh.Status.Message = fmt.Sprintf("Failed to start push: %v", err)
-				if err := r.Status().Patch(ctx, fresh, patch); err != nil {
-					return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+				if patchErr := r.Status().Patch(ctx, fresh, patch); patchErr != nil {
+					log.Error(patchErr, "Failed to patch status after push TaskRun creation failure")
+					return ctrl.Result{}, patchErr
 				}
 				return ctrl.Result{}, nil
 			}
@@ -297,7 +306,8 @@ func (r *ImageBuildReconciler) checkBuildProgress(ctx context.Context, imageBuil
 			fresh.Status.Phase = "Pushing"
 			fresh.Status.Message = "Pushing artifact to registry"
 			if err := r.Status().Patch(ctx, fresh, patch); err != nil {
-				return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+				log.Error(err, "Failed to patch status to Pushing")
+				return ctrl.Result{}, err
 			}
 			return ctrl.Result{RequeueAfter: time.Second * 10}, nil
 		}
@@ -310,7 +320,8 @@ func (r *ImageBuildReconciler) checkBuildProgress(ctx context.Context, imageBuil
 		}
 
 		if err := r.Status().Patch(ctx, fresh, patch); err != nil {
-			return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+			log.Error(err, "Failed to patch status to Completed")
+			return ctrl.Result{}, err
 		}
 
 		// Cleanup transient secrets
@@ -328,7 +339,8 @@ func (r *ImageBuildReconciler) checkBuildProgress(ctx context.Context, imageBuil
 	r.cleanupTransientSecrets(ctx, imageBuild, r.Log)
 
 	if err := r.updateStatus(ctx, imageBuild, "Failed", "Build failed"); err != nil {
-		return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+		log.Error(err, "Failed to update status to Failed")
+		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
 }
@@ -607,7 +619,7 @@ func (r *ImageBuildReconciler) createBuildTaskRun(ctx context.Context, imageBuil
 		return fmt.Errorf("failed to get fresh ImageBuild: %w", err)
 	}
 
-	fresh.Status.TaskRunName = pipelineRun.Name
+	fresh.Status.PipelineRunName = pipelineRun.Name
 	if err := r.Status().Update(ctx, fresh); err != nil {
 		return fmt.Errorf("failed to update ImageBuild with PipelineRun name: %w", err)
 	}
@@ -717,8 +729,9 @@ func (r *ImageBuildReconciler) handlePushingState(ctx context.Context, imageBuil
 		// No push TaskRun yet, create one
 		if err := r.createPushTaskRun(ctx, imageBuild); err != nil {
 			log.Error(err, "Failed to create push TaskRun")
-			if err := r.updateStatus(ctx, imageBuild, "Failed", fmt.Sprintf("Failed to create push TaskRun: %v", err)); err != nil {
-				return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+			if statusErr := r.updateStatus(ctx, imageBuild, "Failed", fmt.Sprintf("Failed to create push TaskRun: %v", err)); statusErr != nil {
+				log.Error(statusErr, "Failed to update status after push TaskRun creation failure")
+				return ctrl.Result{}, statusErr
 			}
 			return ctrl.Result{}, nil
 		}
@@ -735,8 +748,9 @@ func (r *ImageBuildReconciler) handlePushingState(ctx context.Context, imageBuil
 		if errors.IsNotFound(err) {
 			// TaskRun was deleted, try to recreate
 			imageBuild.Status.PushTaskRunName = ""
-			if err := r.Status().Update(ctx, imageBuild); err != nil {
-				return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+			if statusErr := r.Status().Update(ctx, imageBuild); statusErr != nil {
+				log.Error(statusErr, "Failed to clear PushTaskRunName in status")
+				return ctrl.Result{}, statusErr
 			}
 			return ctrl.Result{Requeue: true}, nil
 		}
@@ -771,7 +785,8 @@ func (r *ImageBuildReconciler) handlePushingState(ctx context.Context, imageBuil
 	}
 
 	if err := r.Status().Patch(ctx, fresh, patch); err != nil {
-		return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+		log.Error(err, "Failed to patch status after push completion")
+		return ctrl.Result{}, err
 	}
 
 	// Update artifact info if serving
@@ -829,25 +844,9 @@ func (r *ImageBuildReconciler) updateArtifactInfo(ctx context.Context, imageBuil
 
 	if latestImageBuild.Spec.ExposeRoute {
 		routeName := "ado-build-api"
-		timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-
 		route := &routev1.Route{}
-		err := wait.PollUntilContextTimeout(
-			timeoutCtx,
-			time.Second,
-			30*time.Second,
-			false,
-			func(ctx context.Context) (bool, error) {
-				if err := r.Get(ctx, client.ObjectKey{Name: routeName, Namespace: latestImageBuild.Namespace}, route); err != nil {
-					log.Error(err, "Error getting route")
-					return false, nil
-				}
-				return len(route.Status.Ingress) > 0 && route.Status.Ingress[0].Host != "", nil
-			},
-		)
-		if err != nil {
-			log.Error(err, "timed out waiting for route hostname")
+		if err := r.Get(ctx, client.ObjectKey{Name: routeName, Namespace: latestImageBuild.Namespace}, route); err != nil {
+			log.Error(err, "Error getting route, will retry")
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 
@@ -1020,24 +1019,7 @@ func (r *ImageBuildReconciler) createArtifactPod(ctx context.Context, imageBuild
 		return fmt.Errorf("failed to create artifact pod: %w", err)
 	}
 
-	log.Info("Waiting for artifact pod to be ready")
-	err = wait.PollUntilContextTimeout(
-		ctx,
-		5*time.Second,
-		2*time.Minute,
-		false,
-		func(ctx context.Context) (bool, error) {
-			if err := r.Get(ctx, client.ObjectKey{Name: podName, Namespace: imageBuild.Namespace}, pod); err != nil {
-				return false, nil
-			}
-			return pod.Status.Phase == corev1.PodRunning, nil
-		})
-
-	if err != nil {
-		return fmt.Errorf("artifact pod not ready: %w", err)
-	}
-
-	log.Info("Artifact pod is ready", "pod", podName)
+	log.Info("Created artifact pod, will check status on next reconciliation", "pod", podName)
 	return nil
 }
 
@@ -1138,6 +1120,10 @@ func (r *ImageBuildReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&tektonv1.PipelineRun{}).
 		Owns(&tektonv1.TaskRun{}).
 		Owns(&corev1.Pod{}).
+		Owns(&corev1.PersistentVolumeClaim{}).
+		Owns(&corev1.Service{}).
+		Owns(&corev1.ConfigMap{}).
+		Owns(&routev1.Route{}).
 		Complete(r)
 }
 
@@ -1279,24 +1265,7 @@ func (r *ImageBuildReconciler) createUploadPod(ctx context.Context, imageBuild *
 		return fmt.Errorf("failed to create upload pod: %w", err)
 	}
 
-	log.Info("Waiting for upload pod to be ready")
-	err = wait.PollUntilContextTimeout(
-		ctx,
-		5*time.Second,
-		2*time.Minute,
-		false,
-		func(ctx context.Context) (bool, error) {
-			if err := r.Get(ctx, client.ObjectKey{Name: podName, Namespace: imageBuild.Namespace}, pod); err != nil {
-				return false, nil
-			}
-			return pod.Status.Phase == corev1.PodRunning, nil
-		})
-
-	if err != nil {
-		return fmt.Errorf("upload pod not ready: %w", err)
-	}
-
-	log.Info("Upload pod is ready", "pod", podName)
+	log.Info("Created upload pod, will check status on next reconciliation", "pod", podName)
 	return nil
 }
 

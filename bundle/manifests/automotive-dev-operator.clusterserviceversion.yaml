@@ -53,7 +53,7 @@ metadata:
     capabilities: Basic Install
     categories: Developer Tools
     containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
-    createdAt: "2026-01-01T15:14:22Z"
+    createdAt: "2026-01-02T07:51:50Z"
     operatorframework.io/suggested-namespace: automotive-dev-operator-system
     operators.operatorframework.io/builder: operator-sdk-v1.42.0
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
