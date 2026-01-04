@@ -34,7 +34,7 @@ type CatalogImageResponse struct {
 	Distro           string                `json:"distro,omitempty"`
 	DistroVersion    string                `json:"distroVersion,omitempty"`
 	Targets          []HardwareTargetInfo  `json:"targets,omitempty"`
-	BootcCapable     bool                  `json:"bootcCapable"`
+	Bootc            bool                  `json:"bootc"`
 	SizeBytes        int64                 `json:"sizeBytes,omitempty"`
 	LayerCount       int                   `json:"layerCount,omitempty"`
 	LastVerified     *time.Time            `json:"lastVerified,omitempty"`
@@ -92,7 +92,7 @@ type CreateCatalogImageRequest struct {
 	Distro         string               `json:"distro,omitempty"`
 	DistroVersion  string               `json:"distroVersion,omitempty"`
 	Targets        []HardwareTargetInfo `json:"targets,omitempty"`
-	BootcCapable   bool                 `json:"bootcCapable"`
+	Bootc          bool                 `json:"bootc"`
 	KernelVersion  string               `json:"kernelVersion,omitempty"`
 }
 
@@ -140,7 +140,7 @@ func ToCatalogImageResponse(catalogImage *automotivev1alpha1.CatalogImage) Catal
 		response.Architecture = catalogImage.Spec.Metadata.Architecture
 		response.Distro = catalogImage.Spec.Metadata.Distro
 		response.DistroVersion = catalogImage.Spec.Metadata.DistroVersion
-		response.BootcCapable = catalogImage.Spec.Metadata.BootcCapable
+		response.Bootc = catalogImage.Spec.Metadata.Bootc
 
 		for _, target := range catalogImage.Spec.Metadata.Targets {
 			response.Targets = append(response.Targets, HardwareTargetInfo{
@@ -207,7 +207,7 @@ func resolveDownloadURL(catalogImage *automotivev1alpha1.CatalogImage) string {
 	}
 
 	// For bootc images, the registry URL is the download reference
-	if catalogImage.Spec.Metadata != nil && catalogImage.Spec.Metadata.BootcCapable {
+	if catalogImage.Spec.Metadata != nil && catalogImage.Spec.Metadata.Bootc {
 		return catalogImage.Spec.RegistryURL
 	}
 

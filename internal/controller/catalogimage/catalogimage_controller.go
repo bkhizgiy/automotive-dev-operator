@@ -309,8 +309,8 @@ func (r *CatalogImageReconciler) ensureLabels(catalogImage *automotivev1alpha1.C
 		if len(catalogImage.Spec.Metadata.Targets) > 0 {
 			catalogImage.Labels[automotivev1alpha1.LabelTarget] = catalogImage.Spec.Metadata.Targets[0].Name
 		}
-		if catalogImage.Spec.Metadata.BootcCapable {
-			catalogImage.Labels[automotivev1alpha1.LabelBootcCapable] = "true"
+		if catalogImage.Spec.Metadata.Bootc {
+			catalogImage.Labels[automotivev1alpha1.LabelBootc] = "true"
 		}
 	}
 }

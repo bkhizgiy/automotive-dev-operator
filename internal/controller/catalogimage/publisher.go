@@ -246,8 +246,8 @@ func (p *Publisher) buildCatalogImage(opts PublishOptions) *automotivev1alpha1.C
 		if len(opts.Metadata.Targets) > 0 {
 			catalogImage.Labels[automotivev1alpha1.LabelTarget] = opts.Metadata.Targets[0].Name
 		}
-		if opts.Metadata.BootcCapable {
-			catalogImage.Labels[automotivev1alpha1.LabelBootcCapable] = "true"
+		if opts.Metadata.Bootc {
+			catalogImage.Labels[automotivev1alpha1.LabelBootc] = "true"
 		}
 	}
 
