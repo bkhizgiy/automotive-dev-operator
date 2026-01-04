@@ -53,7 +53,7 @@ metadata:
     capabilities: Basic Install
     categories: Developer Tools
     containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
-    createdAt: "2026-01-04T11:17:55Z"
+    createdAt: "2026-01-04T16:02:41Z"
     operatorframework.io/suggested-namespace: automotive-dev-operator-system
     operators.operatorframework.io/builder: operator-sdk-v1.42.0
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
@@ -133,6 +133,13 @@ spec:
         - apiGroups:
           - ""
           resources:
+          - events
+          verbs:
+          - create
+          - patch
+        - apiGroups:
+          - ""
+          resources:
           - namespaces
           verbs:
           - create
@@ -166,6 +173,7 @@ spec:
         - apiGroups:
           - automotive.sdv.cloud.redhat.com
           resources:
+          - catalogimages
           - imagebuilds
           - images
           - operatorconfigs
@@ -180,6 +188,7 @@ spec:
         - apiGroups:
           - automotive.sdv.cloud.redhat.com
           resources:
+          - catalogimages/finalizers
           - imagebuilds/finalizers
           - images/finalizers
           - operatorconfigs/finalizers
@@ -188,6 +197,7 @@ spec:
         - apiGroups:
           - automotive.sdv.cloud.redhat.com
           resources:
+          - catalogimages/status
           - imagebuilds/status
           - images/status
           - operatorconfigs/status
