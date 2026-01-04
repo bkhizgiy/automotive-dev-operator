@@ -1,15 +1,15 @@
 ---
-name: test-bootc-build
-description: Run a bootc build test and report results. Builds a bootc container image, optionally creates a disk image, and downloads the artifact.
+name: test-traditional-build
+description: Run a traditional AIB build test and report results. Builds a disk image using automotive-image-builder manifest and downloads the artifact.
 allowed-tools:
   - Bash
   - Read
   - Grep
 ---
 
-# Bootc Build Test Workflow
+# Traditional Build Test Workflow
 
-Run a bootc build with the specified parameters, monitor until completion, and download the artifact.
+Run a traditional AIB build with the specified parameters, monitor until completion, and download the artifact.
 
 ## Parameters
 
@@ -18,7 +18,7 @@ Run a bootc build with the specified parameters, monitor until completion, and d
 ## Required Environment Variables
 
 Before running, ensure these are set:
-- `BOOTC_REGISTRY` - Base registry URL (e.g., `quay.io/myorg/myimage`)
+- `PUSH_REGISTRY` - Registry URL to push the disk image (e.g., `quay.io/myorg/traditional-disk`)
 - `REGISTRY_USERNAME` - Registry username (or read from `registry-user` file)
 - `REGISTRY_PASSWORD` - Registry password (or read from `registry-pass` file)
 
@@ -28,9 +28,9 @@ Before running, ensure these are set:
 
 ```bash
 # Check required environment
-if [ -z "$BOOTC_REGISTRY" ]; then
-  echo "ERROR: BOOTC_REGISTRY environment variable not set"
-  echo "Example: export BOOTC_REGISTRY=quay.io/myorg/myimage"
+if [ -z "$PUSH_REGISTRY" ]; then
+  echo "ERROR: PUSH_REGISTRY environment variable not set"
+  echo "Example: export PUSH_REGISTRY=quay.io/myorg/traditional-disk"
   exit 1
 fi
 ```
@@ -60,22 +60,23 @@ REGISTRY_PASSWORD="${REGISTRY_PASSWORD:-$(cat registry-pass 2>/dev/null)}"
 
 ```bash
 BUILD_NAME="$ARGUMENTS"
-PUSH_IMAGE="${BOOTC_REGISTRY}:latest"
-DISK_IMAGE="${BOOTC_REGISTRY}:latest-disk"
-OUTPUT_FILE="./output/${BUILD_NAME}.qcow2"
+PUSH_IMAGE="${PUSH_REGISTRY}:latest"
+OUTPUT_DIR="./output"
 
-bin/caib build-bootc simple.aib.yml \
+bin/caib build-traditional simple.aib.yml \
   --server "$CAIB_SERVER" \
   --token "$TOKEN" \
   --name "$BUILD_NAME" \
   --arch arm64 \
   --target qemu \
+  --export qcow2 \
+  --compress gzip \
   --push "$PUSH_IMAGE" \
-  --build-disk-image \
-  --format qcow2 \
-  --export-oci "$DISK_IMAGE" \
-  --download "$OUTPUT_FILE" \
-  --follow
+  --registry-username "$REGISTRY_USERNAME" \
+  --registry-password "$REGISTRY_PASSWORD" \
+  --wait \
+  --follow \
+  --download "$OUTPUT_DIR"
 ```
 
 ### 6. Monitor Build (if not using --follow)
@@ -98,18 +99,20 @@ POD=$(oc get pods -n automotive-dev-operator-system -l tekton.dev/pipelineRun=${
 oc logs -n automotive-dev-operator-system $POD -c step-build-image --tail=200
 
 # Check for common issues
-oc logs -n automotive-dev-operator-system $POD -c step-build-image | grep -i "builder\|cluster registry\|Pulling\|error\|failed"
+oc logs -n automotive-dev-operator-system $POD -c step-build-image | grep -i "error\|failed\|unauthorized"
 ```
 
 ### 8. Verify Download
 
 ```bash
 # Check if artifact was downloaded
-if [ -f "$OUTPUT_FILE" ]; then
+OUTPUT_FILE=$(ls -1 ${OUTPUT_DIR}/*.qcow2* 2>/dev/null | head -1)
+if [ -n "$OUTPUT_FILE" ] && [ -f "$OUTPUT_FILE" ]; then
   echo "SUCCESS: Artifact downloaded to $OUTPUT_FILE"
   ls -lh "$OUTPUT_FILE"
 else
-  echo "WARNING: Artifact not found at $OUTPUT_FILE"
+  echo "WARNING: Artifact not found in $OUTPUT_DIR"
+  ls -la "$OUTPUT_DIR" 2>/dev/null || echo "Output directory does not exist"
 fi
 ```
 
@@ -119,15 +122,15 @@ Provide a summary with:
 - Build status (success/failure)
 - Download location and file size
 - If failed: the specific error and relevant log snippets
+- Whether logs streamed correctly (testing the pipelineRun label fix)
 - Suggestions for fixes based on the error type
 
 ## Common Error Patterns
 
-- "Builder image not found" - prepare-builder task failed or result not passed
-- "containers-storage: invalid reference" - skopeo copy using wrong format
-- "setfiles: Operation not supported" - SELinux context issues in osbuild
+- "log stream not ready (HTTP 503)" - Pod label selector issue (should use `tekton.dev/pipelineRun`)
 - "unauthorized" - Token or registry auth issues
-- "BOOTC_REGISTRY not set" - Environment variable missing
+- "PUSH_REGISTRY not set" - Environment variable missing
+- "manifest not found" - AIB manifest file missing or invalid
 
 ## Alternative: Download Only (for completed builds)
 
