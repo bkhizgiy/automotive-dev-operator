@@ -86,9 +86,8 @@ spec:
                     - x86_64
                     - aarch64
                     type: string
-                  bootcCapable:
-                    description: BootcCapable indicates if this is a bootc-compatible
-                      image
+                  bootc:
+                    description: Bootc indicates if this is a bootc-compatible image
                     type: boolean
                   buildMode:
                     description: BuildMode indicates the AIB build mode used (bootc,

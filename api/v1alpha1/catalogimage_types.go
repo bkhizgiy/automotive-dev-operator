@@ -94,9 +94,9 @@ type CatalogImageMetadata struct {
 	// +optional
 	KernelVersion string `json:"kernelVersion,omitempty"`
 
-	// BootcCapable indicates if this is a bootc-compatible image
+	// Bootc indicates if this is a bootc-compatible image
 	// +optional
-	BootcCapable bool `json:"bootcCapable,omitempty"`
+	Bootc bool `json:"bootc,omitempty"`
 
 	// BuildMode indicates the AIB build mode used (bootc, image, package)
 	// +kubebuilder:validation:Enum=bootc;image;package
@@ -291,8 +291,8 @@ const (
 	LabelDistro = "automotive.sdv.cloud.redhat.com/distro"
 	// LabelTarget is the label key for hardware target
 	LabelTarget = "automotive.sdv.cloud.redhat.com/target"
-	// LabelBootcCapable is the label key for bootc capability
-	LabelBootcCapable = "automotive.sdv.cloud.redhat.com/bootc-capable"
+	// LabelBootc is the label key for bootc compatibility
+	LabelBootc = "automotive.sdv.cloud.redhat.com/bootc"
 	// LabelRegistryType is the label key for registry type
 	LabelRegistryType = "automotive.sdv.cloud.redhat.com/registry-type"
 	// LabelSourceType is the label key for source type

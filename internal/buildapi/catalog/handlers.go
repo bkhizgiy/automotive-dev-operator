@@ -206,7 +206,7 @@ func (h *Handler) HandleCreateCatalogImage(c *gin.Context) {
 			Architecture:  req.Architecture,
 			Distro:        req.Distro,
 			DistroVersion: req.DistroVersion,
-			BootcCapable:  req.BootcCapable,
+			Bootc:         req.Bootc,
 			KernelVersion: req.KernelVersion,
 		}
 
