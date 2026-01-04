@@ -22,6 +22,7 @@ import (
 	"github.com/containers/image/v5/types"
 	"gopkg.in/yaml.v3"
 
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/catalog"
 	buildapitypes "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi"
 	buildapiclient "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi/client"
 	progressbar "github.com/schollz/progressbar/v3"
@@ -197,7 +198,7 @@ func main() {
 	_ = buildTraditionalCmd.MarkFlagRequired("name")
 	_ = buildTraditionalCmd.MarkFlagRequired("arch")
 
-	rootCmd.AddCommand(buildBootcCmd, buildTraditionalCmd, buildCmd, downloadCmd, listCmd)
+	rootCmd.AddCommand(buildBootcCmd, buildTraditionalCmd, buildCmd, downloadCmd, listCmd, catalog.NewCatalogCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
