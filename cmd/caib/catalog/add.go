@@ -36,7 +36,6 @@ var (
 	addDigest        string
 	addAuthSecret    string
 	addBootc         bool
-	addKernelVersion string
 )
 
 func newAddCmd() *cobra.Command {
@@ -57,7 +56,6 @@ func newAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&addDigest, "digest", "", "Specific digest to reference")
 	cmd.Flags().StringVar(&addAuthSecret, "auth-secret", "", "Secret containing registry credentials")
 	cmd.Flags().BoolVar(&addBootc, "bootc", false, "Mark as bootc-compatible")
-	cmd.Flags().StringVar(&addKernelVersion, "kernel-version", "", "Kernel version in the image")
 
 	cmd.MarkFlagRequired("architecture")
 	cmd.MarkFlagRequired("distro")
@@ -76,7 +74,6 @@ type createRequest struct {
 	DistroVersion  string       `json:"distroVersion,omitempty"`
 	Targets        []targetInfo `json:"targets,omitempty"`
 	Bootc          bool         `json:"bootc"`
-	KernelVersion  string       `json:"kernelVersion,omitempty"`
 }
 
 type targetInfo struct {
@@ -119,7 +116,6 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		Distro:         addDistro,
 		DistroVersion:  addDistroVersion,
 		Bootc:          addBootc,
-		KernelVersion:  addKernelVersion,
 	}
 
 	for _, t := range addTargets {

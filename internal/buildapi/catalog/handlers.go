@@ -207,7 +207,6 @@ func (h *Handler) HandleCreateCatalogImage(c *gin.Context) {
 			Distro:        req.Distro,
 			DistroVersion: req.DistroVersion,
 			Bootc:         req.Bootc,
-			KernelVersion: req.KernelVersion,
 		}
 
 		for _, t := range req.Targets {

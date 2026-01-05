@@ -90,9 +90,6 @@ type CatalogImageMetadata struct {
 	// +optional
 	Targets []HardwareTarget `json:"targets,omitempty"`
 
-	// KernelVersion is the kernel version included in the image
-	// +optional
-	KernelVersion string `json:"kernelVersion,omitempty"`
 
 	// Bootc indicates if this is a bootc-compatible image
 	// +optional
