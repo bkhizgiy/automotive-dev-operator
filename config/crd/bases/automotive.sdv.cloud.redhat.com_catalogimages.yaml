@@ -103,10 +103,6 @@ spec:
                   distroVersion:
                     description: DistroVersion is the distribution version
                     type: string
-                  kernelVersion:
-                    description: KernelVersion is the kernel version included in the
-                      image
-                    type: string
                   os:
                     default: linux
                     description: OS is the operating system (defaults to linux)

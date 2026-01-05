@@ -93,7 +93,6 @@ type CreateCatalogImageRequest struct {
 	DistroVersion  string               `json:"distroVersion,omitempty"`
 	Targets        []HardwareTargetInfo `json:"targets,omitempty"`
 	Bootc          bool                 `json:"bootc"`
-	KernelVersion  string               `json:"kernelVersion,omitempty"`
 }
 
 // PublishImageBuildRequest represents a request to publish an ImageBuild to the catalog
