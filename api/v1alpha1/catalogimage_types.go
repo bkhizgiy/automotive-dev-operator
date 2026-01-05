@@ -90,7 +90,6 @@ type CatalogImageMetadata struct {
 	// +optional
 	Targets []HardwareTarget `json:"targets,omitempty"`
 
-
 	// Bootc indicates if this is a bootc-compatible image
 	// +optional
 	Bootc bool `json:"bootc,omitempty"`
