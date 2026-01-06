@@ -1,182 +1,297 @@
-# automotive-dev-operator
+# CentOS Automotive Suite Operator
 
-A simple controller that watches two CRs: `AutomotiveDev` which applies a pipeline and a few tasks. And `ImageBuild` which triggers an automotive OS image build, powered by automotive-image-builder.
-
+An operator for building automotive OS images on OpenShift. This operator provides a cloud-native way to create automotive OS images using the automotive-image-builder (AIB) project, with support for both traditional AIB manifests and modern bootc container builds.
 
 ## Description
-An in-progress operator that deploys tasks for automotive-image-builder cloud building.
-This includes a CLI tool and a webui
+
+The CentOS Automotive Suite Operator enables automotive OS image building through:
+
+- **ImageBuild Custom Resource**: Declaratively define and trigger automotive OS image builds
+- **Multiple Build Modes**: Support for traditional AIB manifests and bootc container builds
+- **Web UI**: Optional React-based web interface for managing builds and viewing artifacts
+- **CLI Tool (caib)**: Command-line interface for creating and monitoring builds
+- **Artifact Management**: Serve built images via OpenShift Routes or push to OCI registries
+- **Tekton Integration**: Uses OpenShift Pipelines (Tekton) for scalable build execution
 
 ## Getting Started
 
 ### Prerequisites
-- go version v1.22.0+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+**For OpenShift Installation (Recommended):**
+- OpenShift 4.17+ cluster
+- OpenShift Pipelines Operator (Tekton) installed
+- Cluster admin permissions (for initial installation)
+
+**For Development:**
+- Go 1.22.0+
+- Podman or Docker
+- OpenShift CLI (`oc`) or kubectl
+- Operator SDK v1.42.0+ (for development)
+
+## Installation
+
+### Option 1: OpenShift OperatorHub (Recommended)
+
+The easiest way to install on OpenShift is through OperatorHub:
+
+1. Open the OpenShift Console
+2. Navigate to **Operators** > **OperatorHub**
+3. Search for "CentOS Automotive Suite"
+4. Click **Install** and follow the prompts
+
+After installation, create an `OperatorConfig` to enable components:
 
 ```sh
-make docker-build docker-push IMG=<some-registry>/automotive-dev-operator:tag
+oc apply -f config/samples/automotive_v1_operatorconfig.yaml
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+### Option 2: OLM Bundle (Local Testing)
 
-**Install the CRDs into the cluster:**
+For local development and testing:
+
+```sh
+# Deploy catalog and install operator
+./hack/deploy-catalog.sh --uninstall --install
+
+# Create OperatorConfig to configure the operator
+oc apply -f config/samples/automotive_v1_operatorconfig.yaml
+```
+
+### Option 3: Manual Deployment
+
+**Build and push your image:**
+
+```sh
+make docker-build docker-push IMG=<registry>/automotive-dev-operator:tag
+```
+
+**Install CRDs and deploy the operator:**
+
+```sh
+make install
+make deploy IMG=<registry>/automotive-dev-operator:tag
+```
+
+**Configure the operator:**
+
+```sh
+oc apply -f config/samples/automotive_v1_operatorconfig.yaml
+```
+
+## Usage
+
+### Creating Your First Build
+
+1. **Create a ConfigMap with your AIB manifest:**
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-build-manifest
+data:
+  simple.aib.yml: |
+    name: container
+
+    content:
+      rpms:
+        - openssh-server
+      systemd:
+        enabled_services:
+          - sshd.service
+      add_files:
+         - path: /usr/share/hello.txt
+           text: |
+             hello!
+    image:
+      image_size: 8 GiB
+
+    auth:
+      # "password"
+      root_password: $6$xoLqEUz0cGGJRx01$H3H/bFm0myJPULNMtbSsOFd/2BnHqHkMD92Sfxd.EKM9hXTWSmELG8cf205l6dktomuTcgKGGtGDgtvHVXSWU.
+      sshd_config:
+        PermitRootLogin: true
+        PasswordAuthentication: true
+```
+
+2. **Create an ImageBuild resource:**
+
+```yaml
+apiVersion: automotive.sdv.cloud.redhat.com/v1alpha1
+kind: ImageBuild
+metadata:
+  name: my-automotive-image
+spec:
+  distro: autosd
+  architecture: amd64
+  mode: image
+  target: qemu
+  exportFormat: qcow2
+  manifestConfigMap: my-build-manifest
+```
+
+3. **Apply the resources:**
+
+```sh
+oc apply -f manifest-configmap.yaml
+oc apply -f imagebuild.yaml
+```
+
+4. **Monitor the build:**
+
+```sh
+oc get imagebuild my-automotive-image -w
+oc logs -f job/my-automotive-image-build
+```
+
+## Uninstallation
+
+### For OperatorHub Installation
+
+1. In OpenShift Console, go to **Operators** > **Installed Operators**
+2. Find "CentOS Automotive Suite" and click the options menu
+3. Select **Uninstall Operator**
+
+### For OLM Bundle Installation
+
+```sh
+./hack/deploy-catalog.sh --uninstall
+```
+
+### For Manual Deployment
+
+```sh
+# Delete operator resources
+oc delete -k config/samples/
+make undeploy
+
+# Remove CRDs
+make uninstall
+```
+
+## Components
+
+### Custom Resources
+
+- **ImageBuild**: Defines an automotive OS image build job
+- **Image**: Represents a built image with metadata and location information
+- **OperatorConfig**: Cluster-wide configuration for the operator
+
+### Optional Components
+
+When `OperatorConfig.spec.webUI` is enabled:
+- **Web UI**: React-based interface accessible via OpenShift Route
+- **Build API**: REST API for programmatic access
+
+### CLI Tool
+
+The `caib` CLI provides command-line access to build operations. See [`cmd/caib/README.md`](cmd/caib/README.md) for usage details.
+
+## Architecture
+
+This operator is built with the Kubebuilder framework and uses:
+
+- **Controller Runtime**: Manages Custom Resources and reconciliation loops
+- **OpenShift Pipelines (Tekton)**: Executes build workflows as TaskRuns
+- **Automotive Image Builder**: External tool for creating automotive OS images
+- **OpenShift Routes**: Exposes web UI and artifact serving endpoints
+
+### Dependencies
+
+- **OpenShift Pipelines Operator**: Required for Tekton pipeline execution
+- **OpenShift 4.17+**: Minimum supported OpenShift version
+- **Container Registry**: For storing built images (internal or external)
+
+## Development
+
+### Local Development
+
+1. **Clone and setup:**
+
+```sh
+git clone https://github.com/centos-automotive-suite/automotive-dev-operator.git
+cd automotive-dev-operator
+```
+
+2. **Install dependencies:**
 
 ```sh
 make install
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+3. **Run locally:**
 
 ```sh
-make deploy IMG=<some-registry>/automotive-dev-operator:tag
+make run
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
-
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
+### Testing
 
 ```sh
-kubectl apply -k config/samples/
+# Unit tests
+make test
+
+# E2E tests
+make test-e2e
+
+# Linting
+make lint
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
-
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
+### Building
 
 ```sh
-kubectl delete -k config/samples/
+# Build all binaries
+make build
+
+# Build specific components
+make build-caib           # CLI tool
+make build-api-server     # API server
+
+# Build container images
+make docker-build
 ```
 
-**Delete the APIs(CRDs) from the cluster:**
+## Release Information
 
-```sh
-make uninstall
-```
+This project publishes versioned releases with:
+- Multi-architecture container images (amd64, arm64)
+- `caib` CLI binaries for Linux
+- OLM bundles for OperatorHub distribution
 
-**UnDeploy the controller from the cluster:**
-
-```sh
-make undeploy
-```
-
-## Releases and Deployments (Tagged Versions)
-
-This repository publishes versioned multi-arch images and a pinned installer manifest via GitHub Actions when you push a tag that starts with `v`.
-
-### Create a release
-
-1) Ensure CI variables and secrets are set in the repository:
-
-- REGISTRY (repository variable): container registry hostname (e.g. `quay.io`)
-- REPOSITORY (repository variable): org/namespace in the registry (e.g. `rh-sdv-cloud`)
-- REGISTRY_USER (secret): registry username
-- REGISTRY_PASSWORD (secret): registry password/token
-
-2) Tag and push:
-
-```sh
-git tag v0.0.10
-git push origin v0.0.10
-```
-
-On tag push, CI will:
-- Retag existing multi-arch images (built on `main`) to `v1.2.3` for both:
-  - `automotive-dev-operator`
-  - `aib-webui`
-- Build and attach `caib` CLI binaries for linux/amd64 and linux/arm64
-- Generate and attach a pinned manifest: `install-v1.2.3.yaml`
-
-### Deploy a specific version
-
-Download the pinned manifest from the release and apply it:
-
-```sh
-TAG=v0.0.10
-curl -L -o install-$TAG.yaml https://github.com/centos-automotive-suite/automotive-dev-operator/releases/download/$TAG/install-$TAG.yaml
-kubectl apply -f install-$TAG.yaml
-kubectl apply -f config/samples/automotive_v1_operatorconfig.yaml # to configure the operator
-```
-
-Verify rollout:
-
-```sh
-kubectl -n automotive-dev-operator-system get deploy -o custom-columns=NAME:.metadata.name,IMAGE:.spec.template.spec.containers[*].image
-kubectl -n automotive-dev-operator-system rollout status deploy/ado-controller-manager
-kubectl -n automotive-dev-operator-system rollout status deploy/ado-build-api
-kubectl -n automotive-dev-operator-system rollout status deploy/ado-webui
-```
-
-To upgrade, re-apply with a newer `TAG`. To uninstall, run:
-
-```sh
-kubectl delete -f install-$TAG.yaml
-```
-
-### CAIB CLI (download and setup)
-
-Download the CLI binary from the same release and install it in your PATH (Linux):
-
-```bash
-TAG=v0.0.11
-
-curl -L -o caib-$TAG-$ARCH \
-  https://github.com/centos-automotive-suite/automotive-dev-operator/releases/download/$TAG/caib-$TAG-$ARCH
-
-sudo install -m 0755 caib-$TAG-$ARCH /usr/local/bin/caib
-
-# Verify
-caib --version
-```
-
-Point the CLI to your Build API once (or pass `--server` each time):
-
-```bash
-export CAIB_SERVER="https://build-api.YOUR_DOMAIN"
-```
-
-See `cmd/caib/README.md` for full usage examples.
-
-## Project Distribution
-
-Following are the steps to build the installer and distribute this project to users.
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/automotive-dev-operator:tag
-```
-
-NOTE: The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without
-its dependencies.
-
-2. Using the installer
-
-Users can just run kubectl apply -f <URL for YAML BUNDLE> to install the project, i.e.:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/automotive-dev-operator/<tag or branch>/dist/install.yaml
-```
-
-Note: Prefer the release asset `install-<tag>.yaml` described above, which pins all component images to the specific version.
+For the latest release, visit: https://github.com/centos-automotive-suite/automotive-dev-operator/releases
 
 ## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
 
-**NOTE:** Run `make help` for more information on all potential `make` targets
+We welcome contributions! To contribute:
 
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+1. **Fork the repository** and create a feature branch
+2. **Follow the development setup** described above
+3. **Add tests** for new functionality
+4. **Run the full test suite** before submitting
+5. **Submit a pull request** with a clear description
+
+### Code Guidelines
+
+- Follow Go best practices and formatting (`make lint`)
+- Update documentation for user-facing changes
+- Add appropriate tests for new features
+- Ensure all CI checks pass
+
+### Useful Make Targets
+
+Run `make help` to see all available targets. Key targets include:
+
+```sh
+make help           # Show all targets
+make generate       # Generate code after API changes
+make manifests      # Generate CRDs and RBAC
+make bundle         # Generate OLM bundle
+make test           # Run unit tests
+make test-e2e       # Run e2e tests
+```
+
+For more information, see the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html).
 
 ## License
 
