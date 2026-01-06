@@ -75,3 +75,10 @@ This is a Kubernetes operator for automotive OS image building, built with Kubeb
 - Keep summaries short.
 - Container tool defaults to `podman` (CONTAINER_TOOL variable in Makefile).
 - After modifying types in api/v1alpha1/, run `make generate manifests`.
+
+## Active Technologies
+- Go 1.22+ (consistent with existing operator codebase) + Kubebuilder, controller-runtime, Kubernetes client-go, container registry client libraries (001-image-catalog)
+- Kubernetes etcd (via Custom Resources), container registries for image artifacts (001-image-catalog)
+
+## Recent Changes
+- 001-image-catalog: Added Go 1.22+ (consistent with existing operator codebase) + Kubebuilder, controller-runtime, Kubernetes client-go, container registry client libraries

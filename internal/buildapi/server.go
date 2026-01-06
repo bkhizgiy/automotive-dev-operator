@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi/catalog"
 	authnv1 "k8s.io/api/authentication/v1"
 )
 
@@ -118,6 +119,15 @@ func (a *APIServer) createRouter() *gin.Engine {
 			buildsGroup.GET("/:name/template", a.handleGetBuildTemplate)
 			buildsGroup.POST("/:name/uploads", a.handleUploadFiles)
 		}
+
+		// Register catalog routes with authentication
+		catalogClient, err := a.getCatalogClient()
+		if err != nil {
+			a.log.Error(err, "failed to create catalog client, catalog routes will not be available")
+		} else if catalogClient != nil {
+			a.log.Info("registering catalog routes")
+			catalog.RegisterRoutes(v1, catalogClient, a.log)
+		}
 	}
 
 	return router
@@ -133,6 +143,34 @@ func StartServer(addr string, logger logr.Logger) (*http.Server, error) {
 		}
 	}()
 	return server, nil
+}
+
+// getCatalogClient returns a Kubernetes client for catalog operations
+func (a *APIServer) getCatalogClient() (client.Client, error) {
+	var cfg *rest.Config
+	var err error
+	cfg, err = rest.InClusterConfig()
+	if err != nil {
+		kubeconfig := os.Getenv("KUBECONFIG")
+		cfg, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build kube config: %w", err)
+		}
+	}
+
+	scheme := runtime.NewScheme()
+	if err := automotivev1alpha1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("failed to add automotive scheme: %w", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("failed to add core scheme: %w", err)
+	}
+
+	k8sClient, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create k8s client: %w", err)
+	}
+	return k8sClient, nil
 }
 
 // authMiddleware provides authentication middleware for Gin

@@ -8,6 +8,7 @@ WORKDIR /workspace
 # Copy files as root first
 COPY go.mod go.mod
 COPY go.sum go.sum
+COPY vendor/ vendor/
 COPY cmd/main.go cmd/main.go
 COPY cmd/build-api/main.go cmd/build-api/main.go
 COPY cmd/init-secrets/main.go cmd/init-secrets/main.go
@@ -19,13 +20,11 @@ USER root
 RUN chown -R 1001:0 /workspace && chmod -R 775 /workspace
 USER 1001
 
-RUN go mod download
-
 ENV CGO_ENABLED=0
 ENV GOCACHE=/workspace/.cache
-RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags "-s -w" -o manager cmd/main.go
-RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags "-s -w" -o build-api cmd/build-api/main.go
-RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags "-s -w" -o init-secrets cmd/init-secrets/main.go
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -mod=vendor -trimpath -ldflags "-s -w" -o manager cmd/main.go
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -mod=vendor -trimpath -ldflags "-s -w" -o build-api cmd/build-api/main.go
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -mod=vendor -trimpath -ldflags "-s -w" -o init-secrets cmd/init-secrets/main.go
 
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /
