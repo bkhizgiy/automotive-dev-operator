@@ -152,15 +152,18 @@ func (r *ImageBuildReconciler) handleBuildingState(ctx context.Context, imageBui
 				return ctrl.Result{}, err
 			}
 
-			patch := client.MergeFrom(latestImageBuild.DeepCopy())
-			latestImageBuild.Status.PipelineRunName = pr.Name
-
-			if err := r.Status().Patch(ctx, latestImageBuild, patch); err != nil {
-				log.Error(err, "Failed to patch ImageBuild with existing PipelineRun name")
-				return ctrl.Result{}, err
+			// Only update status if PipelineRunName is not already set
+			if latestImageBuild.Status.PipelineRunName != pr.Name {
+				latestImageBuild.Status.PipelineRunName = pr.Name
+				if err := r.Status().Update(ctx, latestImageBuild); err != nil {
+					log.Error(err, "Failed to update ImageBuild with PipelineRun name")
+					return ctrl.Result{}, err
+				}
 			}
 
-			return ctrl.Result{RequeueAfter: time.Second * 10}, nil
+			// Update local imageBuild and immediately check build progress
+			imageBuild.Status.PipelineRunName = pr.Name
+			return r.checkBuildProgress(ctx, imageBuild)
 		}
 	}
 
@@ -1115,16 +1118,22 @@ func (r *ImageBuildReconciler) cleanupTransientSecrets(ctx context.Context, imag
 }
 
 func (r *ImageBuildReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&automotivev1alpha1.ImageBuild{}).
 		Owns(&tektonv1.PipelineRun{}).
 		Owns(&tektonv1.TaskRun{}).
 		Owns(&corev1.Pod{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&corev1.Service{}).
-		Owns(&corev1.ConfigMap{}).
-		Owns(&routev1.Route{}).
-		Complete(r)
+		Owns(&corev1.ConfigMap{})
+
+	// Only add Route ownership if the Route CRD is available (OpenShift only)
+	_, err := mgr.GetRESTMapper().RESTMapping(routev1.GroupVersion.WithKind("Route").GroupKind())
+	if err == nil {
+		builder = builder.Owns(&routev1.Route{})
+	}
+
+	return builder.Complete(r)
 }
 
 func isTaskRunCompleted(taskRun *tektonv1.TaskRun) bool {

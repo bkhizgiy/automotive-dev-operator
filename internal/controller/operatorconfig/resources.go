@@ -712,8 +712,7 @@ func (r *OperatorConfigReconciler) buildBuildAPIIngress() *networkingv1.Ingress 
 			},
 			Annotations: map[string]string{
 				"nginx.ingress.kubernetes.io/backend-protocol": "HTTP",
-				"nginx.ingress.kubernetes.io/ssl-redirect":     "true",
-				"nginx.ingress.kubernetes.io/rewrite-target":   "/",
+				"nginx.ingress.kubernetes.io/ssl-redirect":     "false",
 			},
 		},
 		Spec: networkingv1.IngressSpec{
@@ -724,13 +723,14 @@ func (r *OperatorConfigReconciler) buildBuildAPIIngress() *networkingv1.Ingress 
 						HTTP: &networkingv1.HTTPIngressRuleValue{
 							Paths: []networkingv1.HTTPIngressPath{
 								{
-									Path:     "/api",
+									Path:     "/",
 									PathType: &pathTypePrefix,
 									Backend: networkingv1.IngressBackend{
 										Service: &networkingv1.IngressServiceBackend{
 											Name: "ado-build-api",
 											Port: networkingv1.ServiceBackendPort{
-												Name: "proxy",
+												// Use port name "http" - matches the service definition on all platforms
+												Name: "http",
 											},
 										},
 									},
