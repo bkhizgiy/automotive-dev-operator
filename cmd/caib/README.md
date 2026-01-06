@@ -1,149 +1,304 @@
 # caib — Cloud Automotive Image Builder CLI
 
-`caib` is a CLI that talks to the Automotive Dev Build API to create, monitor, and download image builds.
+`caib` is a CLI that talks to the Automotive Dev Build API to create, monitor, and download automotive OS image builds.
 
 ## Installation
 
 Build from source (requires Go):
 
 ```bash
-make build
+make build-caib
 # or
 go build -o bin/caib ./cmd/caib
 ```
 
-## Quick start
+## Quick Start
 
-Set the API endpoint once (or pass `--server` on every command):
+Set the API endpoint (or pass `--server` on every command):
 
 ```bash
 export CAIB_SERVER=https://your-build-api.example
 ```
 
-Create a build, follow logs, and download the artifact when complete:
+### Build a Bootc Container Image
+
+Build a bootc container and push it to a registry:
 
 ```bash
-bin/caib build \
-  --name my-build \
-  --manifest simple.aib.yml \
+bin/caib build-bootc manifest.aib.yml \
+  --name my-bootc-build \
   --arch arm64 \
-  --export image \
-  --follow --download
+  --push quay.io/myorg/automotive-os:latest \
+  --follow
 ```
 
-List builds:
+Systems running bootc can then switch to this image:
 
 ```bash
-bin/caib list --server "$CAIB_SERVER"
+bootc switch quay.io/myorg/automotive-os:latest
 ```
 
-Download an artifact for an existing completed build:
+### Build a Bootc Disk Image
+
+Build a bootc container and also create a disk image from it:
 
 ```bash
-bin/caib download --name my-build --output-dir ./output --server "$CAIB_SERVER"
-```
-
-## Commands and flags
-
-### build
-Creates an `ImageBuild` and optionally waits, follows logs, and downloads artifacts.
-
-Required input:
-- `--server` or `CAIB_SERVER`: Base URL of the Build API (e.g., `https://api.example`).
-- `--name`: Unique build name.
-- `--manifest`: Path to a local AIB manifest (`*.aib.yml` or `*.mpp.yml`).
-
-Common options:
-- `--distro`: Distro (default: `cs9`).
-- `--target`: Target platform (default: `qemu`).
-- `--arch`: Architecture, e.g., `arm64` or `amd64` (default: `arm64`).
-- `--mode`: Build mode (default: `image`).
-- `--export`: `image` (raw) or `qcow2` (default: `image`).
-- `--automotive-image-builder`: Container image for AIB (default: `quay.io/centos-sig-automotive/automotive-image-builder:1.0.0`).
-- `--storage-class`: Storage class to use for build workspace PVC (optional).
-- `--define`: Repeatable `KEY=VALUE` custom definitions passed to AIB.
-- `--aib-args`: Extra arguments passed to AIB (space-separated string).
-- `--wait` (`-w`): Wait for build to complete.
-- `--follow` (`-f`): Stream build logs (retries transient 503/504).
-- `--download` (`-d`): Download artifact when done.
-- `--timeout`: Minutes to wait when `--wait` is used (default: 60).
-
-Behavior:
-- Local file references in the manifest are detected and uploaded automatically right after the build is accepted.
-  - Supported manifest keys: `content.add_files[].source` and `content.add_files[].source_path` (also under `qm.content.add_files`).
-  - Relative `source` entries are rewritten to `source_path` under `/workspace/shared`.
-  - Relative `source_path` entries are normalized to `/workspace/shared/...`.
-- Upload waits for the server’s “Uploading” phase and retries while the upload pod becomes ready.
-- Log following uses the Build API logs endpoint and retries on 503/504.
-
-Examples:
-
-```bash
-# Build qcow2 with a custom AIB image and extra args
-bin/caib build \
-  --name demo-qcow2 \
-  --manifest simple.aib.yml \
+bin/caib build-bootc manifest.aib.yml \
+  --name my-disk-build \
   --arch arm64 \
+  --push quay.io/myorg/automotive-os:latest \
+  --build-disk-image \
+  --format qcow2 \
+  --export-oci quay.io/myorg/automotive-disk:latest \
+  --download ./output/disk.qcow2 \
+  --follow
+```
+
+### Build a Traditional (Non-Bootc) Image
+
+Build an ostree-based or package-based disk image:
+
+```bash
+bin/caib build-traditional manifest.aib.yml \
+  --name my-traditional-build \
+  --arch arm64 \
+  --mode image \
   --export qcow2 \
-  --automotive-image-builder quay.io/centos-sig-automotive/automotive-image-builder:latest \
-  --aib-args "--fusa" \
-  --follow --download
+  --download ./output/disk.qcow2 \
+  --follow
+```
+
+## Commands
+
+### build-bootc
+
+Builds a bootc container image with optional disk image creation.
+
+```bash
+bin/caib build-bootc <manifest.aib.yml> [flags]
+```
+
+**Required flags:**
+| Flag | Description |
+|------|-------------|
+| `--name` | Unique build name |
+| `--arch` | Architecture (`amd64`, `arm64`) |
+
+**Optional flags:**
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--server` | `$CAIB_SERVER` | Build API server URL |
+| `--token` | `$CAIB_TOKEN` | Bearer token (auto-detected from kubeconfig) |
+| `--distro` | `autosd` | Distribution to build |
+| `--target` | `qemu` | Target platform |
+| `--push` | | Push bootc container to registry (e.g., `quay.io/org/image:tag`) |
+| `--build-disk-image` | `false` | Also build a disk image from the container |
+| `--format` | `qcow2` | Disk image format (`qcow2`, `raw`, `simg`) |
+| `--compress` | `gzip` | Compression algorithm (`gzip`, `lz4`, `xz`) |
+| `--export-oci` | | Push disk image as OCI artifact to registry |
+| `--download` | | Download disk image to local file (requires `--export-oci`) |
+| `--builder-image` | | Custom aib-build container |
+| `--automotive-image-builder` | `quay.io/.../automotive-image-builder:latest` | AIB container image |
+| `--storage-class` | | Storage class for build workspace PVC |
+| `--define` | | Custom definition `KEY=VALUE` (repeatable) |
+| `--registry-username` | `$REGISTRY_USERNAME` | Registry username for push/export |
+| `--registry-password` | `$REGISTRY_PASSWORD` | Registry password (or use docker/podman auth) |
+| `--timeout` | `60` | Timeout in minutes |
+| `-w`, `--wait` | `false` | Wait for build to complete |
+| `-f`, `--follow` | `false` | Follow build logs |
+
+**Examples:**
+
+```bash
+# Build and push bootc container only
+bin/caib build-bootc my-manifest.aib.yml \
+  --name bootc-only \
+  --arch arm64 \
+  --push quay.io/myorg/automotive:v1.0 \
+  --follow
+
+# Build bootc container + qcow2 disk image, download locally
+bin/caib build-bootc my-manifest.aib.yml \
+  --name full-build \
+  --arch arm64 \
+  --push quay.io/myorg/automotive:v1.0 \
+  --build-disk-image \
+  --format qcow2 \
+  --export-oci quay.io/myorg/automotive-disk:v1.0 \
+  --download ./my-image.qcow2 \
+  --follow
+
+# Use custom builder image
+bin/caib build-bootc my-manifest.aib.yml \
+  --name custom-builder \
+  --arch amd64 \
+  --builder-image quay.io/myorg/my-aib-build:latest \
+  --push quay.io/myorg/result:latest \
+  --follow
+```
+
+### build-traditional
+
+Builds a traditional (ostree or package-based) disk image.
+
+```bash
+bin/caib build-traditional <manifest.aib.yml> [flags]
+```
+
+**Required flags:**
+| Flag | Description |
+|------|-------------|
+| `--name` | Unique build name |
+| `--arch` | Architecture (`amd64`, `arm64`) |
+
+**Optional flags:**
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--server` | `$CAIB_SERVER` | Build API server URL |
+| `--token` | `$CAIB_TOKEN` | Bearer token (auto-detected from kubeconfig) |
+| `--distro` | `autosd` | Distribution to build |
+| `--target` | `qemu` | Target platform |
+| `--mode` | `image` | Build mode (`image`, `package`) |
+| `--export` | `qcow2` | Export format (`qcow2`, `raw`, `simg`) |
+| `--compress` | `gzip` | Compression algorithm (`gzip`, `lz4`, `xz`) |
+| `--push` | | Push disk image as OCI artifact to registry |
+| `--download` | | Download artifact to local file |
+| `--automotive-image-builder` | `quay.io/.../automotive-image-builder:latest` | AIB container image |
+| `--storage-class` | | Storage class for build workspace PVC |
+| `--define` | | Custom definition `KEY=VALUE` (repeatable) |
+| `--registry-username` | `$REGISTRY_USERNAME` | Registry username |
+| `--registry-password` | `$REGISTRY_PASSWORD` | Registry password |
+| `--timeout` | `60` | Timeout in minutes |
+| `-w`, `--wait` | `false` | Wait for build to complete |
+| `-f`, `--follow` | `false` | Follow build logs |
+
+**Examples:**
+
+```bash
+# Build ostree-based image and download
+bin/caib build-traditional my-manifest.aib.yml \
+  --name traditional-build \
+  --arch arm64 \
+  --mode image \
+  --export qcow2 \
+  --download ./disk.qcow2 \
+  --follow
+
+# Build and push to OCI registry
+bin/caib build-traditional my-manifest.aib.yml \
+  --name pushed-build \
+  --arch arm64 \
+  --push quay.io/myorg/disk-image:v1.0 \
+  --registry-username myuser \
+  --registry-password mypass \
+  --follow
 ```
 
 ### download
-Downloads the artifact of a completed build via the Build API.
 
-Flags:
-- `--server` or `CAIB_SERVER`
-- `--name` (required)
-- `--output-dir` (default: `./output`)
+Downloads artifacts from a completed build.
+
+```bash
+bin/caib download --name <build-name> [flags]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--name` | (required) | Build name |
+| `--server` | `$CAIB_SERVER` | Build API server URL |
+| `--token` | `$CAIB_TOKEN` | Bearer token |
+| `--output-dir` | `./output` | Directory to save artifacts |
+| `--compress` | `true` | Keep directory artifacts compressed |
 
 ### list
+
 Lists existing builds.
 
-Flags:
-- `--server` or `CAIB_SERVER`
+```bash
+bin/caib list [flags]
+```
 
-## Manifest notes
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--server` | `$CAIB_SERVER` | Build API server URL |
+| `--token` | `$CAIB_TOKEN` | Bearer token |
 
-- Relative `source` and `source_path` entries are supported in `content.add_files` and `qm.content.add_files`.
-  - During preprocessing, they are rewritten to absolute paths under `/workspace/shared` inside the build pod.
-- Example snippet:
+## Bootc vs Traditional Builds
+
+| Aspect | `build-bootc` | `build-traditional` |
+|--------|---------------|---------------------|
+| Output | Container image (+ optional disk) | Disk image only |
+| Update mechanism | `bootc switch/upgrade` | Requires re-imaging |
+| Use case | OTA-updatable systems | Standalone disk images |
+| Mode | Always `bootc` | `image` or `package` |
+
+## Authentication
+
+The CLI automatically detects authentication in this order:
+
+1. `--token` flag
+2. `CAIB_TOKEN` environment variable
+3. Bearer token from kubeconfig (OpenShift `oc login`, exec plugins)
+4. `oc whoami -t` command (if `oc` is available)
+
+For registry authentication (`--push`, `--export-oci`):
+
+1. `--registry-username` / `--registry-password` flags
+2. `REGISTRY_USERNAME` / `REGISTRY_PASSWORD` environment variables
+3. Docker/Podman auth files (`~/.docker/config.json`, `~/.config/containers/auth.json`)
+
+## Manifest File References
+
+The CLI automatically handles local file references in manifests. Relative paths in `source_path` are uploaded to the build workspace.
 
 ```yaml
 content:
   add_files:
-    - path: /etc/containers/systemd/radio.container
-      source_path: radio.container  # local file next to the manifest
+    - path: /etc/myapp/config.yaml
+      source_path: files/config.yaml  # Local file, uploaded automatically
 ```
 
-## Known behaviors and timeouts
+Supported locations:
+- `content.add_files[].source_path`
+- `qm.content.add_files[].source_path`
 
-- Upload readiness: The CLI waits up to 10 minutes for the upload pod and retries uploads on 503 (Service Unavailable).
-- Log follow: If the log stream endpoint returns 503/504 early in the build, the CLI keeps retrying; once logs are available you will see “Streaming logs…”.
-- Build wait: `--wait` obeys `--timeout` (minutes). Increase it for large builds (e.g., `--timeout 120`).
+## Environment Variables
 
-## Environment variables
+| Variable | Description |
+|----------|-------------|
+| `CAIB_SERVER` | Build API base URL (equivalent to `--server`) |
+| `CAIB_TOKEN` | Bearer token (equivalent to `--token`) |
+| `REGISTRY_USERNAME` | Registry username for push operations |
+| `REGISTRY_PASSWORD` | Registry password for push operations |
 
-- `CAIB_SERVER`: Base URL of the Build API (equivalent to `--server`).
+## Timeouts and Retries
 
-## Exit codes
+- **Upload readiness**: Waits up to 10 minutes for the upload pod
+- **Log following**: Retries on 503/504 while build pod starts
+- **Build wait**: Controlled by `--timeout` (default 60 minutes)
+- **Artifact download**: Waits up to 30 minutes for artifact availability
 
-- Non-zero on validation errors, upload errors (after retries), or when the build ends in a Failed phase.
+## Exit Codes
+
+- `0`: Success
+- Non-zero: Validation errors, upload failures, or build failure
 
 ## Troubleshooting
 
-- “upload pod not ready” or HTTP 503 during upload: The CLI will retry automatically. If persistent, verify cluster capacity and that the operator can create the upload pod.
-- “504 Gateway Timeout” during log follow: Usually transient while the build pod is starting. The CLI will keep retrying.
-- Build fails quickly after upload: The controller may still be transitioning the PVC; re-run with a larger `--timeout` and check operator logs.
+| Symptom | Cause | Solution |
+|---------|-------|----------|
+| "upload pod not ready" | Upload pod starting | CLI retries automatically |
+| HTTP 503/504 during log follow | Build pod starting | CLI retries automatically |
+| Build fails after upload | PVC transition timing | Increase `--timeout`, check operator logs |
+| "no bearer token found" | Not logged in | Run `oc login` or set `CAIB_TOKEN` |
+| Registry auth failure | Missing credentials | Set `--registry-username/password` or login via `podman login` |
 
 ## Version
-
-Print version:
 
 ```bash
 bin/caib --version
 ```
 
 ## License
+
 Apache-2.0
