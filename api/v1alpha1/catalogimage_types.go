@@ -64,8 +64,8 @@ type AuthSecretReference struct {
 
 // CatalogImageMetadata contains automotive-specific platform information
 type CatalogImageMetadata struct {
-	// Architecture is the CPU architecture (amd64, arm64)
-	// +kubebuilder:validation:Enum=amd64;arm64;x86_64;aarch64
+	// Architecture is the CPU architecture
+	// Supports both AIB canonical values (x86_64, aarch64) and OCI standard names (amd64, arm64)
 	// +optional
 	Architecture string `json:"architecture,omitempty"`
 
@@ -78,7 +78,9 @@ type CatalogImageMetadata struct {
 	// +optional
 	Variant string `json:"variant,omitempty"`
 
-	// Distro is the distribution identifier (cs9, autosd10-sig)
+	// Distro is the distribution identifier
+	// Common values include: cs9, autosd10-sig, autosd9, cs8, fedora-39, fedora-40, rhel9, rhel8
+	// Run 'aib list-dist' to see all available distributions
 	// +optional
 	Distro string `json:"distro,omitempty"`
 
@@ -98,11 +100,18 @@ type CatalogImageMetadata struct {
 	// +kubebuilder:validation:Enum=bootc;image;package
 	// +optional
 	BuildMode string `json:"buildMode,omitempty"`
+
+	// ExportFormat indicates the disk image format produced by AIB
+	// Common values include: qcow2, raw, image, vmdk, iso, vhd, tar
+	// +optional
+	ExportFormat string `json:"exportFormat,omitempty"`
 }
 
 // HardwareTarget represents a hardware platform the image supports
 type HardwareTarget struct {
-	// Name is the target hardware identifier (qemu, raspberry-pi, beaglebone)
+	// Name is the target hardware identifier
+	// Common values include: qemu, raspberry-pi, beaglebone, generic
+	// Run 'aib list-targets' to see all available hardware targets
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 
