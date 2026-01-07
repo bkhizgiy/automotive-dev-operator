@@ -422,7 +422,7 @@ func (r *ImageBuildReconciler) createBuildTaskRun(ctx context.Context, imageBuil
 
 	params := []tektonv1.Param{
 		{
-			Name: "target-architecture",
+			Name: "arch",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
 				StringVal: imageBuild.Spec.Architecture,
@@ -528,6 +528,17 @@ func (r *ImageBuildReconciler) createBuildTaskRun(ctx context.Context, imageBuil
 
 		// Let prepare-builder task handle building the image automatically
 		// when builder-image is empty for bootc builds
+	}
+
+	// Add container-ref param for disk mode
+	if imageBuild.Spec.ContainerRef != "" {
+		params = append(params, tektonv1.Param{
+			Name: "container-ref",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: imageBuild.Spec.ContainerRef,
+			},
+		})
 	}
 
 	pipelineWorkspaces := []tektonv1.WorkspaceBinding{

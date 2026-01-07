@@ -38,6 +38,8 @@ const (
 	ModeImage Mode = "image"
 	// ModePackage creates traditional, mutable, package-based disk images
 	ModePackage Mode = "package"
+	// ModeDisk creates a disk image from an existing bootc container
+	ModeDisk Mode = "disk"
 )
 
 func (m Mode) IsValid() bool {
@@ -98,8 +100,9 @@ func ParseMode(s string) (Mode, error) {
 // BuildRequest is the payload to create a build via the REST API
 type BuildRequest struct {
 	Name                   string               `json:"name"`
-	Manifest               string               `json:"manifest"`
-	ManifestFileName       string               `json:"manifestFileName"`
+	Manifest               string               `json:"manifest,omitempty"`
+	ManifestFileName       string               `json:"manifestFileName,omitempty"`
+	ContainerRef           string               `json:"containerRef,omitempty"` // For disk mode: existing container to convert
 	Distro                 Distro               `json:"distro"`
 	Target                 Target               `json:"target"`
 	Architecture           Architecture         `json:"architecture"`

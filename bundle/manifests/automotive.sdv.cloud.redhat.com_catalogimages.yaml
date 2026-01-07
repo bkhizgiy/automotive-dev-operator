@@ -79,12 +79,9 @@ spec:
                 description: Metadata contains automotive-specific image metadata
                 properties:
                   architecture:
-                    description: Architecture is the CPU architecture (amd64, arm64)
-                    enum:
-                    - amd64
-                    - arm64
-                    - x86_64
-                    - aarch64
+                    description: |-
+                      Architecture is the CPU architecture
+                      Supports both AIB canonical values (x86_64, aarch64) and OCI standard names (amd64, arm64)
                     type: string
                   bootc:
                     description: Bootc indicates if this is a bootc-compatible image
@@ -98,10 +95,18 @@ spec:
                     - package
                     type: string
                   distro:
-                    description: Distro is the distribution identifier (cs9, autosd10-sig)
+                    description: |-
+                      Distro is the distribution identifier
+                      Common values include: cs9, autosd10-sig, autosd9, cs8, fedora-39, fedora-40, rhel9, rhel8
+                      Run 'aib list-dist' to see all available distributions
                     type: string
                   distroVersion:
                     description: DistroVersion is the distribution version
+                    type: string
+                  exportFormat:
+                    description: |-
+                      ExportFormat indicates the disk image format produced by AIB
+                      Common values include: qcow2, raw, image, vmdk, iso, vhd, tar
                     type: string
                   os:
                     default: linux
@@ -114,8 +119,10 @@ spec:
                         image supports
                       properties:
                         name:
-                          description: Name is the target hardware identifier (qemu,
-                            raspberry-pi, beaglebone)
+                          description: |-
+                            Name is the target hardware identifier
+                            Common values include: qemu, raspberry-pi, beaglebone, generic
+                            Run 'aib list-targets' to see all available hardware targets
                           type: string
                         notes:
                           description: Notes contains target-specific information

@@ -824,8 +824,18 @@ func createBuild(c *gin.Context) {
 
 	needsUpload := strings.Contains(req.Manifest, "source_path")
 
-	if req.Name == "" || req.Manifest == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name and manifest are required"})
+	// Disk mode uses ContainerRef instead of a manifest
+	if req.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+	if req.Mode == ModeDisk {
+		if req.ContainerRef == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "container-ref is required for disk mode"})
+			return
+		}
+	} else if req.Manifest == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "manifest is required"})
 		return
 	}
 
@@ -1011,6 +1021,7 @@ func createBuild(c *gin.Context) {
 			BuildDiskImage:         req.BuildDiskImage,
 			ExportOCI:              req.ExportOCI,
 			BuilderImage:           req.BuilderImage,
+			ContainerRef:           req.ContainerRef,
 		},
 	}
 	if err := k8sClient.Create(ctx, imageBuild); err != nil {

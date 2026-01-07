@@ -53,12 +53,10 @@ metadata:
     capabilities: Basic Install
     categories: Developer Tools
     containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
-    createdAt: "2026-01-04T16:02:41Z"
+    createdAt: "2026-01-07T10:28:46Z"
     operatorframework.io/suggested-namespace: automotive-dev-operator-system
     operators.operatorframework.io/builder: operator-sdk-v1.42.0
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
-    operators.openshift.io/infrastructure-features: '["disconnected"]'
-    operators.openshift.io/valid-subscription: '["OpenShift Container Platform"]'
     repository: https://github.com/centos-automotive-suite/automotive-dev-operator
     support: Red Hat
   name: automotive-dev-operator.v0.0.1
@@ -67,6 +65,9 @@ spec:
   apiservicedefinitions: {}
   customresourcedefinitions:
     owned:
+    - kind: CatalogImage
+      name: catalogimages.automotive.sdv.cloud.redhat.com
+      version: v1alpha1
     - description: ImageBuild is the Schema for the imagebuilds API
       displayName: Image Build
       kind: ImageBuild
@@ -82,29 +83,7 @@ spec:
       kind: OperatorConfig
       name: operatorconfigs.automotive.sdv.cloud.redhat.com
       version: v1alpha1
-  description: |
-    The CentOS Automotive Suite Operator provides a Kubernetes-native way to build automotive OS images on OpenShift.
-
-    ## Features
-
-    * **ImageBuild Custom Resource**: Define and trigger automotive OS image builds declaratively
-    * **Multiple Build Modes**: Support for traditional AIB manifests and bootc container builds
-    * **Web UI**: Optional web interface for managing builds and viewing artifacts
-    * **Artifact Management**: Serve built images via Routes or push to OCI registries
-
-    ## Prerequisites
-
-    * OpenShift Pipelines Operator (Tekton) must be installed
-
-    ## Getting Started
-
-    1. Install the operator from OperatorHub
-    2. Create an OperatorConfig resource to configure the operator
-    3. Create an ImageBuild resource to trigger a build
-
-    ## Documentation
-
-    For detailed documentation, visit the [project repository](https://github.com/centos-automotive-suite/automotive-dev-operator).
+  description: CentOS Automotive Suite
   displayName: CentOS Automotive Suite
   icon:
   - base64data: ""
@@ -318,8 +297,8 @@ spec:
                     fieldRef:
                       fieldPath: metadata.namespace
                 - name: OPERATOR_IMAGE
-                  value: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
-                image: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
+                  value: image-registry.openshift-image-registry.svc:5000/automotive-dev-operator-system/automotive-dev-operator:latest
+                image: default-route-openshift-image-registry.apps.automotive1.ocp.automotive.sig.centos.org/automotive-dev-operator-system/automotive-dev-operator:latest
                 imagePullPolicy: IfNotPresent
                 livenessProbe:
                   httpGet:
@@ -357,7 +336,7 @@ spec:
                   valueFrom:
                     fieldRef:
                       fieldPath: metadata.namespace
-                image: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
+                image: default-route-openshift-image-registry.apps.automotive1.ocp.automotive.sig.centos.org/automotive-dev-operator-system/automotive-dev-operator:latest
                 imagePullPolicy: IfNotPresent
                 name: init-oauth-secrets
                 resources:
@@ -429,7 +408,4 @@ spec:
   minKubeVersion: 1.26.0
   provider:
     name: Red Hat
-  relatedImages:
-  - image: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
-    name: manager
   version: 0.0.1

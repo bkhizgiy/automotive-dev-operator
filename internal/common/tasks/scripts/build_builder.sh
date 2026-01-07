@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-echo "Prepare builder for distro: $DISTRO"
+echo "Prepare builder for distro: $DISTRO, arch: $TARGET_ARCH"
 
 # If BUILDER_IMAGE is provided, use it directly
 if [ -n "$BUILDER_IMAGE" ]; then
@@ -21,7 +21,7 @@ else
   REGISTRY="image-registry.openshift-image-registry.svc:5000"
 fi
 
-TARGET_IMAGE="${REGISTRY}/${NAMESPACE}/aib-build:$DISTRO"
+TARGET_IMAGE="${REGISTRY}/${NAMESPACE}/aib-build:${DISTRO}-${TARGET_ARCH}"
 
 mkdir -p $HOME/.config
 cat > $HOME/.authjson <<EOF
@@ -70,7 +70,7 @@ else
 fi
 
 # Local image name (what we'll actually use - nested containers can access this)
-LOCAL_IMAGE="localhost/aib-build:$DISTRO"
+LOCAL_IMAGE="localhost/aib-build:${DISTRO}-${TARGET_ARCH}"
 
 # Check if image already exists in cluster registry
 echo "Checking if $TARGET_IMAGE exists in cluster registry..."

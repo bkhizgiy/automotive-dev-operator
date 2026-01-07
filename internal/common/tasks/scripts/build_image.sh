@@ -244,17 +244,18 @@ BUILD_DISK_IMAGE="$(params.build-disk-image)"
 EXPORT_OCI="$(params.export-oci)"
 BUILDER_IMAGE="$(params.builder-image)"
 CLUSTER_REGISTRY_ROUTE="$(params.cluster-registry-route)"
+CONTAINER_REF="$(params.container-ref)"
 
 BOOTC_CONTAINER_NAME="localhost/aib-build:$(params.distro)-$(params.target)"
 
 BUILD_CONTAINER_ARG=""
-LOCAL_BUILDER_IMAGE="localhost/aib-build:$(params.distro)"
+LOCAL_BUILDER_IMAGE="localhost/aib-build:$(params.distro)-$TARGET_ARCH"
 
 # For bootc builds, if no builder-image is provided but cluster-registry-route is set,
 # use the image that prepare-builder cached in the cluster registry
 if [ -z "$BUILDER_IMAGE" ] && [ "$BUILD_MODE" = "bootc" ] && [ -n "$CLUSTER_REGISTRY_ROUTE" ]; then
   NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
-  BUILDER_IMAGE="${CLUSTER_REGISTRY_ROUTE}/${NAMESPACE}/aib-build:$(params.distro)"
+  BUILDER_IMAGE="${CLUSTER_REGISTRY_ROUTE}/${NAMESPACE}/aib-build:$(params.distro)-$TARGET_ARCH"
   echo "Using builder image from cluster registry: $BUILDER_IMAGE"
 fi
 
@@ -356,8 +357,30 @@ else
       echo "Running the build command: $build_command"
       eval "$build_command"
       ;;
+    disk)
+      # Disk mode: create disk image from existing bootc container
+      if [ -z "$CONTAINER_REF" ]; then
+        echo "Error: container-ref is required for disk mode"
+        exit 1
+      fi
+      echo "Creating disk image from container: $CONTAINER_REF"
+
+      # Pull the container image first
+      echo "Pulling container image..."
+      skopeo copy --authfile="$REGISTRY_AUTH_FILE" \
+        "docker://$CONTAINER_REF" \
+        "containers-storage:$CONTAINER_REF"
+
+      build_command="aib --verbose to-disk-image \
+      --target $(params.target) \
+      --build-dir=/output/_build \
+      $CONTAINER_REF \
+      /output/${exportFile}"
+      echo "Running to-disk-image: $build_command"
+      eval "$build_command"
+      ;;
     *)
-      echo "Error: Unknown build mode '$BUILD_MODE'. Supported modes: bootc, image, package"
+      echo "Error: Unknown build mode '$BUILD_MODE'. Supported modes: bootc, image, package, disk"
       exit 1
       ;;
   esac
