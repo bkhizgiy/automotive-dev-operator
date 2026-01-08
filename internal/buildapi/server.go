@@ -822,6 +822,9 @@ func createBuild(c *gin.Context) {
 		return
 	}
 
+	// Debug logging for containerRef
+	fmt.Printf("DEBUG: Received request - Mode: %s, ContainerRef: %q\n", req.Mode, req.ContainerRef)
+
 	needsUpload := strings.Contains(req.Manifest, "source_path")
 
 	// Disk mode uses ContainerRef instead of a manifest

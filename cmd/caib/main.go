@@ -188,7 +188,7 @@ Examples:
 	buildCmd.Flags().StringVar(&containerPush, "push", "", "push bootc container to registry (required)")
 	buildCmd.Flags().BoolVar(&buildDiskImage, "disk", false, "also build disk image from container")
 	buildCmd.Flags().StringVarP(&outputDir, "output", "o", "", "download disk image to file (requires --disk)")
-	buildCmd.Flags().StringVar(&diskFormat, "format", "qcow2", "disk image format (qcow2, raw, simg)")
+	buildCmd.Flags().StringVar(&diskFormat, "format", "", "disk image format (qcow2, raw, image); inferred from output filename if not set")
 	buildCmd.Flags().StringVar(&compressionAlgo, "compress", "gzip", "compression algorithm (gzip, lz4, xz)")
 	buildCmd.Flags().StringVar(&exportOCI, "push-disk", "", "push disk image as OCI artifact to registry")
 	buildCmd.Flags().StringVar(&registryUsername, "registry-username", "", "registry username (or REGISTRY_USERNAME env)")
@@ -217,7 +217,7 @@ Examples:
 	diskCmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication")
 	diskCmd.Flags().StringVarP(&buildName, "name", "n", "", "name for the build job (auto-generated if omitted)")
 	diskCmd.Flags().StringVarP(&outputDir, "output", "o", "", "download disk image to file")
-	diskCmd.Flags().StringVar(&diskFormat, "format", "qcow2", "disk image format (qcow2, raw, simg)")
+	diskCmd.Flags().StringVar(&diskFormat, "format", "", "disk image format (qcow2, raw, image); inferred from output filename if not set")
 	diskCmd.Flags().StringVar(&compressionAlgo, "compress", "gzip", "compression algorithm (gzip, lz4, xz)")
 	diskCmd.Flags().StringVar(&exportOCI, "push", "", "push disk image as OCI artifact to registry")
 	diskCmd.Flags().StringVar(&registryUsername, "registry-username", "", "registry username (or REGISTRY_USERNAME env)")
@@ -287,10 +287,7 @@ func runBuild(cmd *cobra.Command, args []string) {
 		buildDiskImage = true // imply --disk when --output is specified
 	}
 
-	// Validate: if downloading disk, need push-disk destination
-	if outputDir != "" && exportOCI == "" {
-		handleError(fmt.Errorf("--output requires --push-disk (disk image must be pushed to registry first for download)"))
-	}
+	// Note: diskFormat can be empty - AIB will default to raw (or infer from output filename extension)
 
 	if strings.TrimSpace(authToken) == "" {
 		if tok, err := loadTokenFromKubeconfig(); err == nil && strings.TrimSpace(tok) != "" {
@@ -384,13 +381,21 @@ func runBuild(cmd *cobra.Command, args []string) {
 		handleFileUploads(ctx, api, resp.Name, localRefs)
 	}
 
-	if waitForBuild || followLogs || downloadFile != "" {
+	if waitForBuild || followLogs || outputDir != "" {
 		waitForBuildCompletion(ctx, api, resp.Name, "")
 	}
 
 	if outputDir != "" {
-		if err := pullOCIArtifact(exportOCI, outputDir, registryUsername, registryPassword); err != nil {
-			handleError(fmt.Errorf("failed to download OCI artifact: %w", err))
+		if exportOCI != "" {
+			// Download via OCI registry (pushed as artifact)
+			if err := pullOCIArtifact(exportOCI, outputDir, registryUsername, registryPassword); err != nil {
+				handleError(fmt.Errorf("failed to download OCI artifact: %w", err))
+			}
+		} else {
+			// Download directly from cluster via artifact API
+			if err := downloadArtifactViaAPI(ctx, serverURL, buildName, filepath.Dir(outputDir)); err != nil {
+				handleError(fmt.Errorf("failed to download artifact: %w", err))
+			}
 		}
 	}
 }
@@ -418,6 +423,8 @@ func runDisk(cmd *cobra.Command, args []string) {
 		buildName = fmt.Sprintf("disk-%s-%s", imagePart, time.Now().Format("20060102-150405"))
 		fmt.Printf("Auto-generated build name: %s\n", buildName)
 	}
+
+	// Note: diskFormat can be empty - AIB will default to raw (or infer from output filename extension)
 
 	if strings.TrimSpace(authToken) == "" {
 		if tok, err := loadTokenFromKubeconfig(); err == nil && strings.TrimSpace(tok) != "" {
@@ -469,6 +476,7 @@ func runDisk(cmd *cobra.Command, args []string) {
 		StorageClass:           storageClass,
 		Compression:            compressionAlgo,
 		ExportOCI:              exportOCI,
+		ServeArtifact:          outputDir != "" && exportOCI == "",
 	}
 
 	if effectiveRegistryURL != "" && registryUsername != "" && registryPassword != "" {
@@ -491,9 +499,17 @@ func runDisk(cmd *cobra.Command, args []string) {
 		waitForBuildCompletion(ctx, api, resp.Name, "")
 	}
 
-	if outputDir != "" && exportOCI != "" {
-		if err := pullOCIArtifact(exportOCI, outputDir, registryUsername, registryPassword); err != nil {
-			handleError(fmt.Errorf("failed to download OCI artifact: %w", err))
+	if outputDir != "" {
+		if exportOCI != "" {
+			// Download via OCI registry
+			if err := pullOCIArtifact(exportOCI, outputDir, registryUsername, registryPassword); err != nil {
+				handleError(fmt.Errorf("failed to download OCI artifact: %w", err))
+			}
+		} else {
+			// Download directly from cluster via artifact API
+			if err := downloadArtifactViaAPI(ctx, serverURL, buildName, filepath.Dir(outputDir)); err != nil {
+				handleError(fmt.Errorf("failed to download artifact: %w", err))
+			}
 		}
 	}
 }
