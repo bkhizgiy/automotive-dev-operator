@@ -25,8 +25,7 @@ export CAIB_SERVER=https://your-build-api.example
 Build a bootc container and push it to a registry:
 
 ```bash
-bin/caib build-bootc manifest.aib.yml \
-  --name my-bootc-build \
+bin/caib build manifest.aib.yml \
   --arch arm64 \
   --push quay.io/myorg/automotive-os:latest \
   --follow
@@ -43,14 +42,12 @@ bootc switch quay.io/myorg/automotive-os:latest
 Build a bootc container and also create a disk image from it:
 
 ```bash
-bin/caib build-bootc manifest.aib.yml \
-  --name my-disk-build \
+bin/caib build manifest.aib.yml \
   --arch arm64 \
   --push quay.io/myorg/automotive-os:latest \
-  --build-disk-image \
-  --format qcow2 \
-  --export-oci quay.io/myorg/automotive-disk:latest \
-  --download ./output/disk.qcow2 \
+  --disk \
+  --push-disk quay.io/myorg/automotive-disk:latest \
+  -o ./output/disk.qcow2 \
   --follow
 ```
 
@@ -59,49 +56,48 @@ bin/caib build-bootc manifest.aib.yml \
 Build an ostree-based or package-based disk image:
 
 ```bash
-bin/caib build-traditional manifest.aib.yml \
-  --name my-traditional-build \
+bin/caib build-legacy manifest.aib.yml \
   --arch arm64 \
   --mode image \
-  --export qcow2 \
-  --download ./output/disk.qcow2 \
+  --format qcow2 \
+  -o ./output/disk.qcow2 \
   --follow
 ```
 
 ## Commands
 
-### build-bootc
+### build
 
-Builds a bootc container image with optional disk image creation.
+Builds a bootc container image with optional disk image creation. This is the recommended approach for production.
 
 ```bash
-bin/caib build-bootc <manifest.aib.yml> [flags]
+bin/caib build <manifest.aib.yml> [flags]
 ```
 
 **Required flags:**
 | Flag | Description |
 |------|-------------|
-| `--name` | Unique build name |
-| `--arch` | Architecture (`amd64`, `arm64`) |
+| `--push` | Push bootc container to registry (e.g., `quay.io/org/image:tag`) |
 
 **Optional flags:**
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--server` | `$CAIB_SERVER` | Build API server URL |
 | `--token` | `$CAIB_TOKEN` | Bearer token (auto-detected from kubeconfig) |
-| `--distro` | `autosd` | Distribution to build |
-| `--target` | `qemu` | Target platform |
-| `--push` | | Push bootc container to registry (e.g., `quay.io/org/image:tag`) |
-| `--build-disk-image` | `false` | Also build a disk image from the container |
-| `--format` | `qcow2` | Disk image format (`qcow2`, `raw`, `simg`) |
+| `-n`, `--name` | (auto-generated) | Unique build name |
+| `-d`, `--distro` | `autosd` | Distribution to build |
+| `-t`, `--target` | `qemu` | Target platform |
+| `-a`, `--arch` | (current system) | Architecture (`amd64`, `arm64`) |
+| `--disk` | `false` | Also build a disk image from the container |
+| `--format` | (inferred from `-o`) | Disk image format (`qcow2`, `raw`, `simg`) |
 | `--compress` | `gzip` | Compression algorithm (`gzip`, `lz4`, `xz`) |
-| `--export-oci` | | Push disk image as OCI artifact to registry |
-| `--download` | | Download disk image to local file (requires `--export-oci`) |
+| `--push-disk` | | Push disk image as OCI artifact to registry |
+| `-o`, `--output` | | Download disk image to local file (implies `--disk`) |
 | `--builder-image` | | Custom aib-build container |
-| `--automotive-image-builder` | `quay.io/.../automotive-image-builder:latest` | AIB container image |
+| `--aib-image` | `quay.io/.../automotive-image-builder:latest` | AIB container image |
 | `--storage-class` | | Storage class for build workspace PVC |
-| `--define` | | Custom definition `KEY=VALUE` (repeatable) |
-| `--registry-username` | `$REGISTRY_USERNAME` | Registry username for push/export |
+| `-D`, `--define` | | Custom definition `KEY=VALUE` (repeatable) |
+| `--registry-username` | `$REGISTRY_USERNAME` | Registry username for push operations |
 | `--registry-password` | `$REGISTRY_PASSWORD` | Registry password (or use docker/podman auth) |
 | `--timeout` | `60` | Timeout in minutes |
 | `-w`, `--wait` | `false` | Wait for build to complete |
@@ -111,61 +107,102 @@ bin/caib build-bootc <manifest.aib.yml> [flags]
 
 ```bash
 # Build and push bootc container only
-bin/caib build-bootc my-manifest.aib.yml \
-  --name bootc-only \
+bin/caib build my-manifest.aib.yml \
   --arch arm64 \
   --push quay.io/myorg/automotive:v1.0 \
   --follow
 
 # Build bootc container + qcow2 disk image, download locally
-bin/caib build-bootc my-manifest.aib.yml \
-  --name full-build \
+bin/caib build my-manifest.aib.yml \
   --arch arm64 \
   --push quay.io/myorg/automotive:v1.0 \
-  --build-disk-image \
+  --disk \
   --format qcow2 \
-  --export-oci quay.io/myorg/automotive-disk:v1.0 \
-  --download ./my-image.qcow2 \
+  --push-disk quay.io/myorg/automotive-disk:v1.0 \
+  -o ./my-image.qcow2 \
   --follow
 
 # Use custom builder image
-bin/caib build-bootc my-manifest.aib.yml \
-  --name custom-builder \
+bin/caib build my-manifest.aib.yml \
   --arch amd64 \
   --builder-image quay.io/myorg/my-aib-build:latest \
   --push quay.io/myorg/result:latest \
   --follow
 ```
 
-### build-traditional
+### disk
 
-Builds a traditional (ostree or package-based) disk image.
+Creates a disk image from an existing bootc container in a registry.
 
 ```bash
-bin/caib build-traditional <manifest.aib.yml> [flags]
+bin/caib disk <container-ref> [flags]
+```
+
+**Optional flags:**
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--server` | `$CAIB_SERVER` | Build API server URL |
+| `--token` | `$CAIB_TOKEN` | Bearer token |
+| `-n`, `--name` | (auto-generated) | Build job name |
+| `-o`, `--output` | | Download disk image to local file |
+| `--format` | (inferred from `-o`) | Disk image format (`qcow2`, `raw`, `simg`) |
+| `--compress` | `gzip` | Compression algorithm (`gzip`, `lz4`, `xz`) |
+| `--push` | | Push disk image as OCI artifact to registry |
+| `-d`, `--distro` | `autosd` | Distribution |
+| `-t`, `--target` | `qemu` | Target platform |
+| `-a`, `--arch` | (current system) | Architecture (`amd64`, `arm64`) |
+| `--aib-image` | `quay.io/.../automotive-image-builder:latest` | AIB container image |
+| `--storage-class` | | Kubernetes storage class |
+| `--registry-username` | `$REGISTRY_USERNAME` | Registry username |
+| `--registry-password` | `$REGISTRY_PASSWORD` | Registry password |
+| `--timeout` | `60` | Timeout in minutes |
+| `-w`, `--wait` | `false` | Wait for build to complete |
+| `-f`, `--follow` | `false` | Follow build logs |
+
+**Examples:**
+
+```bash
+# Create disk image from container, download locally
+bin/caib disk quay.io/myorg/my-os:v1 \
+  -o ./disk.qcow2 \
+  --format qcow2 \
+  --wait
+
+# Push disk as OCI artifact instead of downloading
+bin/caib disk quay.io/myorg/my-os:v1 \
+  --push quay.io/myorg/my-disk:v1 \
+  --follow
+```
+
+### build-legacy
+
+Builds a traditional (ostree or package-based) disk image. For legacy workflows; new projects should use `build`.
+
+```bash
+bin/caib build-legacy <manifest.aib.yml> [flags]
 ```
 
 **Required flags:**
 | Flag | Description |
 |------|-------------|
-| `--name` | Unique build name |
-| `--arch` | Architecture (`amd64`, `arm64`) |
+| `--mode` | Build mode: `image` (ostree) or `package` |
+| `--format` | Export format: `qcow2`, `raw`, `simg`, etc. |
 
 **Optional flags:**
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--server` | `$CAIB_SERVER` | Build API server URL |
 | `--token` | `$CAIB_TOKEN` | Bearer token (auto-detected from kubeconfig) |
-| `--distro` | `autosd` | Distribution to build |
-| `--target` | `qemu` | Target platform |
-| `--mode` | `image` | Build mode (`image`, `package`) |
-| `--export` | `qcow2` | Export format (`qcow2`, `raw`, `simg`) |
+| `-n`, `--name` | | Unique build name |
+| `-d`, `--distro` | `autosd` | Distribution to build |
+| `-t`, `--target` | `qemu` | Target platform |
+| `-a`, `--arch` | (current system) | Architecture (`amd64`, `arm64`) |
 | `--compress` | `gzip` | Compression algorithm (`gzip`, `lz4`, `xz`) |
 | `--push` | | Push disk image as OCI artifact to registry |
-| `--download` | | Download artifact to local file |
-| `--automotive-image-builder` | `quay.io/.../automotive-image-builder:latest` | AIB container image |
+| `-o`, `--output` | | Download artifact to local file |
+| `--aib-image` | `quay.io/.../automotive-image-builder:latest` | AIB container image |
 | `--storage-class` | | Storage class for build workspace PVC |
-| `--define` | | Custom definition `KEY=VALUE` (repeatable) |
+| `-D`, `--define` | | Custom definition `KEY=VALUE` (repeatable) |
 | `--registry-username` | `$REGISTRY_USERNAME` | Registry username |
 | `--registry-password` | `$REGISTRY_PASSWORD` | Registry password |
 | `--timeout` | `60` | Timeout in minutes |
@@ -176,18 +213,18 @@ bin/caib build-traditional <manifest.aib.yml> [flags]
 
 ```bash
 # Build ostree-based image and download
-bin/caib build-traditional my-manifest.aib.yml \
-  --name traditional-build \
+bin/caib build-legacy my-manifest.aib.yml \
   --arch arm64 \
   --mode image \
-  --export qcow2 \
-  --download ./disk.qcow2 \
+  --format qcow2 \
+  -o ./disk.qcow2 \
   --follow
 
 # Build and push to OCI registry
-bin/caib build-traditional my-manifest.aib.yml \
-  --name pushed-build \
+bin/caib build-legacy my-manifest.aib.yml \
   --arch arm64 \
+  --mode image \
+  --format qcow2 \
   --push quay.io/myorg/disk-image:v1.0 \
   --registry-username myuser \
   --registry-password mypass \
@@ -223,10 +260,10 @@ bin/caib list [flags]
 | `--server` | `$CAIB_SERVER` | Build API server URL |
 | `--token` | `$CAIB_TOKEN` | Bearer token |
 
-## Bootc vs Traditional Builds
+## Bootc vs Legacy Builds
 
-| Aspect | `build-bootc` | `build-traditional` |
-|--------|---------------|---------------------|
+| Aspect | `build` (bootc) | `build-legacy` |
+|--------|-----------------|----------------|
 | Output | Container image (+ optional disk) | Disk image only |
 | Update mechanism | `bootc switch/upgrade` | Requires re-imaging |
 | Use case | OTA-updatable systems | Standalone disk images |
@@ -241,7 +278,7 @@ The CLI automatically detects authentication in this order:
 3. Bearer token from kubeconfig (OpenShift `oc login`, exec plugins)
 4. `oc whoami -t` command (if `oc` is available)
 
-For registry authentication (`--push`, `--export-oci`):
+For registry authentication (`--push`, `--push-disk`):
 
 1. `--registry-username` / `--registry-password` flags
 2. `REGISTRY_USERNAME` / `REGISTRY_PASSWORD` environment variables

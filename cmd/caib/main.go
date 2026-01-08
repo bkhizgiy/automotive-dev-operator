@@ -81,6 +81,56 @@ var (
 	containerRef string
 )
 
+// createBuildAPIClient creates a build API client with authentication token from flags or kubeconfig
+func createBuildAPIClient(serverURL string, authToken *string) (*buildapiclient.Client, error) {
+	if strings.TrimSpace(*authToken) == "" {
+		if tok, err := loadTokenFromKubeconfig(); err == nil && strings.TrimSpace(tok) != "" {
+			*authToken = tok
+		}
+	}
+
+	var opts []buildapiclient.Option
+	if strings.TrimSpace(*authToken) != "" {
+		opts = append(opts, buildapiclient.WithAuthToken(strings.TrimSpace(*authToken)))
+	}
+	return buildapiclient.New(serverURL, opts...)
+}
+
+// extractRegistryCredentials extracts registry URL and ensures credentials are loaded from env vars
+func extractRegistryCredentials(primaryRef, secondaryRef string, username, password *string) string {
+	// Try environment variables if command line flags are empty
+	if *username == "" {
+		*username = os.Getenv("REGISTRY_USERNAME")
+	}
+	if *password == "" {
+		*password = os.Getenv("REGISTRY_PASSWORD")
+	}
+
+	// Determine the reference to use for URL extraction
+	ref := primaryRef
+	if ref == "" {
+		ref = secondaryRef
+	}
+
+	// If no reference, return empty
+	if ref == "" {
+		return ""
+	}
+
+	// Warn if credentials missing (will fall back to Docker/Podman auth files)
+	if *username == "" || *password == "" {
+		fmt.Println("Warning: No registry credentials provided via flags or environment variables.")
+		fmt.Println("Will attempt to use Docker/Podman auth files as fallback.")
+	}
+
+	// Extract registry URL from reference
+	parts := strings.SplitN(ref, "/", 2)
+	if len(parts) > 0 && strings.Contains(parts[0], ".") {
+		return parts[0]
+	}
+	return "docker.io"
+}
+
 func main() {
 	rootCmd := &cobra.Command{
 		Use:     "caib",
@@ -188,7 +238,7 @@ Examples:
 	buildCmd.Flags().StringVar(&containerPush, "push", "", "push bootc container to registry (required)")
 	buildCmd.Flags().BoolVar(&buildDiskImage, "disk", false, "also build disk image from container")
 	buildCmd.Flags().StringVarP(&outputDir, "output", "o", "", "download disk image to file (requires --disk)")
-	buildCmd.Flags().StringVar(&diskFormat, "format", "", "disk image format (qcow2, raw, image); inferred from output filename if not set")
+	buildCmd.Flags().StringVar(&diskFormat, "format", "", "disk image format (qcow2, raw, simg); inferred from output filename if not set")
 	buildCmd.Flags().StringVar(&compressionAlgo, "compress", "gzip", "compression algorithm (gzip, lz4, xz)")
 	buildCmd.Flags().StringVar(&exportOCI, "push-disk", "", "push disk image as OCI artifact to registry")
 	buildCmd.Flags().StringVar(&registryUsername, "registry-username", "", "registry username (or REGISTRY_USERNAME env)")
@@ -217,7 +267,7 @@ Examples:
 	diskCmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication")
 	diskCmd.Flags().StringVarP(&buildName, "name", "n", "", "name for the build job (auto-generated if omitted)")
 	diskCmd.Flags().StringVarP(&outputDir, "output", "o", "", "download disk image to file")
-	diskCmd.Flags().StringVar(&diskFormat, "format", "", "disk image format (qcow2, raw, image); inferred from output filename if not set")
+	diskCmd.Flags().StringVar(&diskFormat, "format", "", "disk image format (qcow2, raw, simg); inferred from output filename if not set")
 	diskCmd.Flags().StringVar(&compressionAlgo, "compress", "gzip", "compression algorithm (gzip, lz4, xz)")
 	diskCmd.Flags().StringVar(&exportOCI, "push", "", "push disk image as OCI artifact to registry")
 	diskCmd.Flags().StringVar(&registryUsername, "registry-username", "", "registry username (or REGISTRY_USERNAME env)")
@@ -289,17 +339,7 @@ func runBuild(cmd *cobra.Command, args []string) {
 
 	// Note: diskFormat can be empty - AIB will default to raw (or infer from output filename extension)
 
-	if strings.TrimSpace(authToken) == "" {
-		if tok, err := loadTokenFromKubeconfig(); err == nil && strings.TrimSpace(tok) != "" {
-			authToken = tok
-		}
-	}
-
-	var opts []buildapiclient.Option
-	if strings.TrimSpace(authToken) != "" {
-		opts = append(opts, buildapiclient.WithAuthToken(strings.TrimSpace(authToken)))
-	}
-	api, err := buildapiclient.New(serverURL, opts...)
+	api, err := createBuildAPIClient(serverURL, &authToken)
 	if err != nil {
 		handleError(err)
 	}
@@ -309,33 +349,8 @@ func runBuild(cmd *cobra.Command, args []string) {
 		handleError(fmt.Errorf("error reading manifest: %w", err))
 	}
 
-	// Extract registry URL from push if not empty
-	effectiveRegistryURL := ""
-	if containerPush != "" || exportOCI != "" {
-		// Try environment variables if command line flags are empty
-		if registryUsername == "" {
-			registryUsername = os.Getenv("REGISTRY_USERNAME")
-		}
-		if registryPassword == "" {
-			registryPassword = os.Getenv("REGISTRY_PASSWORD")
-		}
-
-		// Note: Docker/Podman auth files will be tried as fallback in pullOCIArtifact
-		if registryUsername == "" || registryPassword == "" {
-			fmt.Println("Warning: No registry credentials provided via flags or environment variables.")
-			fmt.Println("Will attempt to use Docker/Podman auth files as fallback.")
-		}
-		pushTarget := containerPush
-		if pushTarget == "" {
-			pushTarget = exportOCI
-		}
-		parts := strings.SplitN(pushTarget, "/", 2)
-		if len(parts) > 0 && strings.Contains(parts[0], ".") {
-			effectiveRegistryURL = parts[0]
-		} else {
-			effectiveRegistryURL = "docker.io"
-		}
-	}
+	// Extract registry URL and credentials
+	effectiveRegistryURL := extractRegistryCredentials(containerPush, exportOCI, &registryUsername, &registryPassword)
 
 	req := buildapitypes.BuildRequest{
 		Name:                   buildName,
@@ -393,7 +408,7 @@ func runBuild(cmd *cobra.Command, args []string) {
 			}
 		} else {
 			// Download directly from cluster via artifact API
-			if err := downloadArtifactViaAPI(ctx, serverURL, buildName, filepath.Dir(outputDir)); err != nil {
+			if err := downloadArtifactViaAPI(ctx, serverURL, buildName, outputDir); err != nil {
 				handleError(fmt.Errorf("failed to download artifact: %w", err))
 			}
 		}
@@ -426,43 +441,13 @@ func runDisk(cmd *cobra.Command, args []string) {
 
 	// Note: diskFormat can be empty - AIB will default to raw (or infer from output filename extension)
 
-	if strings.TrimSpace(authToken) == "" {
-		if tok, err := loadTokenFromKubeconfig(); err == nil && strings.TrimSpace(tok) != "" {
-			authToken = tok
-		}
-	}
-
-	var opts []buildapiclient.Option
-	if strings.TrimSpace(authToken) != "" {
-		opts = append(opts, buildapiclient.WithAuthToken(strings.TrimSpace(authToken)))
-	}
-	api, err := buildapiclient.New(serverURL, opts...)
+	api, err := createBuildAPIClient(serverURL, &authToken)
 	if err != nil {
 		handleError(err)
 	}
 
-	// Get registry credentials from env if not provided
-	if registryUsername == "" {
-		registryUsername = os.Getenv("REGISTRY_USERNAME")
-	}
-	if registryPassword == "" {
-		registryPassword = os.Getenv("REGISTRY_PASSWORD")
-	}
-
-	// Extract registry URL for authentication
-	effectiveRegistryURL := ""
-	if containerRef != "" || exportOCI != "" {
-		ref := containerRef
-		if ref == "" {
-			ref = exportOCI
-		}
-		parts := strings.SplitN(ref, "/", 2)
-		if len(parts) > 0 && strings.Contains(parts[0], ".") {
-			effectiveRegistryURL = parts[0]
-		} else {
-			effectiveRegistryURL = "docker.io"
-		}
-	}
+	// Extract registry URL and credentials
+	effectiveRegistryURL := extractRegistryCredentials(containerRef, exportOCI, &registryUsername, &registryPassword)
 
 	req := buildapitypes.BuildRequest{
 		Name:                   buildName,
@@ -507,7 +492,7 @@ func runDisk(cmd *cobra.Command, args []string) {
 			}
 		} else {
 			// Download directly from cluster via artifact API
-			if err := downloadArtifactViaAPI(ctx, serverURL, buildName, filepath.Dir(outputDir)); err != nil {
+			if err := downloadArtifactViaAPI(ctx, serverURL, buildName, outputDir); err != nil {
 				handleError(fmt.Errorf("failed to download artifact: %w", err))
 			}
 		}
@@ -587,7 +572,22 @@ func pullOCIArtifact(ociRef, destPath, username, password string) error {
 		return fmt.Errorf("extract artifact: %w", err)
 	}
 
-	fmt.Printf("Downloaded to %s\n", destPath)
+	// Check if file is compressed and add appropriate extension if needed
+	finalPath := destPath
+	compression := detectFileCompression(destPath)
+	if compression != "" && !hasCompressionExtension(destPath) {
+		ext := compressionExtension(compression)
+		if ext != "" {
+			newPath := destPath + ext
+			fmt.Printf("Adding compression extension: %s -> %s\n", filepath.Base(destPath), filepath.Base(newPath))
+			if err := os.Rename(destPath, newPath); err != nil {
+				return fmt.Errorf("rename file with compression extension: %w", err)
+			}
+			finalPath = newPath
+		}
+	}
+
+	fmt.Printf("Downloaded to %s\n", finalPath)
 	return nil
 }
 
@@ -669,17 +669,7 @@ func runBuildLegacy(cmd *cobra.Command, args []string) {
 		handleError(fmt.Errorf("--name is required"))
 	}
 
-	if strings.TrimSpace(authToken) == "" {
-		if tok, err := loadTokenFromKubeconfig(); err == nil && strings.TrimSpace(tok) != "" {
-			authToken = tok
-		}
-	}
-
-	var opts []buildapiclient.Option
-	if strings.TrimSpace(authToken) != "" {
-		opts = append(opts, buildapiclient.WithAuthToken(strings.TrimSpace(authToken)))
-	}
-	api, err := buildapiclient.New(serverURL, opts...)
+	api, err := createBuildAPIClient(serverURL, &authToken)
 	if err != nil {
 		handleError(err)
 	}
@@ -695,28 +685,8 @@ func runBuildLegacy(cmd *cobra.Command, args []string) {
 		parsedMode = buildapitypes.ModePackage
 	}
 
-	effectiveRegistryURL := ""
-	if exportOCI != "" {
-		// Try environment variables if command line flags are empty
-		if registryUsername == "" {
-			registryUsername = os.Getenv("REGISTRY_USERNAME")
-		}
-		if registryPassword == "" {
-			registryPassword = os.Getenv("REGISTRY_PASSWORD")
-		}
-
-		// Note: Docker/Podman auth files will be tried as fallback
-		if registryUsername == "" || registryPassword == "" {
-			fmt.Println("Warning: No registry credentials provided via flags or environment variables.")
-			fmt.Println("Will attempt to use Docker/Podman auth files as fallback.")
-		}
-		parts := strings.SplitN(exportOCI, "/", 2)
-		if len(parts) > 0 && strings.Contains(parts[0], ".") {
-			effectiveRegistryURL = parts[0]
-		} else {
-			effectiveRegistryURL = "docker.io"
-		}
-	}
+	// Extract registry URL and credentials
+	effectiveRegistryURL := extractRegistryCredentials("", exportOCI, &registryUsername, &registryPassword)
 
 	req := buildapitypes.BuildRequest{
 		Name:                   buildName,
@@ -983,10 +953,122 @@ func findLocalFileReferences(manifestContent string) ([]map[string]string, error
 	return localFiles, nil
 }
 
-func downloadArtifactViaAPI(ctx context.Context, baseURL, name, outDir string) error {
-	if strings.TrimSpace(outDir) == "" {
-		outDir = "./output"
+// isDirectory checks if a path exists and is a directory
+func isDirectory(path string) bool {
+	stat, err := os.Stat(path)
+	return err == nil && stat.IsDir()
+}
+
+// compressionExtension returns the file extension for a compression algorithm
+func compressionExtension(algo string) string {
+	switch algo {
+	case "gzip":
+		return ".gz"
+	case "lz4":
+		return ".lz4"
+	case "xz":
+		return ".xz"
+	default:
+		return ""
 	}
+}
+
+// hasCompressionExtension checks if a filename already has a compression extension
+func hasCompressionExtension(filename string) bool {
+	lower := strings.ToLower(filename)
+	return strings.HasSuffix(lower, ".gz") ||
+		strings.HasSuffix(lower, ".lz4") ||
+		strings.HasSuffix(lower, ".xz")
+}
+
+// parseOutputPath determines the output directory and optional user-specified filename
+func parseOutputPath(outPath string) (outDir, userFilename string) {
+	outPath = strings.TrimSpace(outPath)
+
+	// Empty path defaults to ./output
+	if outPath == "" {
+		return "./output", ""
+	}
+
+	// Explicit directory paths (trailing slash or existing directory)
+	if strings.HasSuffix(outPath, "/") || isDirectory(outPath) {
+		return strings.TrimRight(outPath, "/"), ""
+	}
+
+	// File path - extract directory and filename
+	dir := filepath.Dir(outPath)
+	filename := filepath.Base(outPath)
+
+	// Current directory defaults to ./output for clarity
+	if dir == "." {
+		dir = "./output"
+	}
+
+	return dir, filename
+}
+
+// resolveFilename determines the final filename, adding compression extension if needed
+func resolveFilename(userFilename, serverFilename, compression, fallbackName string) string {
+	// Priority: user-specified > server-provided > fallback
+	filename := fallbackName
+	if serverFilename != "" {
+		filename = serverFilename
+	}
+	if userFilename != "" {
+		filename = userFilename
+	}
+
+	// Add compression extension if server indicates compression and filename lacks it
+	if compression != "" && !hasCompressionExtension(filename) {
+		if ext := compressionExtension(compression); ext != "" {
+			original := filename
+			filename += ext
+			if userFilename != "" {
+				fmt.Printf("Adding compression extension: %s -> %s\n", original, filename)
+			}
+		}
+	}
+
+	return filename
+}
+
+// detectFileCompression examines file magic bytes to determine compression type
+func detectFileCompression(filePath string) string {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+
+	// Read first few bytes to check magic numbers
+	header := make([]byte, 10)
+	n, err := file.Read(header)
+	if err != nil || n < 3 {
+		return ""
+	}
+
+	// Check for gzip magic number
+	if n >= 2 && header[0] == 0x1f && header[1] == 0x8b {
+		return "gzip"
+	}
+
+	// Check for lz4 magic number
+	if n >= 4 && header[0] == 0x04 && header[1] == 0x22 && header[2] == 0x4d && header[3] == 0x18 {
+		return "lz4"
+	}
+
+	// Check for xz magic number
+	if n >= 6 && header[0] == 0xfd && header[1] == 0x37 && header[2] == 0x7a &&
+		header[3] == 0x58 && header[4] == 0x5a && header[5] == 0x00 {
+		return "xz"
+	}
+
+	return ""
+}
+
+func downloadArtifactViaAPI(ctx context.Context, baseURL, name, outPath string) error {
+	outDir, userFilename := parseOutputPath(outPath)
+
 	if err := os.MkdirAll(outDir, 0755); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
 	}
@@ -1020,16 +1102,19 @@ func downloadArtifactViaAPI(ctx context.Context, baseURL, name, outDir string) e
 		}
 
 		if resp.StatusCode == http.StatusOK {
-			filename := name + ".artifact"
 			contentType := resp.Header.Get("Content-Type")
+
+			// Extract server-provided filename from Content-Disposition header
+			serverFilename := ""
 			if cd := resp.Header.Get("Content-Disposition"); cd != "" {
 				if i := strings.Index(cd, "filename="); i >= 0 {
-					f := strings.Trim(cd[i+9:], "\" ")
-					if f != "" {
-						filename = f
-					}
+					serverFilename = strings.Trim(cd[i+9:], "\" ")
 				}
 			}
+
+			// Resolve final filename with compression handling
+			compression := strings.TrimSpace(resp.Header.Get("X-AIB-Compression"))
+			filename := resolveFilename(userFilename, serverFilename, compression, name+".artifact")
 			if at := strings.TrimSpace(resp.Header.Get("X-AIB-Artifact-Type")); at != "" {
 				fmt.Printf("Artifact type: %s\n", at)
 			}
@@ -1187,16 +1272,7 @@ func runDownload(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	if strings.TrimSpace(authToken) == "" {
-		if tok, err := loadTokenFromKubeconfig(); err == nil && strings.TrimSpace(tok) != "" {
-			authToken = tok
-		}
-	}
-	var opts []buildapiclient.Option
-	if strings.TrimSpace(authToken) != "" {
-		opts = append(opts, buildapiclient.WithAuthToken(strings.TrimSpace(authToken)))
-	}
-	api, err := buildapiclient.New(serverURL, opts...)
+	api, err := createBuildAPIClient(serverURL, &authToken)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
@@ -1224,16 +1300,7 @@ func runList(cmd *cobra.Command, args []string) {
 		fmt.Println("Error: --server is required (or set CAIB_SERVER)")
 		os.Exit(1)
 	}
-	if strings.TrimSpace(authToken) == "" {
-		if tok, err := loadTokenFromKubeconfig(); err == nil && strings.TrimSpace(tok) != "" {
-			authToken = tok
-		}
-	}
-	var opts []buildapiclient.Option
-	if strings.TrimSpace(authToken) != "" {
-		opts = append(opts, buildapiclient.WithAuthToken(strings.TrimSpace(authToken)))
-	}
-	api, err := buildapiclient.New(serverURL, opts...)
+	api, err := createBuildAPIClient(serverURL, &authToken)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
