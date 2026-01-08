@@ -7,27 +7,11 @@ import (
 
 type Distro string
 
-func (d Distro) IsValid() bool {
-	return strings.TrimSpace(string(d)) != ""
-}
-
 type Target string
-
-func (t Target) IsValid() bool {
-	return strings.TrimSpace(string(t)) != ""
-}
 
 type Architecture string
 
-func (a Architecture) IsValid() bool {
-	return strings.TrimSpace(string(a)) != ""
-}
-
 type ExportFormat string
-
-func (e ExportFormat) IsValid() bool {
-	return strings.TrimSpace(string(e)) != ""
-}
 
 type Mode string
 
@@ -42,9 +26,16 @@ const (
 	ModeDisk Mode = "disk"
 )
 
-func (m Mode) IsValid() bool {
-	return strings.TrimSpace(string(m)) != ""
+// IsValid checks if a string value is non-empty after trimming whitespace
+func IsValid(s string) bool {
+	return strings.TrimSpace(s) != ""
 }
+
+func (d Distro) IsValid() bool       { return IsValid(string(d)) }
+func (t Target) IsValid() bool       { return IsValid(string(t)) }
+func (a Architecture) IsValid() bool { return IsValid(string(a)) }
+func (e ExportFormat) IsValid() bool { return IsValid(string(e)) }
+func (m Mode) IsValid() bool         { return IsValid(string(m)) }
 
 // IsBootc returns true if this is bootc mode
 func (m Mode) IsBootc() bool {

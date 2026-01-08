@@ -585,10 +585,29 @@ elif [ -f "$(workspaces.shared-workspace.path)/${exportFile}" ]; then
 fi
 
 if [ -z "$final_name" ]; then
-  guess=$(ls -1 $(workspaces.shared-workspace.path)/${cleanName}* 2>/dev/null | head -n1)
-  if [ -n "$guess" ]; then
-    final_name=$(basename "$guess")
+  workspace_path=$(workspaces.shared-workspace.path)
+
+  # Try to find artifact with priority: compressed file > compressed dir > any file
+  # This ensures we prefer compressed artifacts when compression is enabled
+  patterns_to_try=(
+    "${cleanName}*${EXT_FILE}"
+    "${cleanName}*${EXT_DIR}"
+    "${cleanName}*"
+  )
+
+  # If compression is disabled, only try the general pattern
+  if [ "$COMPRESSION" = "none" ]; then
+    patterns_to_try=("${cleanName}*")
   fi
+
+  for pattern in "${patterns_to_try[@]}"; do
+    guess=$(ls -1 "${workspace_path}/${pattern}" 2>/dev/null | head -n1)
+    if [ -n "$guess" ]; then
+      final_name=$(basename "$guess")
+      echo "Fallback: using found artifact: $final_name"
+      break
+    fi
+  done
 fi
 if [ -n "$final_name" ]; then
   echo "Writing artifact filename to Tekton result: $final_name"

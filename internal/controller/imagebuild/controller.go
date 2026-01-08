@@ -27,6 +27,47 @@ const (
 	OperatorNamespace = "automotive-dev-operator-system"
 )
 
+// getFormatExtension returns the file extension for an export format
+func getFormatExtension(format string) string {
+	switch format {
+	case "image":
+		return ".raw"
+	case "qcow2":
+		return ".qcow2"
+	default:
+		if format != "" {
+			return "." + format
+		}
+		return ".raw"
+	}
+}
+
+// getCompressionExtension returns the file extension for a compression algorithm
+func getCompressionExtension(compression string) string {
+	if compression == "" || compression == "none" {
+		return ""
+	}
+
+	switch compression {
+	case "gzip":
+		return ".gz"
+	case "lz4":
+		return ".lz4"
+	case "xz":
+		return ".xz"
+	default:
+		return ""
+	}
+}
+
+// buildArtifactFilename constructs the artifact filename with proper extensions
+func buildArtifactFilename(distro, target, exportFormat, compression string) string {
+	baseFormat := getFormatExtension(exportFormat)
+	compressionExt := getCompressionExtension(compression)
+
+	return fmt.Sprintf("%s-%s%s%s", distro, target, baseFormat, compressionExt)
+}
+
 // ImageBuildReconciler reconciles a ImageBuild object
 type ImageBuildReconciler struct {
 	client.Client
@@ -828,20 +869,12 @@ func (r *ImageBuildReconciler) updateArtifactInfo(ctx context.Context, imageBuil
 
 	// Only set ArtifactFileName if it's not already set (from Tekton results)
 	if latestImageBuild.Status.ArtifactFileName == "" {
-		var fileExtension string
-		switch latestImageBuild.Spec.ExportFormat {
-		case "image":
-			fileExtension = ".raw"
-		case "qcow2":
-			fileExtension = ".qcow2"
-		default:
-			fileExtension = fmt.Sprintf(".%s", latestImageBuild.Spec.ExportFormat)
-		}
-
-		fileName := fmt.Sprintf("%s-%s%s",
+		fileName := buildArtifactFilename(
 			latestImageBuild.Spec.Distro,
 			latestImageBuild.Spec.Target,
-			fileExtension)
+			latestImageBuild.Spec.ExportFormat,
+			latestImageBuild.Spec.Compression,
+		)
 		latestImageBuild.Status.ArtifactFileName = fileName
 	}
 
