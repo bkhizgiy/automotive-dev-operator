@@ -288,7 +288,7 @@ func streamLogs(c *gin.Context, name string) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	pods, err := quickCS.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: "tekton.dev/pipelineRun=" + tr + ",tekton.dev/taskRun"})
+	pods, err := quickCS.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: "tekton.dev/pipelineRun=" + tr + ",tekton.dev/memberOf=tasks"})
 	if err != nil || len(pods.Items) == 0 {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "logs not available yet"})
 		return
@@ -484,7 +484,7 @@ func streamLogsSSE(c *gin.Context, name string) {
 		c.Writer.Flush()
 		return
 	}
-	pods, err := quickCS.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: "tekton.dev/pipelineRun=" + tr + ",tekton.dev/taskRun"})
+	pods, err := quickCS.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: "tekton.dev/pipelineRun=" + tr + ",tekton.dev/memberOf=tasks"})
 	if err != nil || len(pods.Items) == 0 {
 		sendSSEEvent(c, "waiting", "", "Build pods not ready yet, waiting for logs...")
 		c.Writer.Flush()

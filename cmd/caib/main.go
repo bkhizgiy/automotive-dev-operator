@@ -796,6 +796,10 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 	userFollowRequested := followLogs
 	var lastPhase, lastMessage string
 	logFollowWarned := false
+	logRetryFailureWarned := false
+	logStreamActive := false
+	logRetryCount := 0
+	const maxLogRetries = 24 // Try for ~2 minutes (24 * 5s = 120s) before giving up
 
 	logClient := &http.Client{
 		Timeout: 10 * time.Minute,
@@ -810,36 +814,7 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 		case <-timeoutCtx.Done():
 			handleError(fmt.Errorf("timed out waiting for build"))
 		case <-ticker.C:
-			if followLogs {
-				req, _ := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(serverURL, "/")+"/v1/builds/"+url.PathEscape(name)+"/logs?follow=1", nil)
-				if strings.TrimSpace(authToken) != "" {
-					req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(authToken))
-				}
-				resp, err := logClient.Do(req)
-				if err == nil && resp.StatusCode == http.StatusOK {
-					fmt.Println("Streaming logs...")
-					io.Copy(os.Stdout, resp.Body)
-					resp.Body.Close()
-					followLogs = userFollowRequested
-				} else if resp != nil {
-					body, _ := io.ReadAll(resp.Body)
-					msg := strings.TrimSpace(string(body))
-					if resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusGatewayTimeout {
-						if !logFollowWarned {
-							fmt.Println("log stream not ready (HTTP", resp.StatusCode, "). Retrying...")
-							logFollowWarned = true
-						}
-					} else {
-						if msg != "" {
-							fmt.Printf("log stream error (%d): %s\n", resp.StatusCode, msg)
-						} else {
-							fmt.Printf("log stream error: HTTP %d\n", resp.StatusCode)
-						}
-						followLogs = false
-					}
-					resp.Body.Close()
-				}
-			}
+			// First, check build status
 			reqCtx, cancelReq := context.WithTimeout(ctx, 2*time.Minute)
 			st, err := api.GetBuild(reqCtx, name)
 			cancelReq()
@@ -847,13 +822,17 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 				fmt.Printf("status check failed: %v\n", err)
 				continue
 			}
-			if !userFollowRequested {
+
+			// Update status display (only if not actively streaming logs)
+			if !logStreamActive && (!userFollowRequested || logRetryCount > maxLogRetries) {
 				if st.Phase != lastPhase || st.Message != lastMessage {
 					fmt.Printf("status: %s - %s\n", st.Phase, st.Message)
 					lastPhase = st.Phase
 					lastMessage = st.Message
 				}
 			}
+
+			// Handle completed/failed builds
 			if st.Phase == "Completed" {
 				if downloadTo != "" {
 					outDir := filepath.Dir(downloadTo)
@@ -869,8 +848,91 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 			if st.Phase == "Failed" {
 				handleError(fmt.Errorf("build failed: %s", st.Message))
 			}
+
+			// Only attempt log streaming if:
+			// 1. User requested it
+			// 2. Build is in active phase (Building, Running, etc.)
+			// 3. We haven't exceeded retry limit
+			// 4. We're not already streaming
+			if followLogs && !logStreamActive && logRetryCount <= maxLogRetries {
+				buildIsActive := st.Phase == "Building" || st.Phase == "Running" || st.Phase == "Uploading"
+				if buildIsActive || (st.Phase != "Pending" && st.Phase != "Completed" && st.Phase != "Failed") {
+					// First attempt - show helpful message
+					if logRetryCount == 0 && buildIsActive {
+						fmt.Println("Build is active. Attempting to stream logs...")
+						logFollowWarned = false // Reset so we can show retry messages
+					}
+
+					if err := tryLogStreaming(ctx, logClient, name, &logStreamActive, &logRetryCount, &logFollowWarned); err != nil {
+						// Log streaming failed, will retry next iteration if under limit
+						logRetryCount++
+						if logRetryCount > maxLogRetries && !logRetryFailureWarned {
+							fmt.Printf("Log streaming failed after %d attempts (~2 minutes). Falling back to status updates only.\n", maxLogRetries)
+							logRetryFailureWarned = true
+						}
+					} else {
+						// Streaming succeeded, reset retry count
+						logRetryCount = 0
+						followLogs = userFollowRequested // Reset for potential future streams
+					}
+				} else if st.Phase == "Pending" {
+					// Build not yet started, reset retry count and wait
+					logRetryCount = 0
+					if userFollowRequested && !logFollowWarned {
+						fmt.Println("Waiting for build to start before streaming logs...")
+						logFollowWarned = true // Prevent spam
+					}
+				}
+			}
 		}
 	}
+}
+
+// tryLogStreaming attempts to stream logs and returns error if it fails
+func tryLogStreaming(ctx context.Context, logClient *http.Client, name string, logStreamActive *bool, logRetryCount *int, logFollowWarned *bool) error {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(serverURL, "/")+"/v1/builds/"+url.PathEscape(name)+"/logs?follow=1", nil)
+	if strings.TrimSpace(authToken) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(authToken))
+	}
+
+	resp, err := logClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("log request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		fmt.Println("Streaming logs...")
+		*logStreamActive = true
+		*logFollowWarned = false
+		*logRetryCount = 0
+		_, copyErr := io.Copy(os.Stdout, resp.Body)
+		*logStreamActive = false
+		if copyErr != nil {
+			return fmt.Errorf("log stream interrupted: %w", copyErr)
+		}
+		return nil // Streaming completed successfully
+	}
+
+	// Handle error responses
+	body, _ := io.ReadAll(resp.Body)
+	msg := strings.TrimSpace(string(body))
+
+	if resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusGatewayTimeout {
+		if !*logFollowWarned {
+			fmt.Printf("log stream not ready (HTTP %d). Retrying... (attempt %d/24)\n", resp.StatusCode, *logRetryCount+1)
+			*logFollowWarned = true
+		}
+		return fmt.Errorf("log endpoint not ready (HTTP %d)", resp.StatusCode)
+	}
+
+	// Other errors - show message and stop trying
+	if msg != "" {
+		fmt.Printf("log stream error (%d): %s\n", resp.StatusCode, msg)
+	} else {
+		fmt.Printf("log stream error: HTTP %d\n", resp.StatusCode)
+	}
+	return fmt.Errorf("log stream failed with HTTP %d", resp.StatusCode)
 }
 
 func handleError(err error) {
