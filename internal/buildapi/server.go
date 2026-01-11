@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path"
@@ -288,7 +289,7 @@ func streamLogs(c *gin.Context, name string) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	pods, err := quickCS.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: "tekton.dev/pipelineRun=" + tr + ",tekton.dev/taskRun"})
+	pods, err := quickCS.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: "tekton.dev/pipelineRun=" + tr + ",tekton.dev/memberOf=tasks"})
 	if err != nil || len(pods.Items) == 0 {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "logs not available yet"})
 		return
@@ -484,7 +485,7 @@ func streamLogsSSE(c *gin.Context, name string) {
 		c.Writer.Flush()
 		return
 	}
-	pods, err := quickCS.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: "tekton.dev/pipelineRun=" + tr + ",tekton.dev/taskRun"})
+	pods, err := quickCS.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: "tekton.dev/pipelineRun=" + tr + ",tekton.dev/memberOf=tasks"})
 	if err != nil || len(pods.Items) == 0 {
 		sendSSEEvent(c, "waiting", "", "Build pods not ready yet, waiting for logs...")
 		c.Writer.Flush()
@@ -822,10 +823,23 @@ func createBuild(c *gin.Context) {
 		return
 	}
 
+	// Debug logging for containerRef
+	fmt.Printf("DEBUG: Received request - Mode: %s, ContainerRef: %q\n", req.Mode, req.ContainerRef)
+
 	needsUpload := strings.Contains(req.Manifest, "source_path")
 
-	if req.Name == "" || req.Manifest == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name and manifest are required"})
+	// Disk mode uses ContainerRef instead of a manifest
+	if req.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+	if req.Mode == ModeDisk {
+		if req.ContainerRef == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "container-ref is required for disk mode"})
+			return
+		}
+	} else if req.Manifest == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "manifest is required"})
 		return
 	}
 
@@ -1011,6 +1025,7 @@ func createBuild(c *gin.Context) {
 			BuildDiskImage:         req.BuildDiskImage,
 			ExportOCI:              req.ExportOCI,
 			BuilderImage:           req.BuilderImage,
+			ContainerRef:           req.ContainerRef,
 		},
 	}
 	if err := k8sClient.Create(ctx, imageBuild); err != nil {
@@ -1018,19 +1033,20 @@ func createBuild(c *gin.Context) {
 		return
 	}
 
-	if err := setOwnerRef(ctx, k8sClient, namespace, cfgName, imageBuild); err != nil {
-		// best-effort
+	// Set owner references for cascading deletion
+	if err := setConfigMapOwnerRef(ctx, k8sClient, namespace, cfgName, imageBuild); err != nil {
+		log.Printf("WARNING: failed to set owner reference on ConfigMap %s: %v (cleanup may require manual intervention)", cfgName, err)
 	}
 
 	if envSecretRef != "" {
-		if err := setOwnerRef(ctx, k8sClient, namespace, envSecretRef, imageBuild); err != nil {
-			// best-effort
+		if err := setSecretOwnerRef(ctx, k8sClient, namespace, envSecretRef, imageBuild); err != nil {
+			log.Printf("WARNING: failed to set owner reference on registry secret %s: %v (cleanup may require manual intervention)", envSecretRef, err)
 		}
 	}
 
 	if pushSecretName != "" {
-		if err := setOwnerRef(ctx, k8sClient, namespace, pushSecretName, imageBuild); err != nil {
-			// best-effort
+		if err := setSecretOwnerRef(ctx, k8sClient, namespace, pushSecretName, imageBuild); err != nil {
+			log.Printf("WARNING: failed to set owner reference on push secret %s: %v (cleanup may require manual intervention)", pushSecretName, err)
 		}
 	}
 
@@ -1360,41 +1376,10 @@ func (a *APIServer) listArtifacts(c *gin.Context, name string) {
 		artifactFileName = fmt.Sprintf("%s-%s%s", build.Spec.Distro, build.Spec.Target, ext)
 	}
 
-	var artifactPod *corev1.Pod
-	deadline := time.Now().Add(2 * time.Minute)
-	for {
-		podList := &corev1.PodList{}
-		if err := k8sClient.List(ctx, podList,
-			client.InNamespace(namespace),
-			client.MatchingLabels{
-				"app.kubernetes.io/name":                          "artifact-pod",
-				"automotive.sdv.cloud.redhat.com/imagebuild-name": name,
-			}); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error listing artifact pods: %v", err)})
-			return
-		}
-		for i := range podList.Items {
-			p := &podList.Items[i]
-			if p.Status.Phase == corev1.PodRunning {
-				for _, cs := range p.Status.ContainerStatuses {
-					if cs.Name == "fileserver" && cs.Ready {
-						artifactPod = p
-						break
-					}
-				}
-			}
-			if artifactPod != nil {
-				break
-			}
-		}
-		if artifactPod != nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "artifact pod not ready"})
-			return
-		}
-		time.Sleep(2 * time.Second)
+	artifactPod, err := findReadyArtifactPod(ctx, k8sClient, namespace, name, time.Now().Add(2*time.Minute))
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
 	}
 
 	restCfg, err := getRESTConfigFromRequest(c)
@@ -1496,41 +1481,10 @@ func (a *APIServer) streamArtifactPart(c *gin.Context, name, file string) {
 		artifactFileName = fmt.Sprintf("%s-%s%s", build.Spec.Distro, build.Spec.Target, ext)
 	}
 
-	var artifactPod *corev1.Pod
-	deadline := time.Now().Add(2 * time.Minute)
-	for {
-		podList := &corev1.PodList{}
-		if err := k8sClient.List(ctx, podList,
-			client.InNamespace(namespace),
-			client.MatchingLabels{
-				"app.kubernetes.io/name":                          "artifact-pod",
-				"automotive.sdv.cloud.redhat.com/imagebuild-name": name,
-			}); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error listing artifact pods: %v", err)})
-			return
-		}
-		for i := range podList.Items {
-			p := &podList.Items[i]
-			if p.Status.Phase == corev1.PodRunning {
-				for _, cs := range p.Status.ContainerStatuses {
-					if cs.Name == "fileserver" && cs.Ready {
-						artifactPod = p
-						break
-					}
-				}
-			}
-			if artifactPod != nil {
-				break
-			}
-		}
-		if artifactPod != nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "artifact pod not ready"})
-			return
-		}
-		time.Sleep(2 * time.Second)
+	artifactPod, err := findReadyArtifactPod(ctx, k8sClient, namespace, name, time.Now().Add(2*time.Minute))
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
 	}
 
 	restCfg, err := getRESTConfigFromRequest(c)
@@ -1666,43 +1620,10 @@ func (a *APIServer) streamDefaultArtifact(c *gin.Context, name string) {
 		return
 	}
 
-	var artifactPod *corev1.Pod
-	deadline := time.Now().Add(2 * time.Minute)
-	for {
-		podList := &corev1.PodList{}
-		if err := k8sClient.List(ctx, podList,
-			client.InNamespace(namespace),
-			client.MatchingLabels{
-				"app.kubernetes.io/name":                          "artifact-pod",
-				"automotive.sdv.cloud.redhat.com/imagebuild-name": name,
-			}); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error listing artifact pods: %v", err)})
-			return
-		}
-
-		for i := range podList.Items {
-			p := &podList.Items[i]
-			if p.Status.Phase == corev1.PodRunning {
-				for _, cs := range p.Status.ContainerStatuses {
-					if cs.Name == "fileserver" && cs.Ready {
-						artifactPod = p
-						break
-					}
-				}
-			}
-			if artifactPod != nil {
-				break
-			}
-		}
-
-		if artifactPod != nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "artifact pod not ready"})
-			return
-		}
-		time.Sleep(2 * time.Second)
+	artifactPod, err := findReadyArtifactPod(ctx, k8sClient, namespace, name, time.Now().Add(2*time.Minute))
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
 	}
 
 	podPath := "/workspace/shared/" + artifactFileName
@@ -1863,43 +1784,10 @@ func (a *APIServer) streamArtifactByFilename(c *gin.Context, name, filename stri
 		return
 	}
 
-	var artifactPod *corev1.Pod
-	deadline := time.Now().Add(2 * time.Minute)
-	for {
-		podList := &corev1.PodList{}
-		if err := k8sClient.List(ctx, podList,
-			client.InNamespace(namespace),
-			client.MatchingLabels{
-				"app.kubernetes.io/name":                          "artifact-pod",
-				"automotive.sdv.cloud.redhat.com/imagebuild-name": name,
-			}); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error listing artifact pods: %v", err)})
-			return
-		}
-
-		for i := range podList.Items {
-			p := &podList.Items[i]
-			if p.Status.Phase == corev1.PodRunning {
-				for _, cs := range p.Status.ContainerStatuses {
-					if cs.Name == "fileserver" && cs.Ready {
-						artifactPod = p
-						break
-					}
-				}
-			}
-			if artifactPod != nil {
-				break
-			}
-		}
-
-		if artifactPod != nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "artifact pod not ready"})
-			return
-		}
-		time.Sleep(2 * time.Second)
+	artifactPod, err := findReadyArtifactPod(ctx, k8sClient, namespace, name, time.Now().Add(2*time.Minute))
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
 	}
 
 	podPath := "/workspace/shared/" + base
@@ -2027,7 +1915,7 @@ func copyFileToPod(config *rest.Config, namespace, podName, containerName, local
 	return executor.StreamWithContext(context.Background(), remotecommand.StreamOptions{Stdin: pr, Stdout: io.Discard, Stderr: io.Discard})
 }
 
-func setOwnerRef(ctx context.Context, c client.Client, namespace, configMapName string, owner *automotivev1alpha1.ImageBuild) error {
+func setConfigMapOwnerRef(ctx context.Context, c client.Client, namespace, configMapName string, owner *automotivev1alpha1.ImageBuild) error {
 	cm := &corev1.ConfigMap{}
 	if err := c.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: namespace}, cm); err != nil {
 		return err
@@ -2036,6 +1924,17 @@ func setOwnerRef(ctx context.Context, c client.Client, namespace, configMapName 
 		*metav1.NewControllerRef(owner, automotivev1alpha1.GroupVersion.WithKind("ImageBuild")),
 	}
 	return c.Update(ctx, cm)
+}
+
+func setSecretOwnerRef(ctx context.Context, c client.Client, namespace, secretName string, owner *automotivev1alpha1.ImageBuild) error {
+	secret := &corev1.Secret{}
+	if err := c.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, secret); err != nil {
+		return err
+	}
+	secret.OwnerReferences = []metav1.OwnerReference{
+		*metav1.NewControllerRef(owner, automotivev1alpha1.GroupVersion.WithKind("ImageBuild")),
+	}
+	return c.Update(ctx, secret)
 }
 
 func writeJSON(c *gin.Context, status int, v any) {
@@ -2094,53 +1993,88 @@ func getClientFromRequest(c *gin.Context) (client.Client, error) {
 }
 
 func (a *APIServer) isAuthenticated(c *gin.Context) bool {
-	authHeader := c.Request.Header.Get("Authorization")
-	token := ""
-	token, _ = strings.CutPrefix(authHeader, "Bearer ")
+	token := extractBearerToken(c)
 	if token == "" {
-		token = c.Request.Header.Get("X-Forwarded-Access-Token")
-	}
-	if strings.TrimSpace(token) == "" {
 		return false
 	}
+
 	cfg, err := getRESTConfigFromRequest(c)
 	if err != nil {
 		return false
 	}
+
 	clientset, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		return false
 	}
+
 	tr := &authnv1.TokenReview{Spec: authnv1.TokenReviewSpec{Token: token}}
 	res, err := clientset.AuthenticationV1().TokenReviews().Create(c.Request.Context(), tr, metav1.CreateOptions{})
-	if err != nil {
-		return false
-	}
-	return res.Status.Authenticated
+	return err == nil && res.Status.Authenticated
 }
 
-func resolveRequester(c *gin.Context) string {
+// extractBearerToken extracts the bearer token from the request
+func extractBearerToken(c *gin.Context) string {
 	authHeader := c.Request.Header.Get("Authorization")
-	token := ""
-	token, _ = strings.CutPrefix(authHeader, "Bearer ")
+	token, _ := strings.CutPrefix(authHeader, "Bearer ")
 	if token == "" {
 		token = c.Request.Header.Get("X-Forwarded-Access-Token")
 	}
+	return strings.TrimSpace(token)
+}
 
-	if strings.TrimSpace(token) != "" {
-		cfg, err := getRESTConfigFromRequest(c)
-		if err == nil {
-			clientset, err := kubernetes.NewForConfig(cfg)
-			if err == nil {
-				tr := &authnv1.TokenReview{Spec: authnv1.TokenReviewSpec{Token: token}}
-				if res, err := clientset.AuthenticationV1().TokenReviews().Create(c.Request.Context(), tr, metav1.CreateOptions{}); err == nil {
-					if res.Status.Authenticated && res.Status.User.Username != "" {
-						return res.Status.User.Username
+// findReadyArtifactPod finds a running and ready artifact pod for the given ImageBuild
+func findReadyArtifactPod(ctx context.Context, k8sClient client.Client, namespace, buildName string, deadline time.Time) (*corev1.Pod, error) {
+	for {
+		podList := &corev1.PodList{}
+		if err := k8sClient.List(ctx, podList,
+			client.InNamespace(namespace),
+			client.MatchingLabels{
+				"app.kubernetes.io/name":                          "artifact-pod",
+				"automotive.sdv.cloud.redhat.com/imagebuild-name": buildName,
+			}); err != nil {
+			return nil, fmt.Errorf("error listing artifact pods: %w", err)
+		}
+
+		for i := range podList.Items {
+			p := &podList.Items[i]
+			if p.Status.Phase == corev1.PodRunning {
+				for _, cs := range p.Status.ContainerStatuses {
+					if cs.Name == "fileserver" && cs.Ready {
+						return p, nil
 					}
 				}
 			}
 		}
+
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("artifact pod not ready")
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+func resolveRequester(c *gin.Context) string {
+	token := extractBearerToken(c)
+	if token == "" {
+		return "unknown"
 	}
 
-	return "unknown"
+	cfg, err := getRESTConfigFromRequest(c)
+	if err != nil {
+		return "unknown"
+	}
+
+	clientset, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return "unknown"
+	}
+
+	tr := &authnv1.TokenReview{Spec: authnv1.TokenReviewSpec{Token: token}}
+	res, err := clientset.AuthenticationV1().TokenReviews().Create(c.Request.Context(), tr, metav1.CreateOptions{})
+	if err != nil || !res.Status.Authenticated || res.Status.User.Username == "" {
+		return "unknown"
+	}
+
+	return res.Status.User.Username
 }

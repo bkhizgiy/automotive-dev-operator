@@ -218,6 +218,15 @@ func GenerateBuildAutomotiveImageTask(namespace string, buildConfig *BuildConfig
 						StringVal: "",
 					},
 				},
+				{
+					Name:        "container-ref",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Container reference for disk mode (aib to-disk-image)",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "",
+					},
+				},
 			},
 			Results: []tektonv1.TaskResult{
 				{
@@ -277,6 +286,10 @@ func GenerateBuildAutomotiveImageTask(namespace string, buildConfig *BuildConfig
 						{
 							Name:  "BUILDER_IMAGE",
 							Value: "$(params.builder-image)",
+						},
+						{
+							Name:  "TARGET_ARCH",
+							Value: "$(params.target-architecture)",
 						},
 					},
 					VolumeMounts: []corev1.VolumeMount{
@@ -516,6 +529,15 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 						StringVal: "",
 					},
 				},
+				{
+					Name:        "container-ref",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Container reference for disk mode (aib to-disk-image)",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "",
+					},
+				},
 			},
 			Workspaces: []tektonv1.PipelineWorkspaceDeclaration{
 				{Name: "shared-workspace"},
@@ -588,6 +610,13 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 							Value: tektonv1.ParamValue{
 								Type:      tektonv1.ParamTypeString,
 								StringVal: "$(params.automotive-image-builder)",
+							},
+						},
+						{
+							Name: "target-architecture",
+							Value: tektonv1.ParamValue{
+								Type:      tektonv1.ParamTypeString,
+								StringVal: "$(params.arch)",
 							},
 						},
 					},
@@ -711,6 +740,13 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 							Value: tektonv1.ParamValue{
 								Type:      tektonv1.ParamTypeString,
 								StringVal: "$(params.cluster-registry-route)",
+							},
+						},
+						{
+							Name: "container-ref",
+							Value: tektonv1.ParamValue{
+								Type:      tektonv1.ParamTypeString,
+								StringVal: "$(params.container-ref)",
 							},
 						},
 					},
@@ -884,6 +920,15 @@ func GeneratePrepareBuilderTask(namespace string) *tektonv1.Task {
 						StringVal: "",
 					},
 				},
+				{
+					Name:        "target-architecture",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Target architecture for the builder image (amd64, arm64)",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "amd64",
+					},
+				},
 			},
 			Results: []tektonv1.TaskResult{
 				{
@@ -920,6 +965,10 @@ func GeneratePrepareBuilderTask(namespace string) *tektonv1.Task {
 						{
 							Name:  "CLUSTER_REGISTRY_ROUTE",
 							Value: "$(params.cluster-registry-route)",
+						},
+						{
+							Name:  "TARGET_ARCH",
+							Value: "$(params.target-architecture)",
 						},
 					},
 					Script: BuildBuilderScript,

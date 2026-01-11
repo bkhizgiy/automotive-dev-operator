@@ -89,6 +89,10 @@ type ImageBuildSpec struct {
 
 	// BuilderImage is a custom builder image to use
 	BuilderImage string `json:"builderImage,omitempty"`
+
+	// ContainerRef is the reference to an existing bootc container image
+	// Used with mode=disk to create a disk image from an existing container
+	ContainerRef string `json:"containerRef,omitempty"`
 }
 
 // Publishers defines the configuration for artifact publishing

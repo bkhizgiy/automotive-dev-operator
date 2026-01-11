@@ -58,23 +58,27 @@ REGISTRY_PASSWORD="${REGISTRY_PASSWORD:-$(cat registry-pass 2>/dev/null)}"
 
 ### 5. Submit Build with Download
 
+The `build` command creates a bootc container image and optionally a disk image.
+
 ```bash
 BUILD_NAME="$ARGUMENTS"
 PUSH_IMAGE="${BOOTC_REGISTRY}:latest"
 DISK_IMAGE="${BOOTC_REGISTRY}:latest-disk"
 OUTPUT_FILE="./output/${BUILD_NAME}.qcow2"
 
-bin/caib build-bootc simple.aib.yml \
+bin/caib build simple.aib.yml \
   --server "$CAIB_SERVER" \
   --token "$TOKEN" \
   --name "$BUILD_NAME" \
   --arch arm64 \
   --target qemu \
   --push "$PUSH_IMAGE" \
-  --build-disk-image \
+  --disk \
   --format qcow2 \
-  --export-oci "$DISK_IMAGE" \
-  --download "$OUTPUT_FILE" \
+  --push-disk "$DISK_IMAGE" \
+  --output "$OUTPUT_FILE" \
+  --registry-username "$REGISTRY_USERNAME" \
+  --registry-password "$REGISTRY_PASSWORD" \
   --follow
 ```
 
@@ -121,6 +125,42 @@ Provide a summary with:
 - If failed: the specific error and relevant log snippets
 - Suggestions for fixes based on the error type
 
+## CLI Command Reference
+
+### build (bootc - default)
+Creates a bootc container image from an AIB manifest.
+
+```bash
+caib build <manifest.aib.yml> \
+  --push <registry/image:tag>    # Required: push container to registry
+  --disk                          # Also build disk image from container
+  --format <qcow2|raw|simg>      # Disk image format (default: qcow2)
+  --push-disk <registry/img:tag> # Push disk as OCI artifact
+  --output <file>                 # Download disk image to file
+  --follow                        # Follow build logs
+  --wait                          # Wait for build to complete
+```
+
+### disk
+Creates a disk image from an existing bootc container.
+
+```bash
+caib disk <container-ref> \
+  --push <registry/image:tag>    # Push disk as OCI artifact
+  --output <file>                 # Download disk image to file
+  --format <qcow2|raw|simg>      # Disk format (default: qcow2)
+```
+
+### build-legacy
+Traditional ostree/package-based builds (for backwards compatibility).
+
+```bash
+caib build-legacy <manifest.aib.yml> \
+  --mode <image|package>          # Required: build mode
+  --format <qcow2|raw|simg>       # Required: export format
+  --name <build-name>             # Required: build name
+```
+
 ## Common Error Patterns
 
 - "Builder image not found" - prepare-builder task failed or result not passed
@@ -128,6 +168,7 @@ Provide a summary with:
 - "setfiles: Operation not supported" - SELinux context issues in osbuild
 - "unauthorized" - Token or registry auth issues
 - "BOOTC_REGISTRY not set" - Environment variable missing
+- "container-ref is required for disk mode" - Missing container reference for disk command
 
 ## Alternative: Download Only (for completed builds)
 
