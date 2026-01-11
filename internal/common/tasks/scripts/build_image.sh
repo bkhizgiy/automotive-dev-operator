@@ -152,12 +152,26 @@ mount --bind "$destPath" "$osbuildPath"
 
 cd $(workspaces.shared-workspace.path)
 
-if [ "$(params.export-format)" = "image" ]; then
+EXPORT_FORMAT="$(params.export-format)"
+# If format is empty, AIB defaults to raw
+if [ -z "$EXPORT_FORMAT" ] || [ "$EXPORT_FORMAT" = "image" ]; then
   file_extension=".raw"
-elif [ "$(params.export-format)" = "qcow2" ]; then
+elif [ "$EXPORT_FORMAT" = "qcow2" ]; then
   file_extension=".qcow2"
 else
-  file_extension=".$(params.export-format)"
+  file_extension=".$EXPORT_FORMAT"
+fi
+
+# Only pass --format to AIB if explicitly specified
+# Note: to-disk-image accepts raw/qcow2/simg, not "image"
+FORMAT_ARG=""
+if [ -n "$EXPORT_FORMAT" ]; then
+  AIB_FORMAT="$EXPORT_FORMAT"
+  # Translate "image" to "raw" for AIB compatibility
+  if [ "$AIB_FORMAT" = "image" ]; then
+    AIB_FORMAT="raw"
+  fi
+  FORMAT_ARG="--format $AIB_FORMAT"
 fi
 
 cleanName=$(params.distro)-$(params.target)
@@ -244,21 +258,29 @@ BUILD_DISK_IMAGE="$(params.build-disk-image)"
 EXPORT_OCI="$(params.export-oci)"
 BUILDER_IMAGE="$(params.builder-image)"
 CLUSTER_REGISTRY_ROUTE="$(params.cluster-registry-route)"
+CONTAINER_REF="$(params.container-ref)"
+
+echo "=== Build Configuration ==="
+echo "BUILD_MODE: $BUILD_MODE"
+echo "CONTAINER_PUSH: ${CONTAINER_PUSH:-<empty>}"
+echo "BUILD_DISK_IMAGE: $BUILD_DISK_IMAGE"
+echo "EXPORT_OCI: ${EXPORT_OCI:-<empty>}"
+echo "==========================="
 
 BOOTC_CONTAINER_NAME="localhost/aib-build:$(params.distro)-$(params.target)"
 
 BUILD_CONTAINER_ARG=""
-LOCAL_BUILDER_IMAGE="localhost/aib-build:$(params.distro)"
+LOCAL_BUILDER_IMAGE="localhost/aib-build:$(params.distro)-$TARGET_ARCH"
 
-# For bootc builds, if no builder-image is provided but cluster-registry-route is set,
+# For bootc/disk builds, if no builder-image is provided but cluster-registry-route is set,
 # use the image that prepare-builder cached in the cluster registry
-if [ -z "$BUILDER_IMAGE" ] && [ "$BUILD_MODE" = "bootc" ] && [ -n "$CLUSTER_REGISTRY_ROUTE" ]; then
+if [ -z "$BUILDER_IMAGE" ] && { [ "$BUILD_MODE" = "bootc" ] || [ "$BUILD_MODE" = "disk" ]; } && [ -n "$CLUSTER_REGISTRY_ROUTE" ]; then
   NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
-  BUILDER_IMAGE="${CLUSTER_REGISTRY_ROUTE}/${NAMESPACE}/aib-build:$(params.distro)"
+  BUILDER_IMAGE="${CLUSTER_REGISTRY_ROUTE}/${NAMESPACE}/aib-build:$(params.distro)-$TARGET_ARCH"
   echo "Using builder image from cluster registry: $BUILDER_IMAGE"
 fi
 
-if [ -n "$BUILDER_IMAGE" ] && [ "$BUILD_MODE" = "bootc" ]; then
+if [ -n "$BUILDER_IMAGE" ] && { [ "$BUILD_MODE" = "bootc" ] || [ "$BUILD_MODE" = "disk" ]; }; then
   echo "Pulling builder image to local storage: $BUILDER_IMAGE"
 
   TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null || echo "")
@@ -300,18 +322,26 @@ if [ "$USE_OVERRIDE" = true ]; then
 else
   case "$BUILD_MODE" in
     bootc)
+      # Build bootc container and optionally disk image in a single command
+      # aib build takes: manifest out [disk] where disk is optional
+      DISK_OUTPUT=""
+      if [ "$BUILD_DISK_IMAGE" = "true" ]; then
+        DISK_OUTPUT="/output/${exportFile}"
+      fi
+
       build_command="aib --verbose build \
       --distro $(params.distro) \
       --target $(params.target) \
       --arch=${arch} \
       --build-dir=/output/_build \
       --osbuild-manifest=/output/image.json \
+      $FORMAT_ARG \
       $BUILD_CONTAINER_ARG \
       $CUSTOM_DEFS \
       $AIB_ARGS \
       $MANIFEST_FILE \
       $BOOTC_CONTAINER_NAME \
-      /output/${exportFile}"
+      $DISK_OUTPUT"
       echo "Running bootc build: $build_command"
       eval "$build_command"
 
@@ -323,6 +353,11 @@ else
           "docker://$CONTAINER_PUSH"
         echo "Container pushed successfully to $CONTAINER_PUSH"
       fi
+
+      if [ "$BUILD_DISK_IMAGE" = "true" ]; then
+        echo "Disk image created: /output/${exportFile}"
+        # Note: Disk image push to OCI registry is handled by the separate push-disk-artifact task
+      fi
       ;;
     image)
       build_command="aib-dev --verbose \
@@ -331,7 +366,7 @@ else
       --distro $(params.distro) \
       --target $(params.target) \
       --arch=${arch} \
-      --format $(params.export-format) \
+      $FORMAT_ARG \
       --build-dir=/output/_build \
       --osbuild-manifest=/output/image.json \
       $AIB_ARGS \
@@ -347,7 +382,7 @@ else
       --distro $(params.distro) \
       --target $(params.target) \
       --arch=${arch} \
-      --format $(params.export-format) \
+      $FORMAT_ARG \
       --build-dir=/output/_build \
       --osbuild-manifest=/output/image.json \
       $AIB_ARGS \
@@ -356,8 +391,37 @@ else
       echo "Running the build command: $build_command"
       eval "$build_command"
       ;;
+    disk)
+      # Disk mode: create disk image from existing bootc container
+      if [ -z "$CONTAINER_REF" ]; then
+        echo "Error: container-ref is required for disk mode"
+        exit 1
+      fi
+      echo "Creating disk image from container: $CONTAINER_REF"
+
+      # Pull the container image first
+      echo "Pulling container image..."
+      # Try without auth first (for public images), fall back to auth file if needed
+      if ! skopeo copy "docker://$CONTAINER_REF" "containers-storage:$CONTAINER_REF" 2>/dev/null; then
+        echo "Public pull failed, trying with auth..."
+        skopeo copy --authfile="$REGISTRY_AUTH_FILE" \
+          "docker://$CONTAINER_REF" \
+          "containers-storage:$CONTAINER_REF"
+      fi
+
+      # to-disk-image only accepts: --format, --build-container, src_container, out
+      build_command="aib --verbose to-disk-image \
+      $FORMAT_ARG \
+      $BUILD_CONTAINER_ARG \
+      $CONTAINER_REF \
+      /output/${exportFile}"
+      echo "Running to-disk-image: $build_command"
+      eval "$build_command"
+
+      # Note: Disk image push to OCI registry is handled by the separate push-disk-artifact task
+      ;;
     *)
-      echo "Error: Unknown build mode '$BUILD_MODE'. Supported modes: bootc, image, package"
+      echo "Error: Unknown build mode '$BUILD_MODE'. Supported modes: bootc, image, package, disk"
       exit 1
       ;;
   esac
@@ -521,10 +585,29 @@ elif [ -f "$(workspaces.shared-workspace.path)/${exportFile}" ]; then
 fi
 
 if [ -z "$final_name" ]; then
-  guess=$(ls -1 $(workspaces.shared-workspace.path)/${cleanName}* 2>/dev/null | head -n1)
-  if [ -n "$guess" ]; then
-    final_name=$(basename "$guess")
+  workspace_path=$(workspaces.shared-workspace.path)
+
+  # Try to find artifact with priority: compressed file > compressed dir > any file
+  # This ensures we prefer compressed artifacts when compression is enabled
+  patterns_to_try=(
+    "${cleanName}*${EXT_FILE}"
+    "${cleanName}*${EXT_DIR}"
+    "${cleanName}*"
+  )
+
+  # If compression is disabled, only try the general pattern
+  if [ "$COMPRESSION" = "none" ]; then
+    patterns_to_try=("${cleanName}*")
   fi
+
+  for pattern in "${patterns_to_try[@]}"; do
+    guess=$(ls -1 "${workspace_path}/${pattern}" 2>/dev/null | head -n1)
+    if [ -n "$guess" ]; then
+      final_name=$(basename "$guess")
+      echo "Fallback: using found artifact: $final_name"
+      break
+    fi
+  done
 fi
 if [ -n "$final_name" ]; then
   echo "Writing artifact filename to Tekton result: $final_name"

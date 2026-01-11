@@ -27,6 +27,47 @@ const (
 	OperatorNamespace = "automotive-dev-operator-system"
 )
 
+// getFormatExtension returns the file extension for an export format
+func getFormatExtension(format string) string {
+	switch format {
+	case "image":
+		return ".raw"
+	case "qcow2":
+		return ".qcow2"
+	default:
+		if format != "" {
+			return "." + format
+		}
+		return ".raw"
+	}
+}
+
+// getCompressionExtension returns the file extension for a compression algorithm
+func getCompressionExtension(compression string) string {
+	if compression == "" || compression == "none" {
+		return ""
+	}
+
+	switch compression {
+	case "gzip":
+		return ".gz"
+	case "lz4":
+		return ".lz4"
+	case "xz":
+		return ".xz"
+	default:
+		return ""
+	}
+}
+
+// buildArtifactFilename constructs the artifact filename with proper extensions
+func buildArtifactFilename(distro, target, exportFormat, compression string) string {
+	baseFormat := getFormatExtension(exportFormat)
+	compressionExt := getCompressionExtension(compression)
+
+	return fmt.Sprintf("%s-%s%s%s", distro, target, baseFormat, compressionExt)
+}
+
 // ImageBuildReconciler reconciles a ImageBuild object
 type ImageBuildReconciler struct {
 	client.Client
@@ -422,7 +463,7 @@ func (r *ImageBuildReconciler) createBuildTaskRun(ctx context.Context, imageBuil
 
 	params := []tektonv1.Param{
 		{
-			Name: "target-architecture",
+			Name: "arch",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
 				StringVal: imageBuild.Spec.Architecture,
@@ -528,6 +569,17 @@ func (r *ImageBuildReconciler) createBuildTaskRun(ctx context.Context, imageBuil
 
 		// Let prepare-builder task handle building the image automatically
 		// when builder-image is empty for bootc builds
+	}
+
+	// Add container-ref param for disk mode
+	if imageBuild.Spec.ContainerRef != "" {
+		params = append(params, tektonv1.Param{
+			Name: "container-ref",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: imageBuild.Spec.ContainerRef,
+			},
+		})
 	}
 
 	pipelineWorkspaces := []tektonv1.WorkspaceBinding{
@@ -817,20 +869,12 @@ func (r *ImageBuildReconciler) updateArtifactInfo(ctx context.Context, imageBuil
 
 	// Only set ArtifactFileName if it's not already set (from Tekton results)
 	if latestImageBuild.Status.ArtifactFileName == "" {
-		var fileExtension string
-		switch latestImageBuild.Spec.ExportFormat {
-		case "image":
-			fileExtension = ".raw"
-		case "qcow2":
-			fileExtension = ".qcow2"
-		default:
-			fileExtension = fmt.Sprintf(".%s", latestImageBuild.Spec.ExportFormat)
-		}
-
-		fileName := fmt.Sprintf("%s-%s%s",
+		fileName := buildArtifactFilename(
 			latestImageBuild.Spec.Distro,
 			latestImageBuild.Spec.Target,
-			fileExtension)
+			latestImageBuild.Spec.ExportFormat,
+			latestImageBuild.Spec.Compression,
+		)
 		latestImageBuild.Status.ArtifactFileName = fileName
 	}
 
@@ -1082,37 +1126,51 @@ server {
 }
 
 // cleanupTransientSecrets deletes any transient secrets created for this build
+// Uses retry logic to handle transient API errors
 func (r *ImageBuildReconciler) cleanupTransientSecrets(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild, log logr.Logger) {
 	// Cleanup registry auth secret (EnvSecretRef)
 	if imageBuild.Spec.EnvSecretRef != "" {
-		secret := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      imageBuild.Spec.EnvSecretRef,
-				Namespace: imageBuild.Namespace,
-			},
-		}
-		if err := r.Delete(ctx, secret); err != nil && !errors.IsNotFound(err) {
-			log.Error(err, "Failed to delete registry auth secret", "secret", imageBuild.Spec.EnvSecretRef)
-		} else if err == nil {
-			log.Info("Deleted registry auth secret", "secret", imageBuild.Spec.EnvSecretRef)
-		}
+		r.deleteSecretWithRetry(ctx, imageBuild.Namespace, imageBuild.Spec.EnvSecretRef, "registry auth", log)
 	}
 
 	// Cleanup push secret (Publishers.Registry.Secret)
 	if imageBuild.Spec.Publishers != nil && imageBuild.Spec.Publishers.Registry != nil {
 		secretName := imageBuild.Spec.Publishers.Registry.Secret
 		if secretName != "" {
-			secret := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      secretName,
-					Namespace: imageBuild.Namespace,
-				},
-			}
-			if err := r.Delete(ctx, secret); err != nil && !errors.IsNotFound(err) {
-				log.Error(err, "Failed to delete push secret", "secret", secretName)
-			} else if err == nil {
-				log.Info("Deleted push secret", "secret", secretName)
-			}
+			r.deleteSecretWithRetry(ctx, imageBuild.Namespace, secretName, "push", log)
+		}
+	}
+}
+
+// deleteSecretWithRetry attempts to delete a secret with exponential backoff retry
+func (r *ImageBuildReconciler) deleteSecretWithRetry(ctx context.Context, namespace, secretName, secretType string, log logr.Logger) {
+	maxRetries := 3
+	backoff := 100 * time.Millisecond
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      secretName,
+				Namespace: namespace,
+			},
+		}
+		err := r.Delete(ctx, secret)
+		if err == nil {
+			log.Info("Deleted "+secretType+" secret", "secret", secretName)
+			return
+		}
+		if errors.IsNotFound(err) {
+			// Already deleted, nothing to do
+			return
+		}
+
+		// Transient error - retry with backoff
+		if attempt < maxRetries {
+			log.V(1).Info("Retrying secret deletion", "secret", secretName, "attempt", attempt, "error", err.Error())
+			time.Sleep(backoff)
+			backoff *= 2 // Exponential backoff
+		} else {
+			log.Error(err, "Failed to delete "+secretType+" secret after retries (manual cleanup may be required)", "secret", secretName, "attempts", maxRetries)
 		}
 	}
 }
@@ -1125,7 +1183,8 @@ func (r *ImageBuildReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Pod{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&corev1.Service{}).
-		Owns(&corev1.ConfigMap{})
+		Owns(&corev1.ConfigMap{}).
+		Owns(&corev1.Secret{})
 
 	// Only add Route ownership if the Route CRD is available (OpenShift only)
 	_, err := mgr.GetRESTMapper().RESTMapping(routev1.GroupVersion.WithKind("Route").GroupKind())

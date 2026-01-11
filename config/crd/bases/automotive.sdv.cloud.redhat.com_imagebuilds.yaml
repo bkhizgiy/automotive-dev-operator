@@ -65,6 +65,11 @@ spec:
                 description: ContainerPush is the registry URL to push the bootc container
                   image
                 type: string
+              containerRef:
+                description: |-
+                  ContainerRef is the reference to an existing bootc container image
+                  Used with mode=disk to create a disk image from an existing container
+                type: string
               distro:
                 description: Distro specifies the distribution to build for (e.g.,
                   "cs9")

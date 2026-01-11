@@ -7,27 +7,11 @@ import (
 
 type Distro string
 
-func (d Distro) IsValid() bool {
-	return strings.TrimSpace(string(d)) != ""
-}
-
 type Target string
-
-func (t Target) IsValid() bool {
-	return strings.TrimSpace(string(t)) != ""
-}
 
 type Architecture string
 
-func (a Architecture) IsValid() bool {
-	return strings.TrimSpace(string(a)) != ""
-}
-
 type ExportFormat string
-
-func (e ExportFormat) IsValid() bool {
-	return strings.TrimSpace(string(e)) != ""
-}
 
 type Mode string
 
@@ -38,11 +22,20 @@ const (
 	ModeImage Mode = "image"
 	// ModePackage creates traditional, mutable, package-based disk images
 	ModePackage Mode = "package"
+	// ModeDisk creates a disk image from an existing bootc container
+	ModeDisk Mode = "disk"
 )
 
-func (m Mode) IsValid() bool {
-	return strings.TrimSpace(string(m)) != ""
+// IsValid checks if a string value is non-empty after trimming whitespace
+func IsValid(s string) bool {
+	return strings.TrimSpace(s) != ""
 }
+
+func (d Distro) IsValid() bool       { return IsValid(string(d)) }
+func (t Target) IsValid() bool       { return IsValid(string(t)) }
+func (a Architecture) IsValid() bool { return IsValid(string(a)) }
+func (e ExportFormat) IsValid() bool { return IsValid(string(e)) }
+func (m Mode) IsValid() bool         { return IsValid(string(m)) }
 
 // IsBootc returns true if this is bootc mode
 func (m Mode) IsBootc() bool {
@@ -98,8 +91,9 @@ func ParseMode(s string) (Mode, error) {
 // BuildRequest is the payload to create a build via the REST API
 type BuildRequest struct {
 	Name                   string               `json:"name"`
-	Manifest               string               `json:"manifest"`
-	ManifestFileName       string               `json:"manifestFileName"`
+	Manifest               string               `json:"manifest,omitempty"`
+	ManifestFileName       string               `json:"manifestFileName,omitempty"`
+	ContainerRef           string               `json:"containerRef,omitempty"` // For disk mode: existing container to convert
 	Distro                 Distro               `json:"distro"`
 	Target                 Target               `json:"target"`
 	Architecture           Architecture         `json:"architecture"`
