@@ -235,7 +235,7 @@ Examples:
 	buildCmd.Flags().StringVarP(&distro, "distro", "d", "autosd", "distribution to build")
 	buildCmd.Flags().StringVarP(&target, "target", "t", "qemu", "target platform")
 	buildCmd.Flags().StringVarP(&architecture, "arch", "a", getDefaultArch(), "architecture (amd64, arm64)")
-	buildCmd.Flags().StringVar(&containerPush, "push", "", "push bootc container to registry (required)")
+	buildCmd.Flags().StringVar(&containerPush, "push", "", "push bootc container to registry (optional if --disk is used)")
 	buildCmd.Flags().BoolVar(&buildDiskImage, "disk", false, "also build disk image from container")
 	buildCmd.Flags().StringVarP(&outputDir, "output", "o", "", "download disk image to file (requires --disk)")
 	buildCmd.Flags().StringVar(&diskFormat, "format", "", "disk image format (qcow2, raw, simg); inferred from output filename if not set")
@@ -250,7 +250,7 @@ Examples:
 	buildCmd.Flags().IntVar(&timeout, "timeout", 60, "timeout in minutes")
 	buildCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", false, "wait for build to complete")
 	buildCmd.Flags().BoolVarP(&followLogs, "follow", "f", true, "follow build logs")
-	_ = buildCmd.MarkFlagRequired("push")
+	// Note: --push is optional when --disk is used (disk image becomes the output)
 
 	downloadCmd.Flags().StringVar(&serverURL, "server", os.Getenv("CAIB_SERVER"), "REST API server base URL (e.g. https://api.example)")
 	downloadCmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication (e.g., OpenShift access token)")
@@ -337,6 +337,12 @@ func runBuild(cmd *cobra.Command, args []string) {
 		buildDiskImage = true // imply --disk when --output is specified
 	}
 
+	// Validate: --push is required unless we're building a disk image
+	// (disk image becomes the output, so container push is optional)
+	if containerPush == "" && !buildDiskImage {
+		handleError(fmt.Errorf("--push is required when not building a disk image (use --disk or --output to create a disk image without pushing the container)"))
+	}
+
 	// Note: diskFormat can be empty - AIB will default to raw (or infer from output filename extension)
 
 	api, err := createBuildAPIClient(serverURL, &authToken)
@@ -369,6 +375,7 @@ func runBuild(cmd *cobra.Command, args []string) {
 		BuildDiskImage:         buildDiskImage,
 		ExportOCI:              exportOCI,
 		BuilderImage:           builderImage,
+		ServeArtifact:          outputDir != "" && exportOCI == "",
 	}
 
 	if effectiveRegistryURL != "" {
