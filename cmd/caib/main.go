@@ -249,7 +249,7 @@ Examples:
 	buildCmd.Flags().StringArrayVarP(&customDefs, "define", "D", []string{}, "custom definition KEY=VALUE")
 	buildCmd.Flags().IntVar(&timeout, "timeout", 60, "timeout in minutes")
 	buildCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", false, "wait for build to complete")
-	buildCmd.Flags().BoolVarP(&followLogs, "follow", "f", false, "follow build logs")
+	buildCmd.Flags().BoolVarP(&followLogs, "follow", "f", true, "follow build logs")
 	_ = buildCmd.MarkFlagRequired("push")
 
 	downloadCmd.Flags().StringVar(&serverURL, "server", os.Getenv("CAIB_SERVER"), "REST API server base URL (e.g. https://api.example)")
@@ -279,7 +279,7 @@ Examples:
 	diskCmd.Flags().StringVar(&storageClass, "storage-class", "", "Kubernetes storage class")
 	diskCmd.Flags().IntVar(&timeout, "timeout", 60, "timeout in minutes")
 	diskCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", false, "wait for build to complete")
-	diskCmd.Flags().BoolVarP(&followLogs, "follow", "f", false, "follow build logs")
+	diskCmd.Flags().BoolVarP(&followLogs, "follow", "f", true, "follow build logs")
 
 	// build-legacy command flags (traditional ostree/package builds)
 	buildLegacyCmd.Flags().StringVar(&serverURL, "server", os.Getenv("CAIB_SERVER"), "REST API server base URL")
@@ -300,7 +300,7 @@ Examples:
 	buildLegacyCmd.Flags().StringArrayVarP(&customDefs, "define", "D", []string{}, "custom definition KEY=VALUE")
 	buildLegacyCmd.Flags().IntVar(&timeout, "timeout", 60, "timeout in minutes")
 	buildLegacyCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", false, "wait for build to complete")
-	buildLegacyCmd.Flags().BoolVarP(&followLogs, "follow", "f", false, "follow build logs")
+	buildLegacyCmd.Flags().BoolVarP(&followLogs, "follow", "f", true, "follow build logs")
 	_ = buildLegacyCmd.MarkFlagRequired("mode")
 	_ = buildLegacyCmd.MarkFlagRequired("format")
 
