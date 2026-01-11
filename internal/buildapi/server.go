@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path"
@@ -1032,19 +1033,20 @@ func createBuild(c *gin.Context) {
 		return
 	}
 
-	if err := setOwnerRef(ctx, k8sClient, namespace, cfgName, imageBuild); err != nil {
-		// best-effort
+	// Set owner references for cascading deletion
+	if err := setConfigMapOwnerRef(ctx, k8sClient, namespace, cfgName, imageBuild); err != nil {
+		log.Printf("WARNING: failed to set owner reference on ConfigMap %s: %v (cleanup may require manual intervention)", cfgName, err)
 	}
 
 	if envSecretRef != "" {
-		if err := setOwnerRef(ctx, k8sClient, namespace, envSecretRef, imageBuild); err != nil {
-			// best-effort
+		if err := setSecretOwnerRef(ctx, k8sClient, namespace, envSecretRef, imageBuild); err != nil {
+			log.Printf("WARNING: failed to set owner reference on registry secret %s: %v (cleanup may require manual intervention)", envSecretRef, err)
 		}
 	}
 
 	if pushSecretName != "" {
-		if err := setOwnerRef(ctx, k8sClient, namespace, pushSecretName, imageBuild); err != nil {
-			// best-effort
+		if err := setSecretOwnerRef(ctx, k8sClient, namespace, pushSecretName, imageBuild); err != nil {
+			log.Printf("WARNING: failed to set owner reference on push secret %s: %v (cleanup may require manual intervention)", pushSecretName, err)
 		}
 	}
 
@@ -1913,7 +1915,7 @@ func copyFileToPod(config *rest.Config, namespace, podName, containerName, local
 	return executor.StreamWithContext(context.Background(), remotecommand.StreamOptions{Stdin: pr, Stdout: io.Discard, Stderr: io.Discard})
 }
 
-func setOwnerRef(ctx context.Context, c client.Client, namespace, configMapName string, owner *automotivev1alpha1.ImageBuild) error {
+func setConfigMapOwnerRef(ctx context.Context, c client.Client, namespace, configMapName string, owner *automotivev1alpha1.ImageBuild) error {
 	cm := &corev1.ConfigMap{}
 	if err := c.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: namespace}, cm); err != nil {
 		return err
@@ -1922,6 +1924,17 @@ func setOwnerRef(ctx context.Context, c client.Client, namespace, configMapName 
 		*metav1.NewControllerRef(owner, automotivev1alpha1.GroupVersion.WithKind("ImageBuild")),
 	}
 	return c.Update(ctx, cm)
+}
+
+func setSecretOwnerRef(ctx context.Context, c client.Client, namespace, secretName string, owner *automotivev1alpha1.ImageBuild) error {
+	secret := &corev1.Secret{}
+	if err := c.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, secret); err != nil {
+		return err
+	}
+	secret.OwnerReferences = []metav1.OwnerReference{
+		*metav1.NewControllerRef(owner, automotivev1alpha1.GroupVersion.WithKind("ImageBuild")),
+	}
+	return c.Update(ctx, secret)
 }
 
 func writeJSON(c *gin.Context, status int, v any) {

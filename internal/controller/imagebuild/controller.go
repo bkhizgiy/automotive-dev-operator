@@ -1126,37 +1126,51 @@ server {
 }
 
 // cleanupTransientSecrets deletes any transient secrets created for this build
+// Uses retry logic to handle transient API errors
 func (r *ImageBuildReconciler) cleanupTransientSecrets(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild, log logr.Logger) {
 	// Cleanup registry auth secret (EnvSecretRef)
 	if imageBuild.Spec.EnvSecretRef != "" {
-		secret := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      imageBuild.Spec.EnvSecretRef,
-				Namespace: imageBuild.Namespace,
-			},
-		}
-		if err := r.Delete(ctx, secret); err != nil && !errors.IsNotFound(err) {
-			log.Error(err, "Failed to delete registry auth secret", "secret", imageBuild.Spec.EnvSecretRef)
-		} else if err == nil {
-			log.Info("Deleted registry auth secret", "secret", imageBuild.Spec.EnvSecretRef)
-		}
+		r.deleteSecretWithRetry(ctx, imageBuild.Namespace, imageBuild.Spec.EnvSecretRef, "registry auth", log)
 	}
 
 	// Cleanup push secret (Publishers.Registry.Secret)
 	if imageBuild.Spec.Publishers != nil && imageBuild.Spec.Publishers.Registry != nil {
 		secretName := imageBuild.Spec.Publishers.Registry.Secret
 		if secretName != "" {
-			secret := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      secretName,
-					Namespace: imageBuild.Namespace,
-				},
-			}
-			if err := r.Delete(ctx, secret); err != nil && !errors.IsNotFound(err) {
-				log.Error(err, "Failed to delete push secret", "secret", secretName)
-			} else if err == nil {
-				log.Info("Deleted push secret", "secret", secretName)
-			}
+			r.deleteSecretWithRetry(ctx, imageBuild.Namespace, secretName, "push", log)
+		}
+	}
+}
+
+// deleteSecretWithRetry attempts to delete a secret with exponential backoff retry
+func (r *ImageBuildReconciler) deleteSecretWithRetry(ctx context.Context, namespace, secretName, secretType string, log logr.Logger) {
+	maxRetries := 3
+	backoff := 100 * time.Millisecond
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      secretName,
+				Namespace: namespace,
+			},
+		}
+		err := r.Delete(ctx, secret)
+		if err == nil {
+			log.Info("Deleted "+secretType+" secret", "secret", secretName)
+			return
+		}
+		if errors.IsNotFound(err) {
+			// Already deleted, nothing to do
+			return
+		}
+
+		// Transient error - retry with backoff
+		if attempt < maxRetries {
+			log.V(1).Info("Retrying secret deletion", "secret", secretName, "attempt", attempt, "error", err.Error())
+			time.Sleep(backoff)
+			backoff *= 2 // Exponential backoff
+		} else {
+			log.Error(err, "Failed to delete "+secretType+" secret after retries (manual cleanup may be required)", "secret", secretName, "attempts", maxRetries)
 		}
 	}
 }
@@ -1169,7 +1183,8 @@ func (r *ImageBuildReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Pod{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&corev1.Service{}).
-		Owns(&corev1.ConfigMap{})
+		Owns(&corev1.ConfigMap{}).
+		Owns(&corev1.Secret{})
 
 	// Only add Route ownership if the Route CRD is available (OpenShift only)
 	_, err := mgr.GetRESTMapper().RESTMapping(routev1.GroupVersion.WithKind("Route").GroupKind())
