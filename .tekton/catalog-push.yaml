@@ -1,0 +1,42 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  annotations:
+    build.appstudio.openshift.io/repo: https://github.com/centos-automotive-suite/automotive-dev-operator?rev={{revision}}
+    build.appstudio.redhat.com/commit_sha: '{{revision}}'
+    build.appstudio.redhat.com/target_branch: '{{target_branch}}'
+    pipelinesascode.tekton.dev/max-keep-runs: "3"
+    pipelinesascode.tekton.dev/on-cel-expression: event == "push" && target_branch == "main"
+  labels:
+    appstudio.openshift.io/application: automotive-dev-operator
+    appstudio.openshift.io/component: catalog
+    pipelines.appstudio.openshift.io/type: build
+  name: catalog-on-push
+spec:
+  params:
+    - name: dockerfile
+      value: catalog.Dockerfile
+    - name: git-url
+      value: '{{repo_url}}'
+    - name: image-expires-after
+      value: 5d
+    - name: output-image
+      value: quay.io/rh-sdv-cloud/automotive-dev-operator-catalog:{{revision}}
+    - name: path-context
+      value: .
+    - name: revision
+      value: '{{revision}}'
+  pipelineRef:
+    name: docker-build
+  workspaces:
+    - name: workspace
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 1Gi
+    - name: git-auth
+      secret:
+        secretName: '{{ git_auth_secret }}'
