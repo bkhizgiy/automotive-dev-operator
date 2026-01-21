@@ -1004,6 +1004,33 @@ func getBuild(c *gin.Context, name string) {
 		return
 	}
 
+	// For completed builds, check if Jumpstarter is available and get target mapping
+	var jumpstarterInfo *JumpstarterInfo
+	if build.Status.Phase == "Completed" {
+		operatorConfig := &automotivev1alpha1.OperatorConfig{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: "config", Namespace: namespace}, operatorConfig); err == nil {
+			if operatorConfig.Status.JumpstarterAvailable {
+				jumpstarterInfo = &JumpstarterInfo{Available: true}
+				if operatorConfig.Spec.Jumpstarter != nil {
+					if mapping, ok := operatorConfig.Spec.Jumpstarter.TargetMappings[build.Spec.Target]; ok {
+						jumpstarterInfo.ExporterSelector = mapping.Selector
+						flashCmd := mapping.FlashCmd
+						// Replace placeholders in flash command
+						if flashCmd != "" {
+							imageURI := build.Spec.ExportOCI
+							if imageURI == "" {
+								imageURI = build.Status.ArtifactURL
+							}
+							flashCmd = strings.ReplaceAll(flashCmd, "{image_uri}", imageURI)
+							flashCmd = strings.ReplaceAll(flashCmd, "{artifact_url}", build.Status.ArtifactURL)
+						}
+						jumpstarterInfo.FlashCmd = flashCmd
+					}
+				}
+			}
+		}
+	}
+
 	writeJSON(c, http.StatusOK, BuildResponse{
 		Name:             build.Name,
 		Phase:            build.Status.Phase,
@@ -1023,6 +1050,7 @@ func getBuild(c *gin.Context, name string) {
 			}
 			return ""
 		}(),
+		Jumpstarter: jumpstarterInfo,
 	})
 }
 

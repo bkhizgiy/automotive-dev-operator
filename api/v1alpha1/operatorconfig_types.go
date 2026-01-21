@@ -47,6 +47,25 @@ type BuildConfig struct {
 	ServeExpiryHours int32 `json:"serveExpiryHours,omitempty"`
 }
 
+// JumpstarterTargetMapping defines the Jumpstarter configuration for a specific build target
+type JumpstarterTargetMapping struct {
+	// Selector is the label selector for matching Jumpstarter exporters
+	// Example: "board-type=j784s4evm"
+	Selector string `json:"selector"`
+
+	// FlashCmd is the command template for flashing the device
+	// Example: "j storage flash ${IMAGE}"
+	// +optional
+	FlashCmd string `json:"flashCmd,omitempty"`
+}
+
+// JumpstarterConfig defines configuration for Jumpstarter device flashing integration
+type JumpstarterConfig struct {
+	// TargetMappings maps build targets to Jumpstarter exporter configurations
+	// +optional
+	TargetMappings map[string]JumpstarterTargetMapping `json:"targetMappings,omitempty"`
+}
+
 // BuildAPIConfig defines configuration for the Build API server
 type BuildAPIConfig struct {
 	// MaxManifestSize is the maximum allowed manifest size in bytes
@@ -79,6 +98,10 @@ type OperatorConfigSpec struct {
 	// BuildAPI defines configuration for the Build API server
 	// +optional
 	BuildAPI *BuildAPIConfig `json:"buildAPI,omitempty"`
+
+	// Jumpstarter defines configuration for Jumpstarter device flashing integration
+	// +optional
+	Jumpstarter *JumpstarterConfig `json:"jumpstarter,omitempty"`
 }
 
 // OSBuildsConfig defines configuration for OS build operations
@@ -144,6 +167,9 @@ type OperatorConfigStatus struct {
 
 	// OSBuildsDeployed indicates if the OS Builds Tekton tasks are currently deployed
 	OSBuildsDeployed bool `json:"osBuildsDeployed,omitempty"`
+
+	// JumpstarterAvailable indicates if Jumpstarter CRDs are present in the cluster
+	JumpstarterAvailable bool `json:"jumpstarterAvailable,omitempty"`
 }
 
 // +kubebuilder:object:root=true

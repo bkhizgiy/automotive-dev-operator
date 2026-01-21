@@ -862,6 +862,16 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 
 			// Handle terminal build states
 			if st.Phase == "Completed" {
+				fmt.Println("Build completed successfully!")
+				if st.Jumpstarter != nil && st.Jumpstarter.Available {
+					fmt.Println("\nJumpstarter is available for device flashing.")
+					if st.Jumpstarter.ExporterSelector != "" {
+						fmt.Printf("  Exporter selector: %s\n", st.Jumpstarter.ExporterSelector)
+					}
+					if st.Jumpstarter.FlashCmd != "" {
+						fmt.Printf("  Flash command: %s\n", st.Jumpstarter.FlashCmd)
+					}
+				}
 				if downloadTo != "" {
 					if err := downloadArtifactViaAPI(ctx, serverURL, name, downloadTo); err != nil {
 						fmt.Printf("Download failed: %v\n", err)

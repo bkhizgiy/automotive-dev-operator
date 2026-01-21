@@ -124,16 +124,27 @@ type RegistryCredentials struct {
 	DockerConfig string `json:"dockerConfig"`
 }
 
+// JumpstarterInfo contains information about Jumpstarter device flashing availability
+type JumpstarterInfo struct {
+	// Available indicates if Jumpstarter is installed in the cluster
+	Available bool `json:"available"`
+	// ExporterSelector is the label selector for matching Jumpstarter exporters for this build's target
+	ExporterSelector string `json:"exporterSelector,omitempty"`
+	// FlashCmd is the command for flashing the device
+	FlashCmd string `json:"flashCmd,omitempty"`
+}
+
 // BuildResponse is returned by POST and GET build operations
 type BuildResponse struct {
-	Name             string `json:"name"`
-	Phase            string `json:"phase"`
-	Message          string `json:"message"`
-	RequestedBy      string `json:"requestedBy,omitempty"`
-	ArtifactURL      string `json:"artifactURL,omitempty"`
-	ArtifactFileName string `json:"artifactFileName,omitempty"`
-	StartTime        string `json:"startTime,omitempty"`
-	CompletionTime   string `json:"completionTime,omitempty"`
+	Name             string           `json:"name"`
+	Phase            string           `json:"phase"`
+	Message          string           `json:"message"`
+	RequestedBy      string           `json:"requestedBy,omitempty"`
+	ArtifactURL      string           `json:"artifactURL,omitempty"`
+	ArtifactFileName string           `json:"artifactFileName,omitempty"`
+	StartTime        string           `json:"startTime,omitempty"`
+	CompletionTime   string           `json:"completionTime,omitempty"`
+	Jumpstarter      *JumpstarterInfo `json:"jumpstarter,omitempty"`
 }
 
 // BuildListItem represents a build in the list API
