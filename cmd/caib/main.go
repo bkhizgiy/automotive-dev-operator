@@ -120,7 +120,7 @@ func extractRegistryCredentials(primaryRef, secondaryRef string) (string, string
 
 	// Extract registry URL from reference
 	parts := strings.SplitN(ref, "/", 2)
-	if len(parts) > 0 && strings.Contains(parts[0], ".") {
+	if len(parts) > 1 && (strings.Contains(parts[0], ".") || strings.Contains(parts[0], ":") || parts[0] == "localhost") {
 		return parts[0], username, password
 	}
 	return "docker.io", username, password
