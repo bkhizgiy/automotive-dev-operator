@@ -126,6 +126,24 @@ func extractRegistryCredentials(primaryRef, secondaryRef string) (string, string
 	return "docker.io", username, password
 }
 
+// validateRegistryCredentials validates registry credentials and returns an error for partial credentials
+func validateRegistryCredentials(registryURL, username, password string) error {
+	// If no registry URL, no credentials needed
+	if registryURL == "" {
+		return nil
+	}
+
+	// Both username and password must be provided together, or neither
+	if (username == "") != (password == "") {
+		if username == "" {
+			return fmt.Errorf("REGISTRY_PASSWORD is set but REGISTRY_USERNAME is missing")
+		}
+		return fmt.Errorf("REGISTRY_USERNAME is set but REGISTRY_PASSWORD is missing")
+	}
+
+	return nil
+}
+
 func main() {
 	rootCmd := &cobra.Command{
 		Use:     "caib",
@@ -388,6 +406,11 @@ func runBuild(_ *cobra.Command, args []string) {
 	// Extract registry URL and credentials
 	effectiveRegistryURL, registryUsername, registryPassword := extractRegistryCredentials(containerPush, exportOCI)
 
+	// Validate credentials (error on partial credentials)
+	if err := validateRegistryCredentials(effectiveRegistryURL, registryUsername, registryPassword); err != nil {
+		handleError(err)
+	}
+
 	req := buildapitypes.BuildRequest{
 		Name:                   buildName,
 		Manifest:               string(manifestBytes),
@@ -408,7 +431,7 @@ func runBuild(_ *cobra.Command, args []string) {
 		ServeArtifact:          outputDir != "" && exportOCI == "",
 	}
 
-	if effectiveRegistryURL != "" {
+	if effectiveRegistryURL != "" && registryUsername != "" && registryPassword != "" {
 		req.RegistryCredentials = &buildapitypes.RegistryCredentials{
 			Enabled:     true,
 			AuthType:    "username-password",
@@ -488,6 +511,11 @@ func runDisk(_ *cobra.Command, args []string) {
 
 	// Extract registry URL and credentials
 	effectiveRegistryURL, registryUsername, registryPassword := extractRegistryCredentials(containerRef, exportOCI)
+
+	// Validate credentials (error on partial credentials)
+	if err := validateRegistryCredentials(effectiveRegistryURL, registryUsername, registryPassword); err != nil {
+		handleError(err)
+	}
 
 	req := buildapitypes.BuildRequest{
 		Name:                   buildName,
@@ -753,6 +781,11 @@ func runBuildDev(_ *cobra.Command, args []string) {
 	// Extract registry URL and credentials
 	effectiveRegistryURL, registryUsername, registryPassword := extractRegistryCredentials("", exportOCI)
 
+	// Validate credentials (error on partial credentials)
+	if err := validateRegistryCredentials(effectiveRegistryURL, registryUsername, registryPassword); err != nil {
+		handleError(err)
+	}
+
 	req := buildapitypes.BuildRequest{
 		Name:                   buildName,
 		Manifest:               string(manifestBytes),
@@ -770,7 +803,7 @@ func runBuildDev(_ *cobra.Command, args []string) {
 		ExportOCI:              exportOCI,
 	}
 
-	if effectiveRegistryURL != "" {
+	if effectiveRegistryURL != "" && registryUsername != "" && registryPassword != "" {
 		req.RegistryCredentials = &buildapitypes.RegistryCredentials{
 			Enabled:     true,
 			AuthType:    "username-password",
