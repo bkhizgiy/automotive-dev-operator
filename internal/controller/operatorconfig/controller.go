@@ -1,3 +1,4 @@
+// Package operatorconfig provides the controller for managing OperatorConfig custom resources.
 package operatorconfig
 
 import (
@@ -23,6 +24,8 @@ import (
 const (
 	operatorNamespace = "automotive-dev-operator-system"
 	finalizerName     = "operatorconfig.automotive.sdv.cloud.redhat.com/finalizer"
+	buildAPIName      = "ado-build-api"
+	phaseFailed       = "Failed"
 )
 
 // isNoMatchError checks if error is "no matches for kind" error (CRD doesn't exist)
@@ -53,6 +56,8 @@ func (r *OperatorConfigReconciler) detectOpenShift(ctx context.Context) bool {
 }
 
 // OperatorConfigReconciler reconciles an OperatorConfig object
+//
+//nolint:revive // Name follows Kubebuilder convention for reconcilers
 type OperatorConfigReconciler struct {
 	client.Client
 	Scheme      *runtime.Scheme
@@ -72,6 +77,7 @@ type OperatorConfigReconciler struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=tekton.dev,resources=tasks;pipelines;pipelineruns,verbs=get;list;watch;create;update;patch;delete
 
+// Reconcile manages the OperatorConfig resource lifecycle.
 func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log.WithValues("operatorconfig", req.NamespacedName)
 	log.Info("=== Reconciliation started ===")
@@ -123,8 +129,8 @@ func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if config.Spec.OSBuilds != nil && config.Spec.OSBuilds.Enabled {
 		if err := r.deployOSBuilds(ctx, config); err != nil {
 			log.Error(err, "Failed to deploy OSBuilds")
-			if config.Status.Phase != "Failed" || config.Status.OSBuildsDeployed {
-				config.Status.Phase = "Failed"
+			if config.Status.Phase != phaseFailed || config.Status.OSBuildsDeployed {
+				config.Status.Phase = phaseFailed
 				config.Status.Message = fmt.Sprintf("Failed to deploy OSBuilds: %v", err)
 				config.Status.OSBuildsDeployed = false
 				statusChanged = true
@@ -143,8 +149,8 @@ func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	} else {
 		if err := r.cleanupOSBuilds(ctx); err != nil {
 			log.Error(err, "Failed to cleanup OSBuilds")
-			if config.Status.Phase != "Failed" {
-				config.Status.Phase = "Failed"
+			if config.Status.Phase != phaseFailed {
+				config.Status.Phase = phaseFailed
 				config.Status.Message = fmt.Sprintf("Failed to cleanup OSBuilds: %v", err)
 				statusChanged = true
 			}
@@ -219,7 +225,8 @@ func (r *OperatorConfigReconciler) deployBuildAPI(ctx context.Context, owner *au
 	r.Log.Info("Creating/updating build-api ingress")
 	buildAPIIngress := r.buildBuildAPIIngress()
 	if err := r.createOrUpdate(ctx, buildAPIIngress, owner); err != nil {
-		r.Log.Error(err, "Failed to create/update build-api ingress (this is expected if ingress controller is not installed)")
+		r.Log.Error(err,
+			"Failed to create/update build-api ingress (expected if ingress controller is not installed)")
 	} else {
 		r.Log.Info("Build-API ingress created/updated successfully")
 	}
@@ -228,7 +235,10 @@ func (r *OperatorConfigReconciler) deployBuildAPI(ctx context.Context, owner *au
 	return nil
 }
 
-func (r *OperatorConfigReconciler) ensureBuildAPIOAuthSecret(ctx context.Context, owner *automotivev1alpha1.OperatorConfig) error {
+func (r *OperatorConfigReconciler) ensureBuildAPIOAuthSecret(
+	ctx context.Context,
+	_ *automotivev1alpha1.OperatorConfig,
+) error {
 	secretName := "ado-build-api-oauth-proxy"
 	secret := &corev1.Secret{}
 	err := r.Get(ctx, client.ObjectKey{Name: secretName, Namespace: operatorNamespace}, secret)
@@ -257,8 +267,10 @@ func (r *OperatorConfigReconciler) updateBuildAPIServiceAccountAnnotation(ctx co
 		sa.Annotations = make(map[string]string)
 	}
 
-	buildAPIAnnotation := `{"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"ado-build-api"}}`
-	if sa.Annotations["serviceaccounts.openshift.io/oauth-redirectreference.buildapi"] == buildAPIAnnotation {
+	buildAPIAnnotation := `{"kind":"OAuthRedirectReference","apiVersion":"v1",` +
+		`"reference":{"kind":"Route","name":"ado-build-api"}}`
+	annotationKey := "serviceaccounts.openshift.io/oauth-redirectreference.buildapi"
+	if sa.Annotations[annotationKey] == buildAPIAnnotation {
 		return nil // Already set
 	}
 
@@ -273,7 +285,7 @@ func (r *OperatorConfigReconciler) updateBuildAPIServiceAccountAnnotation(ctx co
 func (r *OperatorConfigReconciler) cleanupBuildAPI(ctx context.Context) error {
 	// Delete build-api deployment
 	deployment := &appsv1.Deployment{}
-	deployment.Name = "ado-build-api"
+	deployment.Name = buildAPIName
 	deployment.Namespace = operatorNamespace
 	if err := r.Delete(ctx, deployment); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to delete build-api deployment: %w", err)
@@ -281,7 +293,7 @@ func (r *OperatorConfigReconciler) cleanupBuildAPI(ctx context.Context) error {
 
 	// Delete build-api service
 	service := &corev1.Service{}
-	service.Name = "ado-build-api"
+	service.Name = buildAPIName
 	service.Namespace = operatorNamespace
 	if err := r.Delete(ctx, service); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to delete build-api service: %w", err)
@@ -289,7 +301,7 @@ func (r *OperatorConfigReconciler) cleanupBuildAPI(ctx context.Context) error {
 
 	// Delete build-api route (OpenShift only)
 	route := &routev1.Route{}
-	route.Name = "ado-build-api"
+	route.Name = buildAPIName
 	route.Namespace = operatorNamespace
 	if err := r.Delete(ctx, route); err != nil && !errors.IsNotFound(err) && !isNoMatchError(err) {
 		r.Log.Error(err, "Failed to delete build-api route (ignoring, expected on non-OpenShift clusters)")
@@ -297,7 +309,7 @@ func (r *OperatorConfigReconciler) cleanupBuildAPI(ctx context.Context) error {
 
 	// Delete build-api ingress
 	ingress := &networkingv1.Ingress{}
-	ingress.Name = "ado-build-api"
+	ingress.Name = buildAPIName
 	ingress.Namespace = operatorNamespace
 	if err := r.Delete(ctx, ingress); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to delete build-api ingress: %w", err)
@@ -314,7 +326,11 @@ func (r *OperatorConfigReconciler) cleanupBuildAPI(ctx context.Context) error {
 	return nil
 }
 
-func (r *OperatorConfigReconciler) createOrUpdate(ctx context.Context, obj client.Object, owner *automotivev1alpha1.OperatorConfig) error {
+func (r *OperatorConfigReconciler) createOrUpdate(
+	ctx context.Context,
+	obj client.Object,
+	_ *automotivev1alpha1.OperatorConfig,
+) error {
 	// Try to get the existing resource
 	key := client.ObjectKeyFromObject(obj)
 	existing := obj.DeepCopyObject().(client.Object)
@@ -333,7 +349,10 @@ func (r *OperatorConfigReconciler) createOrUpdate(ctx context.Context, obj clien
 	return r.Update(ctx, obj)
 }
 
-func (r *OperatorConfigReconciler) deployOSBuilds(ctx context.Context, config *automotivev1alpha1.OperatorConfig) error {
+func (r *OperatorConfigReconciler) deployOSBuilds(
+	ctx context.Context,
+	config *automotivev1alpha1.OperatorConfig,
+) error {
 	r.Log.Info("Starting OSBuilds deployment")
 
 	// Deploy build-api (required for CLI access to builds)
@@ -456,7 +475,8 @@ func (r *OperatorConfigReconciler) createOrUpdatePipeline(ctx context.Context, p
 	}
 
 	// Skip update if pipeline is marked as unmanaged
-	if existingPipeline.Annotations != nil && existingPipeline.Annotations["automotive.sdv.cloud.redhat.com/unmanaged"] == "true" {
+	unmanagedAnnotation := "automotive.sdv.cloud.redhat.com/unmanaged"
+	if existingPipeline.Annotations != nil && existingPipeline.Annotations[unmanagedAnnotation] == "true" {
 		r.Log.Info("Skipping update for unmanaged pipeline", "name", pipeline.Name)
 		return nil
 	}
@@ -465,6 +485,7 @@ func (r *OperatorConfigReconciler) createOrUpdatePipeline(ctx context.Context, p
 	return r.Update(ctx, pipeline)
 }
 
+// SetupWithManager sets up the controller with the Manager.
 func (r *OperatorConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&automotivev1alpha1.OperatorConfig{}).

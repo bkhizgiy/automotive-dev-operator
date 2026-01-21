@@ -1,3 +1,4 @@
+// Package main provides the caib CLI tool for interacting with the automotive image build system.
 package main
 
 import (
@@ -32,21 +33,25 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+const (
+	archAMD64 = "amd64"
+	archARM64 = "arm64"
+)
+
 // getDefaultArch returns the current system architecture in caib format
 func getDefaultArch() string {
 	switch runtime.GOARCH {
-	case "amd64":
-		return "amd64"
-	case "arm64":
-		return "arm64"
+	case archAMD64:
+		return archAMD64
+	case archARM64:
+		return archARM64
 	default:
-		return "amd64"
+		return archAMD64
 	}
 }
 
 var (
 	serverURL              string
-	imageBuildCfg          string
 	manifest               string
 	buildName              string
 	distro                 string
@@ -59,16 +64,12 @@ var (
 	outputDir              string
 	timeout                int
 	waitForBuild           bool
-	download               bool
 	customDefs             []string
 	followLogs             bool
 	version                string
-	aibExtraArgs           string
 	compressArtifacts      bool
 	compressionAlgo        string
 	authToken              string
-	pushRepository         string
-	registryURL            string
 	registryUsername       string
 	registryPassword       string
 
@@ -78,7 +79,6 @@ var (
 	exportOCI      string
 	builderImage   string
 
-	downloadFile string
 	containerRef string
 )
 
@@ -248,12 +248,17 @@ Examples:
 	buildCmd.Flags().StringVar(&containerPush, "push", "", "push bootc container to registry (optional if --disk is used)")
 	buildCmd.Flags().BoolVar(&buildDiskImage, "disk", false, "also build disk image from container")
 	buildCmd.Flags().StringVarP(&outputDir, "output", "o", "", "download disk image to file (requires --disk)")
-	buildCmd.Flags().StringVar(&diskFormat, "format", "", "disk image format (qcow2, raw, simg); inferred from output filename if not set")
+	buildCmd.Flags().StringVar(
+		&diskFormat, "format", "", "disk image format (qcow2, raw, simg); inferred from output filename if not set",
+	)
 	buildCmd.Flags().StringVar(&compressionAlgo, "compress", "gzip", "compression algorithm (gzip, lz4, xz)")
 	buildCmd.Flags().StringVar(&exportOCI, "push-disk", "", "push disk image as OCI artifact to registry")
 	buildCmd.Flags().StringVar(&registryUsername, "registry-username", "", "registry username (or REGISTRY_USERNAME env)")
 	buildCmd.Flags().StringVar(&registryPassword, "registry-password", "", "registry password (or REGISTRY_PASSWORD env)")
-	buildCmd.Flags().StringVar(&automotiveImageBuilder, "aib-image", "quay.io/centos-sig-automotive/automotive-image-builder:latest", "AIB container image")
+	buildCmd.Flags().StringVar(
+		&automotiveImageBuilder, "aib-image",
+		"quay.io/centos-sig-automotive/automotive-image-builder:latest", "AIB container image",
+	)
 	buildCmd.Flags().StringVar(&builderImage, "builder-image", "", "custom builder container")
 	buildCmd.Flags().StringVar(&storageClass, "storage-class", "", "Kubernetes storage class for build workspace")
 	buildCmd.Flags().StringArrayVarP(&customDefs, "define", "D", []string{}, "custom definition KEY=VALUE")
@@ -262,22 +267,39 @@ Examples:
 	buildCmd.Flags().BoolVarP(&followLogs, "follow", "f", true, "follow build logs")
 	// Note: --push is optional when --disk is used (disk image becomes the output)
 
-	downloadCmd.Flags().StringVar(&serverURL, "server", os.Getenv("CAIB_SERVER"), "REST API server base URL (e.g. https://api.example)")
-	downloadCmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication (e.g., OpenShift access token)")
+	downloadCmd.Flags().StringVar(
+		&serverURL, "server", os.Getenv("CAIB_SERVER"), "REST API server base URL (e.g. https://api.example)",
+	)
+	downloadCmd.Flags().StringVar(
+		&authToken, "token", os.Getenv("CAIB_TOKEN"),
+		"Bearer token for authentication (e.g., OpenShift access token)",
+	)
 	downloadCmd.Flags().StringVar(&buildName, "name", "", "name of the ImageBuild")
 	downloadCmd.Flags().StringVar(&outputDir, "output-dir", "./output", "directory to save artifacts")
-	downloadCmd.MarkFlagRequired("name")
-	downloadCmd.Flags().BoolVar(&compressArtifacts, "compress", true, "compress directory artifacts (tar.gz). For directories, server always compresses.")
+	if err := downloadCmd.MarkFlagRequired("name"); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to mark 'name' flag as required: %v\n", err)
+	}
+	downloadCmd.Flags().BoolVar(
+		&compressArtifacts, "compress", true,
+		"compress directory artifacts (tar.gz). For directories, server always compresses.",
+	)
 
-	listCmd.Flags().StringVar(&serverURL, "server", os.Getenv("CAIB_SERVER"), "REST API server base URL (e.g. https://api.example)")
-	listCmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication (e.g., OpenShift access token)")
+	listCmd.Flags().StringVar(
+		&serverURL, "server", os.Getenv("CAIB_SERVER"), "REST API server base URL (e.g. https://api.example)",
+	)
+	listCmd.Flags().StringVar(
+		&authToken, "token", os.Getenv("CAIB_TOKEN"),
+		"Bearer token for authentication (e.g., OpenShift access token)",
+	)
 
 	// disk command flags (create disk from existing container)
 	diskCmd.Flags().StringVar(&serverURL, "server", os.Getenv("CAIB_SERVER"), "REST API server base URL")
 	diskCmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication")
 	diskCmd.Flags().StringVarP(&buildName, "name", "n", "", "name for the build job (auto-generated if omitted)")
 	diskCmd.Flags().StringVarP(&outputDir, "output", "o", "", "download disk image to file")
-	diskCmd.Flags().StringVar(&diskFormat, "format", "", "disk image format (qcow2, raw, simg); inferred from output filename if not set")
+	diskCmd.Flags().StringVar(
+		&diskFormat, "format", "", "disk image format (qcow2, raw, simg); inferred from output filename if not set",
+	)
 	diskCmd.Flags().StringVar(&compressionAlgo, "compress", "gzip", "compression algorithm (gzip, lz4, xz)")
 	diskCmd.Flags().StringVar(&exportOCI, "push", "", "push disk image as OCI artifact to registry")
 	diskCmd.Flags().StringVar(&registryUsername, "registry-username", "", "registry username (or REGISTRY_USERNAME env)")
@@ -285,7 +307,10 @@ Examples:
 	diskCmd.Flags().StringVarP(&distro, "distro", "d", "autosd", "distribution")
 	diskCmd.Flags().StringVarP(&target, "target", "t", "qemu", "target platform")
 	diskCmd.Flags().StringVarP(&architecture, "arch", "a", getDefaultArch(), "architecture (amd64, arm64)")
-	diskCmd.Flags().StringVar(&automotiveImageBuilder, "aib-image", "quay.io/centos-sig-automotive/automotive-image-builder:latest", "AIB container image")
+	diskCmd.Flags().StringVar(
+		&automotiveImageBuilder, "aib-image",
+		"quay.io/centos-sig-automotive/automotive-image-builder:latest", "AIB container image",
+	)
 	diskCmd.Flags().StringVar(&storageClass, "storage-class", "", "Kubernetes storage class")
 	diskCmd.Flags().IntVar(&timeout, "timeout", 60, "timeout in minutes")
 	diskCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", false, "wait for build to complete")
@@ -303,9 +328,16 @@ Examples:
 	buildDevCmd.Flags().StringVarP(&outputDir, "output", "o", "", "download artifact to file")
 	buildDevCmd.Flags().StringVar(&compressionAlgo, "compress", "gzip", "compression algorithm (gzip, lz4, xz)")
 	buildDevCmd.Flags().StringVar(&exportOCI, "push", "", "push disk image as OCI artifact to registry")
-	buildDevCmd.Flags().StringVar(&registryUsername, "registry-username", "", "registry username (or REGISTRY_USERNAME env)")
-	buildDevCmd.Flags().StringVar(&registryPassword, "registry-password", "", "registry password (or REGISTRY_PASSWORD env)")
-	buildDevCmd.Flags().StringVar(&automotiveImageBuilder, "aib-image", "quay.io/centos-sig-automotive/automotive-image-builder:latest", "AIB container image")
+	buildDevCmd.Flags().StringVar(
+		&registryUsername, "registry-username", "", "registry username (or REGISTRY_USERNAME env)",
+	)
+	buildDevCmd.Flags().StringVar(
+		&registryPassword, "registry-password", "", "registry password (or REGISTRY_PASSWORD env)",
+	)
+	buildDevCmd.Flags().StringVar(
+		&automotiveImageBuilder, "aib-image",
+		"quay.io/centos-sig-automotive/automotive-image-builder:latest", "AIB container image",
+	)
 	buildDevCmd.Flags().StringVar(&storageClass, "storage-class", "", "Kubernetes storage class")
 	buildDevCmd.Flags().StringArrayVarP(&customDefs, "define", "D", []string{}, "custom definition KEY=VALUE")
 	buildDevCmd.Flags().IntVar(&timeout, "timeout", 60, "timeout in minutes")
@@ -326,7 +358,7 @@ Examples:
 }
 
 // runBuild handles the main 'build' command (bootc builds)
-func runBuild(cmd *cobra.Command, args []string) {
+func runBuild(_ *cobra.Command, args []string) {
 	ctx := context.Background()
 	manifest = args[0]
 
@@ -350,7 +382,11 @@ func runBuild(cmd *cobra.Command, args []string) {
 	// Validate: --push is required unless we're building a disk image
 	// (disk image becomes the output, so container push is optional)
 	if containerPush == "" && !buildDiskImage {
-		handleError(fmt.Errorf("--push is required when not building a disk image (use --disk or --output to create a disk image without pushing the container)"))
+		err := fmt.Errorf(
+			"--push is required when not building a disk image " +
+				"(use --disk or --output to create a disk image without pushing the container)",
+		)
+		handleError(err)
 	}
 
 	// Note: diskFormat can be empty - AIB will default to raw (or infer from output filename extension)
@@ -438,7 +474,7 @@ func runBuild(cmd *cobra.Command, args []string) {
 	}
 }
 
-func runDisk(cmd *cobra.Command, args []string) {
+func runDisk(_ *cobra.Command, args []string) {
 	ctx := context.Background()
 	containerRef = args[0]
 
@@ -555,7 +591,10 @@ func pullOCIArtifact(ociRef, destPath, username, password string) error {
 	}
 
 	// Set up policy context (allow all)
-	policyCtx, err := signature.NewPolicyContext(&signature.Policy{Default: []signature.PolicyRequirement{signature.NewPRInsecureAcceptAnything()}})
+	policy := &signature.Policy{
+		Default: []signature.PolicyRequirement{signature.NewPRInsecureAcceptAnything()},
+	}
+	policyCtx, err := signature.NewPolicyContext(policy)
 	if err != nil {
 		return fmt.Errorf("create policy context: %w", err)
 	}
@@ -571,7 +610,11 @@ func pullOCIArtifact(ociRef, destPath, username, password string) error {
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() {
+		if err := os.RemoveAll(tempDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to remove temp directory: %v\n", err)
+		}
+	}()
 
 	// Destination: local OCI layout
 	destRef, err := layout.ParseReference(tempDir + ":latest")
@@ -667,13 +710,21 @@ func extractOCIArtifactBlob(ociLayoutPath, destPath string) error {
 	if err != nil {
 		return fmt.Errorf("open layer blob: %w", err)
 	}
-	defer src.Close()
+	defer func() {
+		if err := src.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close source file: %v\n", err)
+		}
+	}()
 
 	dst, err := os.Create(destPath)
 	if err != nil {
 		return fmt.Errorf("create destination file: %w", err)
 	}
-	defer dst.Close()
+	defer func() {
+		if err := dst.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close destination file: %v\n", err)
+		}
+	}()
 
 	if _, err := io.Copy(dst, src); err != nil {
 		return fmt.Errorf("copy layer blob: %w", err)
@@ -683,7 +734,7 @@ func extractOCIArtifactBlob(ociLayoutPath, destPath string) error {
 }
 
 // runBuildDev handles the 'build-dev' command (traditional ostree/package builds)
-func runBuildDev(cmd *cobra.Command, args []string) {
+func runBuildDev(_ *cobra.Command, args []string) {
 	ctx := context.Background()
 	manifest = args[0]
 
@@ -765,7 +816,12 @@ func runBuildDev(cmd *cobra.Command, args []string) {
 	}
 }
 
-func handleFileUploads(ctx context.Context, api *buildapiclient.Client, buildName string, localRefs []map[string]string) {
+func handleFileUploads(
+	ctx context.Context,
+	api *buildapiclient.Client,
+	buildName string,
+	localRefs []map[string]string,
+) {
 	for _, ref := range localRefs {
 		if _, err := os.Stat(ref["source_path"]); err != nil {
 			handleError(fmt.Errorf("referenced file %s does not exist: %w", ref["source_path"], err))
@@ -805,7 +861,10 @@ func handleFileUploads(ctx context.Context, api *buildapiclient.Client, buildNam
 			if time.Now().After(uploadDeadline) {
 				handleError(fmt.Errorf("upload files failed: %w", err))
 			}
-			if strings.Contains(lower, "503") || strings.Contains(lower, "service unavailable") || strings.Contains(lower, "upload pod not ready") {
+			isServiceUnavailable := strings.Contains(lower, "503") ||
+				strings.Contains(lower, "service unavailable") ||
+				strings.Contains(lower, "upload pod not ready")
+			if isServiceUnavailable {
 				fmt.Println("Upload server not ready yet. Retrying...")
 				time.Sleep(5 * time.Second)
 				continue
@@ -896,7 +955,9 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 				if err := tryLogStreaming(ctx, logClient, name, streamState); err != nil {
 					streamState.retryCount++
 					if !streamState.canRetry() && !retryLimitWarningShown {
-						fmt.Printf("Log streaming failed after %d attempts (~2 minutes). Falling back to status updates only.\n", maxLogRetries)
+						msg := "Log streaming failed after %d attempts (~2 minutes). " +
+							"Falling back to status updates only.\n"
+						fmt.Printf(msg, maxLogRetries)
 						retryLimitWarningShown = true
 					}
 				} else {
@@ -944,7 +1005,11 @@ func tryLogStreaming(ctx context.Context, logClient *http.Client, name string, s
 	if err != nil {
 		return fmt.Errorf("log request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
+		}
+	}()
 
 	if resp.StatusCode == http.StatusOK {
 		return streamLogsToStdout(resp.Body, state)
@@ -1174,7 +1239,11 @@ func detectFileCompression(filePath string) string {
 	if err != nil {
 		return ""
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close file: %v\n", err)
+		}
+	}()
 
 	// Read first few bytes to check magic numbers
 	header := make([]byte, 10)
@@ -1202,6 +1271,149 @@ func detectFileCompression(filePath string) string {
 	return ""
 }
 
+// downloadWithProgress downloads content with a progress bar
+func downloadWithProgress(resp *http.Response, destFile *os.File) error {
+	cl := strings.TrimSpace(resp.Header.Get("Content-Length"))
+	if cl != "" {
+		return downloadWithKnownSize(resp, destFile, cl)
+	}
+	return downloadWithUnknownSize(resp, destFile)
+}
+
+// downloadWithKnownSize downloads with a sized progress bar
+func downloadWithKnownSize(resp *http.Response, destFile *os.File, contentLength string) error {
+	var total int64
+	if _, err := fmt.Sscan(contentLength, &total); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to parse Content-Length: %v\n", err)
+	}
+	bar := progressbar.NewOptions64(
+		total,
+		progressbar.OptionSetDescription("Downloading"),
+		progressbar.OptionShowBytes(true),
+		progressbar.OptionSetWidth(15),
+		progressbar.OptionThrottle(65*time.Millisecond),
+		progressbar.OptionShowCount(),
+		progressbar.OptionClearOnFinish(),
+	)
+	reader := io.TeeReader(resp.Body, bar)
+	if _, copyErr := io.Copy(destFile, reader); copyErr != nil {
+		return copyErr
+	}
+	_ = bar.Finish()
+	fmt.Println()
+	return nil
+}
+
+// downloadWithUnknownSize downloads with a spinner progress indicator
+func downloadWithUnknownSize(resp *http.Response, destFile *os.File) error {
+	bar := progressbar.NewOptions(
+		-1,
+		progressbar.OptionSetDescription("Downloading"),
+		progressbar.OptionSpinnerType(14),
+		progressbar.OptionClearOnFinish(),
+	)
+	reader := io.TeeReader(resp.Body, bar)
+	if _, copyErr := io.Copy(destFile, reader); copyErr != nil {
+		return copyErr
+	}
+	_ = bar.Finish()
+	fmt.Println()
+	return nil
+}
+
+// printArtifactMetadata prints artifact metadata from response headers
+func printArtifactMetadata(resp *http.Response) {
+	if at := strings.TrimSpace(resp.Header.Get("X-AIB-Artifact-Type")); at != "" {
+		fmt.Printf("Artifact type: %s\n", at)
+	}
+	if comp := strings.TrimSpace(resp.Header.Get("X-AIB-Compression")); comp != "" {
+		fmt.Printf("Compression: %s\n", comp)
+	}
+	if root := strings.TrimSpace(resp.Header.Get("X-AIB-Archive-Root")); root != "" {
+		fmt.Printf("Archive root: %s\n", root)
+	}
+}
+
+// extractServerFilename extracts filename from Content-Disposition header
+func extractServerFilename(resp *http.Response) string {
+	cd := resp.Header.Get("Content-Disposition")
+	if cd == "" {
+		return ""
+	}
+	if i := strings.Index(cd, "filename="); i >= 0 {
+		return strings.Trim(cd[i+9:], "\" ")
+	}
+	return ""
+}
+
+// handleArtifactDownload processes a successful artifact response
+func handleArtifactDownload(resp *http.Response, outDir, userFilename, name string) error {
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
+		}
+	}()
+
+	contentType := resp.Header.Get("Content-Type")
+	serverFilename := extractServerFilename(resp)
+	compression := strings.TrimSpace(resp.Header.Get("X-AIB-Compression"))
+	filename := resolveFilename(userFilename, serverFilename, compression, name+".artifact")
+
+	printArtifactMetadata(resp)
+
+	outPath := filepath.Join(outDir, filename)
+	tmp := outPath + ".partial"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+
+	if err := downloadWithProgress(resp, f); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("failed to close file: %w", err)
+	}
+	if err := os.Rename(tmp, outPath); err != nil {
+		return err
+	}
+	fmt.Printf("Artifact downloaded to %s\n", outPath)
+
+	return extractIfTarArchive(contentType, outPath)
+}
+
+// extractIfTarArchive extracts tar archives if needed
+func extractIfTarArchive(contentType, outPath string) error {
+	isTar := strings.HasPrefix(contentType, "application/x-tar") ||
+		strings.HasPrefix(contentType, "application/gzip") ||
+		strings.HasSuffix(strings.ToLower(outPath), ".tar") ||
+		strings.HasSuffix(strings.ToLower(outPath), ".tar.gz")
+
+	if isTar && !compressArtifacts {
+		destDir := strings.TrimSuffix(outPath, ".tar")
+		destDir = strings.TrimSuffix(destDir, ".gz")
+		if err := os.MkdirAll(destDir, 0o755); err != nil {
+			return fmt.Errorf("create extract dir: %w", err)
+		}
+		if err := extractTar(outPath, destDir); err != nil {
+			return fmt.Errorf("extract tar: %w", err)
+		}
+		fmt.Printf("Extracted to %s\n", destDir)
+	}
+	return nil
+}
+
+// shouldRetryResponse checks if response indicates artifact is not ready
+func shouldRetryResponse(statusCode int, body []byte) bool {
+	msg := strings.ToLower(strings.TrimSpace(string(body)))
+	return statusCode == http.StatusServiceUnavailable ||
+		statusCode == http.StatusConflict ||
+		strings.Contains(msg, "not ready")
+}
+
 func downloadArtifactViaAPI(ctx context.Context, baseURL, name, outPath string) error {
 	outDir, userFilename := parseOutputPath(outPath)
 
@@ -1211,7 +1423,6 @@ func downloadArtifactViaAPI(ctx context.Context, baseURL, name, outPath string) 
 
 	base := strings.TrimRight(baseURL, "/")
 	urlStr := base + "/v1/builds/" + url.PathEscape(name) + "/artifact"
-
 	deadline := time.Now().Add(30 * time.Minute)
 
 	httpClient := &http.Client{
@@ -1227,10 +1438,12 @@ func downloadArtifactViaAPI(ctx context.Context, baseURL, name, outPath string) 
 		if ctx.Err() != nil || time.Now().After(deadline) {
 			return fmt.Errorf("timed out waiting for artifact to become ready")
 		}
+
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 		if strings.TrimSpace(authToken) != "" {
 			req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(authToken))
 		}
+
 		resp, err := httpClient.Do(req)
 		if err != nil {
 			time.Sleep(3 * time.Second)
@@ -1238,101 +1451,13 @@ func downloadArtifactViaAPI(ctx context.Context, baseURL, name, outPath string) 
 		}
 
 		if resp.StatusCode == http.StatusOK {
-			contentType := resp.Header.Get("Content-Type")
-
-			// Extract server-provided filename from Content-Disposition header
-			serverFilename := ""
-			if cd := resp.Header.Get("Content-Disposition"); cd != "" {
-				if i := strings.Index(cd, "filename="); i >= 0 {
-					serverFilename = strings.Trim(cd[i+9:], "\" ")
-				}
-			}
-
-			// Resolve final filename with compression handling
-			compression := strings.TrimSpace(resp.Header.Get("X-AIB-Compression"))
-			filename := resolveFilename(userFilename, serverFilename, compression, name+".artifact")
-			if at := strings.TrimSpace(resp.Header.Get("X-AIB-Artifact-Type")); at != "" {
-				fmt.Printf("Artifact type: %s\n", at)
-			}
-			if comp := strings.TrimSpace(resp.Header.Get("X-AIB-Compression")); comp != "" {
-				fmt.Printf("Compression: %s\n", comp)
-			}
-			if root := strings.TrimSpace(resp.Header.Get("X-AIB-Archive-Root")); root != "" {
-				fmt.Printf("Archive root: %s\n", root)
-			}
-			outPath := filepath.Join(outDir, filename)
-			tmp := outPath + ".partial"
-			f, err := os.Create(tmp)
-			if err != nil {
-				resp.Body.Close()
-				return err
-			}
-			if cl := strings.TrimSpace(resp.Header.Get("Content-Length")); cl != "" {
-				// Known size: nice progress bar
-				// Convert to int64
-				var total int64
-				fmt.Sscan(cl, &total)
-				bar := progressbar.NewOptions64(
-					total,
-					progressbar.OptionSetDescription("Downloading"),
-					progressbar.OptionShowBytes(true),
-					progressbar.OptionSetWidth(15),
-					progressbar.OptionThrottle(65*time.Millisecond),
-					progressbar.OptionShowCount(),
-					progressbar.OptionClearOnFinish(),
-				)
-				reader := io.TeeReader(resp.Body, bar)
-				if _, copyErr := io.Copy(f, reader); copyErr != nil {
-					f.Close()
-					os.Remove(tmp)
-					return copyErr
-				}
-				_ = bar.Finish()
-				fmt.Println()
-			} else {
-				bar := progressbar.NewOptions(
-					-1,
-					progressbar.OptionSetDescription("Downloading"),
-					progressbar.OptionSpinnerType(14),
-					progressbar.OptionClearOnFinish(),
-				)
-				reader := io.TeeReader(resp.Body, bar)
-				if _, copyErr := io.Copy(f, reader); copyErr != nil {
-					f.Close()
-					os.Remove(tmp)
-					return copyErr
-				}
-				_ = bar.Finish()
-				fmt.Println()
-			}
-			resp.Body.Close()
-			f.Close()
-			if err := os.Rename(tmp, outPath); err != nil {
-				return err
-			}
-			fmt.Printf("Artifact downloaded to %s\n", outPath)
-
-			// If the artifact is a tar archive (directory export), optionally extract it
-			if strings.HasPrefix(contentType, "application/x-tar") || strings.HasPrefix(contentType, "application/gzip") || strings.HasSuffix(strings.ToLower(outPath), ".tar") || strings.HasSuffix(strings.ToLower(outPath), ".tar.gz") {
-				if !compressArtifacts {
-					destDir := strings.TrimSuffix(outPath, ".tar")
-					destDir = strings.TrimSuffix(destDir, ".gz")
-					if err := os.MkdirAll(destDir, 0o755); err != nil {
-						return fmt.Errorf("create extract dir: %w", err)
-					}
-					if err := extractTar(outPath, destDir); err != nil {
-						return fmt.Errorf("extract tar: %w", err)
-					}
-					fmt.Printf("Extracted to %s\n", destDir)
-				}
-			}
-			return nil
+			return handleArtifactDownload(resp, outDir, userFilename, name)
 		}
 
 		body, _ := io.ReadAll(resp.Body)
-		msg := strings.ToLower(strings.TrimSpace(string(body)))
-		resp.Body.Close()
-		if resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusConflict || strings.Contains(msg, "not ready") {
+		_ = resp.Body.Close()
+
+		if shouldRetryResponse(resp.StatusCode, body) {
 			if !warned {
 				fmt.Println("Artifact not ready yet. Waiting...")
 				warned = true
@@ -1340,6 +1465,7 @@ func downloadArtifactViaAPI(ctx context.Context, baseURL, name, outPath string) 
 			time.Sleep(3 * time.Second)
 			continue
 		}
+
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 }
@@ -1349,12 +1475,20 @@ func extractTar(tarPath, destDir string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close tar file: %v\n", err)
+		}
+	}()
 	var r io.Reader = f
 	if strings.HasSuffix(strings.ToLower(tarPath), ".gz") {
 		gr, gzErr := gzip.NewReader(f)
 		if gzErr == nil {
-			defer gr.Close()
+			defer func() {
+				if err := gr.Close(); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to close gzip reader: %v\n", err)
+				}
+			}()
 			r = gr
 		}
 	}
@@ -1382,10 +1516,12 @@ func extractTar(tarPath, destDir string) error {
 				return err
 			}
 			if _, err := io.Copy(out, tr); err != nil {
-				out.Close()
+				_ = out.Close()
 				return err
 			}
-			out.Close()
+			if err := out.Close(); err != nil {
+				return fmt.Errorf("failed to close output file: %w", err)
+			}
 		case tar.TypeSymlink:
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 				return err
@@ -1400,7 +1536,7 @@ func extractTar(tarPath, destDir string) error {
 	return nil
 }
 
-func runDownload(cmd *cobra.Command, args []string) {
+func runDownload(_ *cobra.Command, _ []string) {
 	ctx := context.Background()
 
 	if strings.TrimSpace(serverURL) == "" {
@@ -1430,7 +1566,7 @@ func runDownload(cmd *cobra.Command, args []string) {
 	}
 }
 
-func runList(cmd *cobra.Command, args []string) {
+func runList(_ *cobra.Command, _ []string) {
 	ctx := context.Background()
 	if strings.TrimSpace(serverURL) == "" {
 		fmt.Println("Error: --server is required (or set CAIB_SERVER)")

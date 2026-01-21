@@ -50,7 +50,7 @@ type verifyResponse struct {
 	Triggered bool   `json:"triggered"`
 }
 
-func runVerify(cmd *cobra.Command, args []string) error {
+func runVerify(_ *cobra.Command, args []string) error {
 	name := args[0]
 
 	server := serverURL
@@ -68,7 +68,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 
 	ns := namespace
 	if ns == "" {
-		ns = "default"
+		ns = defaultNamespace
 	}
 
 	fmt.Printf("Verifying catalog image %q...\n", name)
@@ -88,7 +88,11 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to make request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
+		}
+	}()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return fmt.Errorf("catalog image %q not found in namespace %q", name, ns)
@@ -120,7 +124,11 @@ func runVerify(cmd *cobra.Command, args []string) error {
 		}
 		getResp, err := client.Do(getReq)
 		if err == nil {
-			defer getResp.Body.Close()
+			defer func() {
+				if err := getResp.Body.Close(); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
+				}
+			}()
 			if getResp.StatusCode == http.StatusOK {
 				getBody, _ := io.ReadAll(getResp.Body)
 				var img CatalogImageResponse

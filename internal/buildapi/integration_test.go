@@ -9,8 +9,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-logr/logr"
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
+	. "github.com/onsi/ginkgo/v2" //nolint:revive // Dot import is standard for Ginkgo
+	. "github.com/onsi/gomega"    //nolint:revive // Dot import is standard for Gomega
 )
 
 var _ = Describe("APIServer Integration", func() {
@@ -53,18 +53,18 @@ var _ = Describe("APIServer Integration", func() {
 			resp, err := http.Get("http://localhost:8080/v1/healthz")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(resp.StatusCode).To(Equal(http.StatusOK))
-			resp.Body.Close()
+			_ = resp.Body.Close()
 
 			resp, err = http.Get("http://localhost:8080/v1/openapi.yaml")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(resp.StatusCode).To(Equal(http.StatusOK))
 			Expect(resp.Header.Get("Content-Type")).To(Equal("application/yaml"))
-			resp.Body.Close()
+			_ = resp.Body.Close()
 
 			resp, err = http.Get("http://localhost:8080/v1/builds")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		})
 
 		It("should handle authentication with real Kubernetes tokens", func() {
@@ -89,7 +89,7 @@ var _ = Describe("APIServer Integration", func() {
 			client := &http.Client{Timeout: 5 * time.Second}
 			resp, err := client.Do(req)
 			Expect(err).NotTo(HaveOccurred())
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			Expect(resp.StatusCode).NotTo(Equal(http.StatusUnauthorized))
 		})
@@ -111,7 +111,9 @@ var _ = Describe("APIServer Manual Testing", func() {
 		fmt.Println("   # Get your token:")
 		fmt.Println("   oc whoami -t")
 		fmt.Println("   # or")
-		fmt.Println("   kubectl get secret -o jsonpath='{.data.token}' $(kubectl get secret | grep default-token | awk '{print $1}') | base64 -d")
+		cmd := "kubectl get secret -o jsonpath='{.data.token}' " +
+			"$(kubectl get secret | grep default-token | awk '{print $1}') | base64 -d"
+		fmt.Println("   " + cmd)
 		fmt.Println()
 		fmt.Println("   # Test authenticated endpoint:")
 		fmt.Println("   curl -H 'Authorization: Bearer YOUR_TOKEN' http://localhost:8080/v1/builds")

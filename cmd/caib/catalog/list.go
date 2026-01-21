@@ -60,6 +60,8 @@ func newListCmd() *cobra.Command {
 }
 
 // CatalogImageListResponse mirrors the API response
+//
+//nolint:revive // Name intentionally includes package name for clarity in CLI context
 type CatalogImageListResponse struct {
 	Items    []CatalogImageResponse `json:"items"`
 	Total    int                    `json:"total"`
@@ -67,6 +69,8 @@ type CatalogImageListResponse struct {
 }
 
 // CatalogImageResponse mirrors the API response
+//
+//nolint:revive // Name intentionally includes package name for clarity in CLI context
 type CatalogImageResponse struct {
 	Name         string   `json:"name"`
 	Namespace    string   `json:"namespace"`
@@ -84,7 +88,7 @@ type Target struct {
 	Name string `json:"name"`
 }
 
-func runList(cmd *cobra.Command, args []string) error {
+func runList(_ *cobra.Command, _ []string) error {
 	// Get server URL
 	server := serverURL
 	if server == "" {
@@ -144,7 +148,11 @@ func runList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to make request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -183,7 +191,16 @@ func printTable(items []CatalogImageResponse) {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tREGISTRY\tARCHITECTURE\tDISTRO\tTARGET\tPHASE\tAGE")
+	defer func() {
+		if err := w.Flush(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to flush output: %v\n", err)
+		}
+	}()
+
+	if _, err := fmt.Fprintln(w, "NAME\tREGISTRY\tARCHITECTURE\tDISTRO\tTARGET\tPHASE\tAGE"); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to write header: %v\n", err)
+		return
+	}
 
 	for _, img := range items {
 		target := ""
@@ -197,7 +214,7 @@ func printTable(items []CatalogImageResponse) {
 			registryDisplay = registryDisplay[:47] + "..."
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			img.Name,
 			registryDisplay,
 			img.Architecture,
@@ -205,7 +222,8 @@ func printTable(items []CatalogImageResponse) {
 			target,
 			img.Phase,
 			img.CreatedAt,
-		)
+		); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to write row: %v\n", err)
+		}
 	}
-	w.Flush()
 }

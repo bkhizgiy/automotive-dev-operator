@@ -23,6 +23,8 @@ import (
 )
 
 // CatalogImageResponse represents a catalog image in API responses
+//
+//nolint:revive // Name intentionally includes package name for clarity in external API
 type CatalogImageResponse struct {
 	Name             string                `json:"name"`
 	Namespace        string                `json:"namespace"`
@@ -75,6 +77,8 @@ type HardwareTargetInfo struct {
 }
 
 // CatalogImageListResponse represents a list of catalog images
+//
+//nolint:revive // Name intentionally includes package name for clarity in external API
 type CatalogImageListResponse struct {
 	Items    []CatalogImageResponse `json:"items"`
 	Total    int                    `json:"total"`
@@ -220,7 +224,9 @@ func resolveDownloadURL(catalogImage *automotivev1alpha1.CatalogImage) string {
 }
 
 // ToCatalogImageListResponse converts a list of CatalogImage CRs to an API response
-func ToCatalogImageListResponse(list *automotivev1alpha1.CatalogImageList, continueToken string) CatalogImageListResponse {
+func ToCatalogImageListResponse(
+	list *automotivev1alpha1.CatalogImageList, continueToken string,
+) CatalogImageListResponse {
 	response := CatalogImageListResponse{
 		Items:    make([]CatalogImageResponse, 0, len(list.Items)),
 		Total:    len(list.Items),
