@@ -66,10 +66,25 @@ func (r *OperatorConfigReconciler) detectJumpstarter(ctx context.Context) bool {
 	crd := &apiextensionsv1.CustomResourceDefinition{}
 	err := r.Get(ctx, client.ObjectKey{Name: "exporters.jumpstarter.dev"}, crd)
 
-	detected := err == nil
-	r.IsJumpstarter = &detected
-	r.Log.Info("Jumpstarter detection", "available", detected)
-	return detected
+	if err == nil {
+		// Successfully found Jumpstarter CRD - cache positive result
+		detected := true
+		r.IsJumpstarter = &detected
+		r.Log.Info("Jumpstarter detection", "available", true)
+		return true
+	}
+
+	if errors.IsNotFound(err) {
+		// Definitively not found - cache negative result
+		detected := false
+		r.IsJumpstarter = &detected
+		r.Log.Info("Jumpstarter detection", "available", false)
+		return false
+	}
+
+	// Transient error (RBAC, network, etc.) - don't cache, allow retry
+	r.Log.Error(err, "Failed to check for Jumpstarter CRDs, will retry on next reconciliation")
+	return false
 }
 
 // OperatorConfigReconciler reconciles an OperatorConfig object
