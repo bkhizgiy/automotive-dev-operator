@@ -11,6 +11,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -55,19 +56,52 @@ func (r *OperatorConfigReconciler) detectOpenShift(ctx context.Context) bool {
 	return isOpenShift
 }
 
+// detectJumpstarter checks if Jumpstarter CRDs are installed in the cluster
+func (r *OperatorConfigReconciler) detectJumpstarter(ctx context.Context) bool {
+	if r.IsJumpstarter != nil {
+		return *r.IsJumpstarter
+	}
+
+	// Try to get the Exporter CRD
+	crd := &apiextensionsv1.CustomResourceDefinition{}
+	err := r.Get(ctx, client.ObjectKey{Name: "exporters.jumpstarter.dev"}, crd)
+
+	if err == nil {
+		// Successfully found Jumpstarter CRD - cache positive result
+		detected := true
+		r.IsJumpstarter = &detected
+		r.Log.Info("Jumpstarter detection", "available", true)
+		return true
+	}
+
+	if errors.IsNotFound(err) {
+		// Definitively not found - cache negative result
+		detected := false
+		r.IsJumpstarter = &detected
+		r.Log.Info("Jumpstarter detection", "available", false)
+		return false
+	}
+
+	// Transient error (RBAC, network, etc.) - don't cache, allow retry
+	r.Log.Error(err, "Failed to check for Jumpstarter CRDs, will retry on next reconciliation")
+	return false
+}
+
 // OperatorConfigReconciler reconciles an OperatorConfig object
 //
 //nolint:revive // Name follows Kubebuilder convention for reconcilers
 type OperatorConfigReconciler struct {
 	client.Client
-	Scheme      *runtime.Scheme
-	Log         logr.Logger
-	IsOpenShift *bool
+	Scheme        *runtime.Scheme
+	Log           logr.Logger
+	IsOpenShift   *bool
+	IsJumpstarter *bool
 }
 
 // +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=operatorconfigs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=operatorconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=operatorconfigs/finalizers,verbs=update
+// +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
@@ -165,8 +199,15 @@ func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 	}
 
+	// Detect Jumpstarter availability
+	jumpstarterAvailable := r.detectJumpstarter(ctx)
+	if config.Status.JumpstarterAvailable != jumpstarterAvailable {
+		config.Status.JumpstarterAvailable = jumpstarterAvailable
+		statusChanged = true
+	}
+
 	if statusChanged {
-		log.Info("Updating status", "phase", config.Status.Phase, "osBuildsDeployed", config.Status.OSBuildsDeployed)
+		log.Info("Updating status", "phase", config.Status.Phase, "osBuildsDeployed", config.Status.OSBuildsDeployed, "jumpstarterAvailable", config.Status.JumpstarterAvailable)
 		if err := r.Status().Update(ctx, config); err != nil {
 			log.Error(err, "Failed to update status")
 			return ctrl.Result{}, err

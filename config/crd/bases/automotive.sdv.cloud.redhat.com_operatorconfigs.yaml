@@ -77,6 +77,32 @@ spec:
                     format: int64
                     type: integer
                 type: object
+              jumpstarter:
+                description: Jumpstarter defines configuration for Jumpstarter device
+                  flashing integration
+                properties:
+                  targetMappings:
+                    additionalProperties:
+                      description: JumpstarterTargetMapping defines the Jumpstarter
+                        configuration for a specific build target
+                      properties:
+                        flashCmd:
+                          description: |-
+                            FlashCmd is the command template for flashing the device
+                            Example: "j storage flash ${IMAGE}"
+                          type: string
+                        selector:
+                          description: |-
+                            Selector is the label selector for matching Jumpstarter exporters
+                            Example: "board-type=j784s4evm"
+                          type: string
+                      required:
+                      - selector
+                      type: object
+                    description: TargetMappings maps build targets to Jumpstarter
+                      exporter configurations
+                    type: object
+                type: object
               osBuilds:
                 description: OSBuilds defines the configuration for OS build operations
                 properties:
@@ -174,6 +200,10 @@ spec:
           status:
             description: OperatorConfigStatus defines the observed state of OperatorConfig
             properties:
+              jumpstarterAvailable:
+                description: JumpstarterAvailable indicates if Jumpstarter CRDs are
+                  present in the cluster
+                type: boolean
               message:
                 description: Message provides detail about the current phase
                 type: string
