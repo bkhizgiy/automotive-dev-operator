@@ -97,8 +97,6 @@ bin/caib build <manifest.aib.yml> [flags]
 | `--aib-image` | `quay.io/.../automotive-image-builder:latest` | AIB container image |
 | `--storage-class` | | Storage class for build workspace PVC |
 | `-D`, `--define` | | Custom definition `KEY=VALUE` (repeatable) |
-| `--registry-username` | `$REGISTRY_USERNAME` | Registry username for push operations |
-| `--registry-password` | `$REGISTRY_PASSWORD` | Registry password (or use docker/podman auth) |
 | `--timeout` | `60` | Timeout in minutes |
 | `-w`, `--wait` | `false` | Wait for build to complete |
 | `-f`, `--follow` | `false` | Follow build logs |
@@ -153,8 +151,6 @@ bin/caib disk <container-ref> [flags]
 | `-a`, `--arch` | (current system) | Architecture (`amd64`, `arm64`) |
 | `--aib-image` | `quay.io/.../automotive-image-builder:latest` | AIB container image |
 | `--storage-class` | | Kubernetes storage class |
-| `--registry-username` | `$REGISTRY_USERNAME` | Registry username |
-| `--registry-password` | `$REGISTRY_PASSWORD` | Registry password |
 | `--timeout` | `60` | Timeout in minutes |
 | `-w`, `--wait` | `false` | Wait for build to complete |
 | `-f`, `--follow` | `false` | Follow build logs |
@@ -203,8 +199,6 @@ bin/caib build-dev <manifest.aib.yml> [flags]
 | `--aib-image` | `quay.io/.../automotive-image-builder:latest` | AIB container image |
 | `--storage-class` | | Storage class for build workspace PVC |
 | `-D`, `--define` | | Custom definition `KEY=VALUE` (repeatable) |
-| `--registry-username` | `$REGISTRY_USERNAME` | Registry username |
-| `--registry-password` | `$REGISTRY_PASSWORD` | Registry password |
 | `--timeout` | `60` | Timeout in minutes |
 | `-w`, `--wait` | `false` | Wait for build to complete |
 | `-f`, `--follow` | `false` | Follow build logs |
@@ -220,14 +214,12 @@ bin/caib build-dev my-manifest.aib.yml \
   -o ./disk.qcow2 \
   --follow
 
-# Build and push to OCI registry
+# Build and push to OCI registry (requires REGISTRY_USERNAME/REGISTRY_PASSWORD env vars)
 bin/caib build-dev my-manifest.aib.yml \
   --arch arm64 \
   --mode image \
   --format qcow2 \
   --push quay.io/myorg/disk-image:v1.0 \
-  --registry-username myuser \
-  --registry-password mypass \
   --follow
 ```
 
@@ -280,9 +272,8 @@ The CLI automatically detects authentication in this order:
 
 For registry authentication (`--push`, `--push-disk`):
 
-1. `--registry-username` / `--registry-password` flags
-2. `REGISTRY_USERNAME` / `REGISTRY_PASSWORD` environment variables
-3. Docker/Podman auth files (`~/.docker/config.json`, `~/.config/containers/auth.json`)
+1. `REGISTRY_USERNAME` / `REGISTRY_PASSWORD` environment variables
+2. Docker/Podman auth files (`~/.docker/config.json`, `~/.config/containers/auth.json`)
 
 ## Manifest File References
 
@@ -328,7 +319,7 @@ Supported locations:
 | HTTP 503/504 during log follow | Build pod starting | CLI retries automatically |
 | Build fails after upload | PVC transition timing | Increase `--timeout`, check operator logs |
 | "no bearer token found" | Not logged in | Run `oc login` or set `CAIB_TOKEN` |
-| Registry auth failure | Missing credentials | Set `--registry-username/password` or login via `podman login` |
+| Registry auth failure | Missing credentials | Set `REGISTRY_USERNAME/REGISTRY_PASSWORD` env vars or login via `podman login` |
 
 ## Version
 
