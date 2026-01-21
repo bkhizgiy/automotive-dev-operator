@@ -57,7 +57,7 @@ type publishRequest struct {
 	Tags                []string `json:"tags,omitempty"`
 }
 
-func runPublish(cmd *cobra.Command, args []string) error {
+func runPublish(_ *cobra.Command, args []string) error {
 	imageBuildName := args[0]
 
 	server := serverURL
@@ -75,7 +75,7 @@ func runPublish(cmd *cobra.Command, args []string) error {
 
 	ns := namespace
 	if ns == "" {
-		ns = "default"
+		ns = defaultNamespace
 	}
 
 	fmt.Printf("Publishing ImageBuild %q to catalog...\n", imageBuildName)
@@ -108,7 +108,11 @@ func runPublish(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to make request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
+		}
+	}()
 
 	body, _ := io.ReadAll(resp.Body)
 

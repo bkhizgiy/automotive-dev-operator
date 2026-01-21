@@ -40,6 +40,8 @@ const (
 )
 
 // CatalogImageReconciler reconciles a CatalogImage object
+//
+//nolint:revive // Name follows Kubebuilder convention for reconcilers
 type CatalogImageReconciler struct {
 	client.Client
 	Scheme         *runtime.Scheme
@@ -98,7 +100,10 @@ func (r *CatalogImageReconciler) Reconcile(ctx context.Context, req ctrl.Request
 }
 
 // handleDeletion handles CatalogImage deletion with finalizer cleanup
-func (r *CatalogImageReconciler) handleDeletion(ctx context.Context, catalogImage *automotivev1alpha1.CatalogImage) (ctrl.Result, error) {
+func (r *CatalogImageReconciler) handleDeletion(
+	ctx context.Context,
+	catalogImage *automotivev1alpha1.CatalogImage,
+) (ctrl.Result, error) {
 	log := r.Log.WithValues("catalogimage", catalogImage.Name, "namespace", catalogImage.Namespace)
 
 	if controllerutil.ContainsFinalizer(catalogImage, automotivev1alpha1.CatalogImageFinalizer) {
@@ -117,7 +122,10 @@ func (r *CatalogImageReconciler) handleDeletion(ctx context.Context, catalogImag
 }
 
 // handlePendingPhase handles newly created CatalogImages
-func (r *CatalogImageReconciler) handlePendingPhase(ctx context.Context, catalogImage *automotivev1alpha1.CatalogImage) (ctrl.Result, error) {
+func (r *CatalogImageReconciler) handlePendingPhase(
+	ctx context.Context,
+	catalogImage *automotivev1alpha1.CatalogImage,
+) (ctrl.Result, error) {
 	log := r.Log.WithValues("catalogimage", catalogImage.Name, "namespace", catalogImage.Namespace)
 	log.Info("Transitioning from Pending to Verifying")
 
@@ -125,11 +133,20 @@ func (r *CatalogImageReconciler) handlePendingPhase(ctx context.Context, catalog
 	r.ensureLabels(catalogImage)
 
 	// Update status to Verifying
-	return r.updatePhase(ctx, catalogImage, automotivev1alpha1.CatalogImagePhaseVerifying, "Starting registry verification")
+	catalogImage.Status.Phase = automotivev1alpha1.CatalogImagePhaseVerifying
+	catalogImage.Status.ObservedGeneration = catalogImage.Generation
+
+	if err := r.Status().Update(ctx, catalogImage); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{Requeue: true}, nil
 }
 
 // handleVerifyingPhase handles registry verification
-func (r *CatalogImageReconciler) handleVerifyingPhase(ctx context.Context, catalogImage *automotivev1alpha1.CatalogImage) (ctrl.Result, error) {
+func (r *CatalogImageReconciler) handleVerifyingPhase(
+	ctx context.Context,
+	catalogImage *automotivev1alpha1.CatalogImage,
+) (ctrl.Result, error) {
 	log := r.Log.WithValues("catalogimage", catalogImage.Name, "namespace", catalogImage.Namespace)
 	log.Info("Verifying registry accessibility", "registryUrl", catalogImage.Spec.RegistryURL)
 
@@ -176,9 +193,27 @@ func (r *CatalogImageReconciler) handleVerifyingPhase(ctx context.Context, catal
 	catalogImage.Status.ObservedGeneration = catalogImage.Generation
 
 	// Set Available condition
-	r.setCondition(catalogImage, automotivev1alpha1.CatalogImageConditionAvailable, metav1.ConditionTrue, "RegistryAccessible", "Image is accessible in registry")
-	r.setCondition(catalogImage, automotivev1alpha1.CatalogImageConditionVerified, metav1.ConditionTrue, "VerificationSucceeded", "Image verification completed successfully")
-	r.setCondition(catalogImage, automotivev1alpha1.CatalogImageConditionReady, metav1.ConditionTrue, "Ready", "CatalogImage is ready for use")
+	r.setCondition(
+		catalogImage,
+		automotivev1alpha1.CatalogImageConditionAvailable,
+		metav1.ConditionTrue,
+		"RegistryAccessible",
+		"Image is accessible in registry",
+	)
+	r.setCondition(
+		catalogImage,
+		automotivev1alpha1.CatalogImageConditionVerified,
+		metav1.ConditionTrue,
+		"VerificationSucceeded",
+		"Image verification completed successfully",
+	)
+	r.setCondition(
+		catalogImage,
+		automotivev1alpha1.CatalogImageConditionReady,
+		metav1.ConditionTrue,
+		"Ready",
+		"CatalogImage is ready for use",
+	)
 
 	if err := r.Status().Update(ctx, catalogImage); err != nil {
 		return ctrl.Result{}, err
@@ -189,13 +224,22 @@ func (r *CatalogImageReconciler) handleVerifyingPhase(ctx context.Context, catal
 }
 
 // handleAvailablePhase handles periodic re-verification
-func (r *CatalogImageReconciler) handleAvailablePhase(ctx context.Context, catalogImage *automotivev1alpha1.CatalogImage) (ctrl.Result, error) {
+func (r *CatalogImageReconciler) handleAvailablePhase(
+	ctx context.Context,
+	catalogImage *automotivev1alpha1.CatalogImage,
+) (ctrl.Result, error) {
 	log := r.Log.WithValues("catalogimage", catalogImage.Name, "namespace", catalogImage.Namespace)
 
 	// Check if spec changed (generation mismatch)
 	if catalogImage.Status.ObservedGeneration != catalogImage.Generation {
 		log.Info("Spec changed, re-verifying")
-		return r.updatePhase(ctx, catalogImage, automotivev1alpha1.CatalogImagePhaseVerifying, "Re-verifying due to spec change")
+		catalogImage.Status.Phase = automotivev1alpha1.CatalogImagePhaseVerifying
+		catalogImage.Status.ObservedGeneration = catalogImage.Generation
+
+		if err := r.Status().Update(ctx, catalogImage); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	// Check if re-verification is needed based on interval
@@ -221,29 +265,15 @@ func (r *CatalogImageReconciler) handleAvailablePhase(ctx context.Context, catal
 }
 
 // handleUnavailablePhase handles retry logic
-func (r *CatalogImageReconciler) handleUnavailablePhase(ctx context.Context, catalogImage *automotivev1alpha1.CatalogImage) (ctrl.Result, error) {
+func (r *CatalogImageReconciler) handleUnavailablePhase(
+	ctx context.Context,
+	catalogImage *automotivev1alpha1.CatalogImage,
+) (ctrl.Result, error) {
 	log := r.Log.WithValues("catalogimage", catalogImage.Name, "namespace", catalogImage.Namespace)
 	log.Info("Retrying unavailable image")
 
 	// Transition back to Verifying to retry
-	return r.updatePhase(ctx, catalogImage, automotivev1alpha1.CatalogImagePhaseVerifying, "Retrying registry verification")
-}
-
-// handleFailedPhase handles permanent failures
-func (r *CatalogImageReconciler) handleFailedPhase(ctx context.Context, catalogImage *automotivev1alpha1.CatalogImage) (ctrl.Result, error) {
-	// Failed state requires user intervention
-	// Check if user has updated the spec
-	if catalogImage.Status.ObservedGeneration != catalogImage.Generation {
-		r.Log.Info("Spec updated, transitioning from Failed to Verifying")
-		return r.updatePhase(ctx, catalogImage, automotivev1alpha1.CatalogImagePhaseVerifying, "Spec updated, retrying")
-	}
-
-	return ctrl.Result{}, nil
-}
-
-// updatePhase updates the phase and observed generation
-func (r *CatalogImageReconciler) updatePhase(ctx context.Context, catalogImage *automotivev1alpha1.CatalogImage, phase automotivev1alpha1.CatalogImagePhase, _ string) (ctrl.Result, error) {
-	catalogImage.Status.Phase = phase
+	catalogImage.Status.Phase = automotivev1alpha1.CatalogImagePhaseVerifying
 	catalogImage.Status.ObservedGeneration = catalogImage.Generation
 
 	if err := r.Status().Update(ctx, catalogImage); err != nil {
@@ -252,8 +282,33 @@ func (r *CatalogImageReconciler) updatePhase(ctx context.Context, catalogImage *
 	return ctrl.Result{Requeue: true}, nil
 }
 
+// handleFailedPhase handles permanent failures
+func (r *CatalogImageReconciler) handleFailedPhase(
+	ctx context.Context,
+	catalogImage *automotivev1alpha1.CatalogImage,
+) (ctrl.Result, error) {
+	// Failed state requires user intervention
+	// Check if user has updated the spec
+	if catalogImage.Status.ObservedGeneration != catalogImage.Generation {
+		r.Log.Info("Spec updated, transitioning from Failed to Verifying")
+		catalogImage.Status.Phase = automotivev1alpha1.CatalogImagePhaseVerifying
+		catalogImage.Status.ObservedGeneration = catalogImage.Generation
+
+		if err := r.Status().Update(ctx, catalogImage); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	return ctrl.Result{}, nil
+}
+
 // transitionToUnavailable transitions to Unavailable phase
-func (r *CatalogImageReconciler) transitionToUnavailable(ctx context.Context, catalogImage *automotivev1alpha1.CatalogImage, reason, message string) (ctrl.Result, error) {
+func (r *CatalogImageReconciler) transitionToUnavailable(
+	ctx context.Context,
+	catalogImage *automotivev1alpha1.CatalogImage,
+	reason, message string,
+) (ctrl.Result, error) {
 	r.setCondition(catalogImage, automotivev1alpha1.CatalogImageConditionAvailable, metav1.ConditionFalse, reason, message)
 	r.setCondition(catalogImage, automotivev1alpha1.CatalogImageConditionReady, metav1.ConditionFalse, reason, message)
 
@@ -268,7 +323,11 @@ func (r *CatalogImageReconciler) transitionToUnavailable(ctx context.Context, ca
 }
 
 // transitionToFailed transitions to Failed phase
-func (r *CatalogImageReconciler) transitionToFailed(ctx context.Context, catalogImage *automotivev1alpha1.CatalogImage, reason, message string) (ctrl.Result, error) {
+func (r *CatalogImageReconciler) transitionToFailed(
+	ctx context.Context,
+	catalogImage *automotivev1alpha1.CatalogImage,
+	reason, message string,
+) (ctrl.Result, error) {
 	r.setCondition(catalogImage, automotivev1alpha1.CatalogImageConditionAvailable, metav1.ConditionFalse, reason, message)
 	r.setCondition(catalogImage, automotivev1alpha1.CatalogImageConditionReady, metav1.ConditionFalse, reason, message)
 
@@ -283,7 +342,12 @@ func (r *CatalogImageReconciler) transitionToFailed(ctx context.Context, catalog
 }
 
 // setCondition sets a condition on the CatalogImage status
-func (r *CatalogImageReconciler) setCondition(catalogImage *automotivev1alpha1.CatalogImage, conditionType string, status metav1.ConditionStatus, reason, message string) {
+func (r *CatalogImageReconciler) setCondition(
+	catalogImage *automotivev1alpha1.CatalogImage,
+	conditionType string,
+	status metav1.ConditionStatus,
+	reason, message string,
+) {
 	meta.SetStatusCondition(&catalogImage.Status.Conditions, metav1.Condition{
 		Type:               conditionType,
 		Status:             status,
@@ -301,7 +365,8 @@ func (r *CatalogImageReconciler) ensureLabels(catalogImage *automotivev1alpha1.C
 
 	if catalogImage.Spec.Metadata != nil {
 		if catalogImage.Spec.Metadata.Architecture != "" {
-			catalogImage.Labels[automotivev1alpha1.LabelArchitecture] = NormalizeArchitecture(catalogImage.Spec.Metadata.Architecture)
+			normalizedArch := NormalizeArchitecture(catalogImage.Spec.Metadata.Architecture)
+			catalogImage.Labels[automotivev1alpha1.LabelArchitecture] = normalizedArch
 		}
 		if catalogImage.Spec.Metadata.Distro != "" {
 			catalogImage.Labels[automotivev1alpha1.LabelDistro] = catalogImage.Spec.Metadata.Distro
@@ -336,17 +401,31 @@ func (r *CatalogImageReconciler) getRegistryClient() RegistryClient {
 // SetupWithManager sets up the controller with the Manager.
 func (r *CatalogImageReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Add field indexers for efficient queries
-	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &automotivev1alpha1.CatalogImage{}, "spec.registryUrl", func(obj client.Object) []string {
+	registryURLIndexer := func(obj client.Object) []string {
 		catalogImage := obj.(*automotivev1alpha1.CatalogImage)
 		return []string{catalogImage.Spec.RegistryURL}
-	}); err != nil {
+	}
+	err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&automotivev1alpha1.CatalogImage{},
+		"spec.registryUrl",
+		registryURLIndexer,
+	)
+	if err != nil {
 		return fmt.Errorf("failed to create field index for spec.registryUrl: %w", err)
 	}
 
-	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &automotivev1alpha1.CatalogImage{}, "status.phase", func(obj client.Object) []string {
+	phaseIndexer := func(obj client.Object) []string {
 		catalogImage := obj.(*automotivev1alpha1.CatalogImage)
 		return []string{string(catalogImage.Status.Phase)}
-	}); err != nil {
+	}
+	err = mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&automotivev1alpha1.CatalogImage{},
+		"status.phase",
+		phaseIndexer,
+	)
+	if err != nil {
 		return fmt.Errorf("failed to create field index for status.phase: %w", err)
 	}
 

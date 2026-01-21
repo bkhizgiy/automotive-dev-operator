@@ -14,6 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package main provides an init container that generates OAuth cookie secrets
+// for the build API service. It creates a Kubernetes secret with a randomly
+// generated cookie secret if it doesn't already exist.
 package main
 
 import (

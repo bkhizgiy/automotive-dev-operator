@@ -10,8 +10,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-logr/logr"
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
+	. "github.com/onsi/ginkgo/v2" //nolint:revive // Dot import is standard for Ginkgo
+	. "github.com/onsi/gomega"    //nolint:revive // Dot import is standard for Gomega
 )
 
 var _ = Describe("APIServer", func() {

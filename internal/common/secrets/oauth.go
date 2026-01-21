@@ -1,3 +1,5 @@
+// Package secrets provides utilities for managing Kubernetes secrets,
+// particularly OAuth proxy secrets with randomly generated cookie secrets.
 package secrets
 
 import (

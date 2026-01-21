@@ -1,7 +1,7 @@
 package tasks
 
 import (
-	_ "embed"
+	_ "embed" // Required for go:embed directives
 	"time"
 
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
@@ -21,6 +21,7 @@ type BuildConfig struct {
 	ServeExpiryHours int32
 }
 
+// AutomotiveImageBuilder is the default container image for the automotive image builder.
 const AutomotiveImageBuilder = "quay.io/centos-sig-automotive/automotive-image-builder:1.0.0"
 
 // GeneratePushArtifactRegistryTask creates a Tekton Task for pushing artifacts to a registry

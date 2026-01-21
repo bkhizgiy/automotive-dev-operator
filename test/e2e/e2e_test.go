@@ -24,10 +24,10 @@ import (
 	"strings"
 	"time"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
+	. "github.com/onsi/ginkgo/v2" //nolint:revive // Dot import is standard for Ginkgo
+	. "github.com/onsi/gomega"    //nolint:revive // Dot import is standard for Gomega
 
-	"github.com/centos-automotive-suite/automotive-dev-operator/test/utils"
+	utils "github.com/centos-automotive-suite/automotive-dev-operator/test/utils"
 )
 
 const namespace = "automotive-dev-operator-system"
@@ -139,7 +139,8 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("verifying Tekton Pipeline is created")
 			verifyTektonPipeline := func() error {
-				cmd = exec.Command("kubectl", "get", "pipeline", "automotive-build-pipeline", "-n", namespace, "-o", "jsonpath={.metadata.name}")
+				cmd = exec.Command("kubectl", "get", "pipeline", "automotive-build-pipeline",
+					"-n", namespace, "-o", "jsonpath={.metadata.name}")
 				output, err := utils.Run(cmd)
 				if err != nil {
 					return err
@@ -153,7 +154,8 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("verifying Build API deployment is created")
 			verifyBuildAPIDeployment := func() error {
-				cmd = exec.Command("kubectl", "get", "deployment", "ado-build-api", "-n", namespace, "-o", "jsonpath={.status.availableReplicas}")
+				cmd = exec.Command("kubectl", "get", "deployment", "ado-build-api",
+					"-n", namespace, "-o", "jsonpath={.status.availableReplicas}")
 				output, err := utils.Run(cmd)
 				if err != nil {
 					return err
@@ -209,7 +211,13 @@ spec:
   containers:
   - name: fileserver
     image: busybox:latest
-    command: ["sh", "-c", "mkdir -p /workspace/shared && echo 'test artifact content for e2e download test' > /workspace/shared/test-artifact.qcow2.gz && sleep 3600"]
+    command:
+      - sh
+      - -c
+      - |
+        mkdir -p /workspace/shared &&
+        echo 'test artifact content for e2e download test' > /workspace/shared/test-artifact.qcow2.gz &&
+        sleep 3600
     readinessProbe:
       exec:
         command: ["test", "-f", "/workspace/shared/test-artifact.qcow2.gz"]
@@ -237,7 +245,8 @@ spec:
 			EventuallyWithOffset(1, verifyArtifactPodReady, 2*time.Minute, 2*time.Second).Should(Succeed())
 
 			By("patching ImageBuild status to Completed")
-			statusPatch := `{"status":{"phase":"Completed","artifactFileName":"test-artifact.qcow2.gz","message":"Build completed successfully"}}`
+			statusPatch := `{"status":{"phase":"Completed","artifactFileName":"test-artifact.qcow2.gz",` +
+				`"message":"Build completed successfully"}}`
 			cmd = exec.Command("kubectl", "patch", "imagebuild", "test-download-build",
 				"-n", namespace, "--type=merge", "--subresource=status", "-p", statusPatch)
 			_, err = utils.Run(cmd)
@@ -256,7 +265,11 @@ spec:
 			outputDir := filepath.Join(projectDir, "test-download-output")
 			err = os.MkdirAll(outputDir, 0755)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-			defer os.RemoveAll(outputDir)
+			defer func() {
+				if err := os.RemoveAll(outputDir); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to remove output directory: %v\n", err)
+				}
+			}()
 
 			By("running caib download via port-forward")
 			// Start port-forward to build-api service
@@ -284,7 +297,8 @@ spec:
 			downloadOutput, err := utils.Run(downloadCmd)
 			if err != nil {
 				// Collect debug info on failure
-				debugCmd := exec.Command("kubectl", "logs", "-n", namespace, "-l", "app.kubernetes.io/component=build-api", "--tail=50")
+				debugCmd := exec.Command("kubectl", "logs", "-n", namespace,
+					"-l", "app.kubernetes.io/component=build-api", "--tail=50")
 				logs, _ := utils.Run(debugCmd)
 				Fail(fmt.Sprintf("caib download failed: %v\nOutput: %s\nBuild API logs:\n%s", err, downloadOutput, logs))
 			}
@@ -300,9 +314,11 @@ spec:
 			ExpectWithOffset(1, strings.TrimSpace(string(content))).To(Equal("test artifact content for e2e download test"))
 
 			By("cleaning up test resources")
-			cmd = exec.Command("kubectl", "delete", "imagebuild", "test-download-build", "-n", namespace, "--ignore-not-found=true")
+			cmd = exec.Command("kubectl", "delete", "imagebuild", "test-download-build",
+				"-n", namespace, "--ignore-not-found=true")
 			_, _ = utils.Run(cmd)
-			cmd = exec.Command("kubectl", "delete", "pod", "test-download-artifact-pod", "-n", namespace, "--ignore-not-found=true")
+			cmd = exec.Command("kubectl", "delete", "pod", "test-download-artifact-pod",
+				"-n", namespace, "--ignore-not-found=true")
 			_, _ = utils.Run(cmd)
 		})
 
@@ -433,16 +449,30 @@ spec:
 			ExpectWithOffset(1, string(message)).To(ContainSubstring("completed"), "Message should indicate completion")
 
 			By("cleaning up real build resources")
-			cmd = exec.Command("kubectl", "delete", "imagebuild", "e2e-real-build", "-n", namespace, "--ignore-not-found=true")
+			cmd = exec.Command("kubectl", "delete", "imagebuild", "e2e-real-build",
+				"-n", namespace, "--ignore-not-found=true")
 			_, _ = utils.Run(cmd)
-			cmd = exec.Command("kubectl", "delete", "configmap", "e2e-real-build-manifest", "-n", namespace, "--ignore-not-found=true")
+			cmd = exec.Command("kubectl", "delete", "configmap", "e2e-real-build-manifest",
+				"-n", namespace, "--ignore-not-found=true")
 			_, _ = utils.Run(cmd)
 		})
 	})
 })
 
 func contains(s, substr string) bool {
-	return len(s) > 0 && len(substr) > 0 && (s == substr || len(s) >= len(substr) && (s[:len(substr)] == substr || s[len(s)-len(substr):] == substr || containsMiddle(s, substr)))
+	if len(s) == 0 || len(substr) == 0 {
+		return false
+	}
+	if s == substr {
+		return true
+	}
+	if len(s) < len(substr) {
+		return false
+	}
+	// Check prefix, suffix, or middle
+	return s[:len(substr)] == substr ||
+		s[len(s)-len(substr):] == substr ||
+		containsMiddle(s, substr)
 }
 
 func containsMiddle(s, substr string) bool {

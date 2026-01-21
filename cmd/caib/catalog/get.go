@@ -40,7 +40,7 @@ func newGetCmd() *cobra.Command {
 	return cmd
 }
 
-func runGet(cmd *cobra.Command, args []string) error {
+func runGet(_ *cobra.Command, args []string) error {
 	name := args[0]
 
 	server := serverURL
@@ -58,7 +58,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 
 	ns := namespace
 	if ns == "" {
-		ns = "default"
+		ns = defaultNamespace
 	}
 
 	reqURL := fmt.Sprintf("%s/v1/catalog/images/%s?namespace=%s", server, name, ns)
@@ -77,7 +77,11 @@ func runGet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to make request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Printf("Warning: failed to close response body: %v\n", err)
+		}
+	}()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return fmt.Errorf("catalog image %q not found in namespace %q", name, ns)
@@ -96,12 +100,16 @@ func runGet(cmd *cobra.Command, args []string) error {
 	switch outputFormat {
 	case "json":
 		var result map[string]interface{}
-		json.Unmarshal(body, &result)
+		if err := json.Unmarshal(body, &result); err != nil {
+			return fmt.Errorf("failed to parse JSON response: %w", err)
+		}
 		output, _ := json.MarshalIndent(result, "", "  ")
 		fmt.Println(string(output))
 	default:
 		var result map[string]interface{}
-		json.Unmarshal(body, &result)
+		if err := json.Unmarshal(body, &result); err != nil {
+			return fmt.Errorf("failed to parse JSON response: %w", err)
+		}
 		output, _ := yaml.Marshal(result)
 		fmt.Println(string(output))
 	}

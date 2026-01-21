@@ -125,7 +125,8 @@ type OSBuildsConfig struct {
 
 	// Tolerations specifies tolerations to be added to build pods
 	// Enables scheduling on tainted nodes for dedicated/exclusive access
-	// Example: [{"key": "automotive.sdv.cloud.redhat.com/dedicated", "operator": "Equal", "value": "builds", "effect": "NoSchedule"}]
+	// Example: [{"key": "automotive.sdv.cloud.redhat.com/dedicated", "operator": "Equal",
+	//           "value": "builds", "effect": "NoSchedule"}]
 	// +optional
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 }

@@ -46,7 +46,7 @@ func newRemoveCmd() *cobra.Command {
 	return cmd
 }
 
-func runRemove(cmd *cobra.Command, args []string) error {
+func runRemove(_ *cobra.Command, args []string) error {
 	name := args[0]
 
 	server := serverURL
@@ -64,7 +64,7 @@ func runRemove(cmd *cobra.Command, args []string) error {
 
 	ns := namespace
 	if ns == "" {
-		ns = "default"
+		ns = defaultNamespace
 	}
 
 	// Confirm deletion
@@ -95,7 +95,11 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to make request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
+		}
+	}()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return fmt.Errorf("catalog image %q not found in namespace %q", name, ns)

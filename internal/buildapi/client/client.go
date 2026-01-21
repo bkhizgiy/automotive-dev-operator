@@ -1,3 +1,4 @@
+// Package client provides a Go client library for the automotive build API server.
 package client
 
 import (
@@ -16,12 +17,14 @@ import (
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi"
 )
 
+// Client provides access to the build API server.
 type Client struct {
 	baseURL    *url.URL
 	httpClient *http.Client
 	authToken  string
 }
 
+// New creates a new build API client with the given base URL and options.
 func New(base string, opts ...Option) (*Client, error) {
 	u, err := url.Parse(base)
 	if err != nil {
@@ -40,11 +43,16 @@ func New(base string, opts ...Option) (*Client, error) {
 	return c, nil
 }
 
+// Option is a function that configures a Client.
 type Option func(*Client)
 
+// WithHTTPClient sets a custom HTTP client for the build API client.
 func WithHTTPClient(h *http.Client) Option { return func(c *Client) { c.httpClient = h } }
-func WithAuthToken(t string) Option        { return func(c *Client) { c.authToken = t } }
 
+// WithAuthToken sets an authentication token for API requests.
+func WithAuthToken(t string) Option { return func(c *Client) { c.authToken = t } }
+
+// CreateBuild submits a new build request to the API server.
 func (c *Client) CreateBuild(ctx context.Context, req buildapi.BuildRequest) (*buildapi.BuildResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -63,7 +71,11 @@ func (c *Client) CreateBuild(ctx context.Context, req buildapi.BuildRequest) (*b
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
+		}
+	}()
 	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, fmt.Errorf("create build failed: %s: %s", resp.Status, string(b))
@@ -75,6 +87,7 @@ func (c *Client) CreateBuild(ctx context.Context, req buildapi.BuildRequest) (*b
 	return &out, nil
 }
 
+// GetBuild retrieves the status and details of a specific build by name.
 func (c *Client) GetBuild(ctx context.Context, name string) (*buildapi.BuildResponse, error) {
 	endpoint := c.resolve(path.Join("/v1/builds", url.PathEscape(name)))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -88,7 +101,11 @@ func (c *Client) GetBuild(ctx context.Context, name string) (*buildapi.BuildResp
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
+		}
+	}()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, fmt.Errorf("get build failed: %s: %s", resp.Status, string(b))
@@ -100,6 +117,7 @@ func (c *Client) GetBuild(ctx context.Context, name string) (*buildapi.BuildResp
 	return &out, nil
 }
 
+// ListBuilds retrieves a list of all builds from the API server.
 func (c *Client) ListBuilds(ctx context.Context) ([]buildapi.BuildListItem, error) {
 	endpoint := c.resolve("/v1/builds")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -113,7 +131,11 @@ func (c *Client) ListBuilds(ctx context.Context) ([]buildapi.BuildListItem, erro
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
+		}
+	}()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, fmt.Errorf("list builds failed: %s: %s", resp.Status, string(b))
@@ -136,19 +158,29 @@ func (c *Client) resolve(p string) string {
 	return u.String()
 }
 
+// Upload represents a file to upload to the build API.
 type Upload struct {
 	SourcePath string
 	DestPath   string
 }
 
+// UploadFiles uploads multiple files to a specific build on the API server.
 func (c *Client) UploadFiles(ctx context.Context, name string, files []Upload) error {
 	endpoint := c.resolve(path.Join("/v1/builds", url.PathEscape(name), "uploads"))
 	pr, pw := io.Pipe()
 	mw := multipart.NewWriter(pw)
 
 	go func() {
-		defer pw.Close()
-		defer mw.Close()
+		defer func() {
+			if err := pw.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to close pipe writer: %v\n", err)
+			}
+		}()
+		defer func() {
+			if err := mw.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to close multipart writer: %v\n", err)
+			}
+		}()
 
 		done := make(chan struct{})
 		go func() {
@@ -156,21 +188,23 @@ func (c *Client) UploadFiles(ctx context.Context, name string, files []Upload) e
 			for _, f := range files {
 				file, err := os.Open(f.SourcePath)
 				if err != nil {
-					pw.CloseWithError(err)
+					_ = pw.CloseWithError(err)
 					return
 				}
 				part, err := mw.CreateFormFile("file", f.DestPath)
 				if err != nil {
-					file.Close()
-					pw.CloseWithError(err)
+					_ = file.Close()
+					_ = pw.CloseWithError(err)
 					return
 				}
 				if _, err := io.Copy(part, file); err != nil {
-					file.Close()
-					pw.CloseWithError(err)
+					_ = file.Close()
+					_ = pw.CloseWithError(err)
 					return
 				}
-				file.Close()
+				if err := file.Close(); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to close file: %v\n", err)
+				}
 			}
 		}()
 
@@ -193,7 +227,11 @@ func (c *Client) UploadFiles(ctx context.Context, name string, files []Upload) e
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
+		}
+	}()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return fmt.Errorf("upload failed: %s: %s", resp.Status, string(b))

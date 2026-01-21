@@ -21,6 +21,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/containers/image/v5/docker"
@@ -40,10 +41,19 @@ type RegistryClient interface {
 	VerifyImageAccessible(ctx context.Context, registryURL string, auth *types.DockerAuthConfig) (bool, error)
 
 	// GetImageMetadata retrieves metadata from the registry manifest
-	GetImageMetadata(ctx context.Context, registryURL string, auth *types.DockerAuthConfig) (*automotivev1alpha1.RegistryMetadata, error)
+	GetImageMetadata(
+		ctx context.Context,
+		registryURL string,
+		auth *types.DockerAuthConfig,
+	) (*automotivev1alpha1.RegistryMetadata, error)
 
 	// VerifyDigest verifies that the image digest matches the expected digest
-	VerifyDigest(ctx context.Context, registryURL string, expectedDigest string, auth *types.DockerAuthConfig) (bool, string, error)
+	VerifyDigest(
+		ctx context.Context,
+		registryURL string,
+		expectedDigest string,
+		auth *types.DockerAuthConfig,
+	) (bool, string, error)
 }
 
 // DefaultRegistryClient implements RegistryClient using containers/image library
@@ -55,7 +65,11 @@ func NewRegistryClient() *DefaultRegistryClient {
 }
 
 // VerifyImageAccessible checks if the image is accessible in the registry
-func (c *DefaultRegistryClient) VerifyImageAccessible(ctx context.Context, registryURL string, auth *types.DockerAuthConfig) (bool, error) {
+func (c *DefaultRegistryClient) VerifyImageAccessible(
+	ctx context.Context,
+	registryURL string,
+	auth *types.DockerAuthConfig,
+) (bool, error) {
 	ref, err := docker.ParseReference("//" + registryURL)
 	if err != nil {
 		return false, fmt.Errorf("failed to parse registry URL: %w", err)
@@ -71,14 +85,22 @@ func (c *DefaultRegistryClient) VerifyImageAccessible(ctx context.Context, regis
 	if err != nil {
 		return false, fmt.Errorf("failed to access image: %w", err)
 	}
-	defer src.Close()
+	defer func() {
+		if err := src.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close image source: %v\n", err)
+		}
+	}()
 
 	// Successfully accessed the image
 	return true, nil
 }
 
 // GetImageMetadata retrieves metadata from the registry manifest
-func (c *DefaultRegistryClient) GetImageMetadata(ctx context.Context, registryURL string, auth *types.DockerAuthConfig) (*automotivev1alpha1.RegistryMetadata, error) {
+func (c *DefaultRegistryClient) GetImageMetadata(
+	ctx context.Context,
+	registryURL string,
+	auth *types.DockerAuthConfig,
+) (*automotivev1alpha1.RegistryMetadata, error) {
 	ref, err := docker.ParseReference("//" + registryURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse registry URL: %w", err)
@@ -93,7 +115,11 @@ func (c *DefaultRegistryClient) GetImageMetadata(ctx context.Context, registryUR
 	if err != nil {
 		return nil, fmt.Errorf("failed to access image: %w", err)
 	}
-	defer src.Close()
+	defer func() {
+		if err := src.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close image source: %v\n", err)
+		}
+	}()
 
 	// Get the manifest
 	manifestBytes, manifestType, err := src.GetManifest(ctx, nil)
@@ -186,7 +212,12 @@ func (c *DefaultRegistryClient) GetImageMetadata(ctx context.Context, registryUR
 }
 
 // GetAuthFromSecret retrieves Docker auth config from a Kubernetes secret
-func GetAuthFromSecret(ctx context.Context, k8sClient client.Client, secretRef *automotivev1alpha1.AuthSecretReference, defaultNamespace string) (*types.DockerAuthConfig, error) {
+func GetAuthFromSecret(
+	ctx context.Context,
+	k8sClient client.Client,
+	secretRef *automotivev1alpha1.AuthSecretReference,
+	defaultNamespace string,
+) (*types.DockerAuthConfig, error) {
 	if secretRef == nil {
 		return nil, nil
 	}
@@ -280,7 +311,12 @@ func parseDockerAuth(auth DockerAuth) (*types.DockerAuthConfig, error) {
 }
 
 // VerifyDigest verifies that the image digest matches the expected digest
-func (c *DefaultRegistryClient) VerifyDigest(ctx context.Context, registryURL string, expectedDigest string, auth *types.DockerAuthConfig) (bool, string, error) {
+func (c *DefaultRegistryClient) VerifyDigest(
+	ctx context.Context,
+	registryURL string,
+	expectedDigest string,
+	auth *types.DockerAuthConfig,
+) (bool, string, error) {
 	ref, err := docker.ParseReference("//" + registryURL)
 	if err != nil {
 		return false, "", fmt.Errorf("failed to parse registry URL: %w", err)
@@ -295,7 +331,11 @@ func (c *DefaultRegistryClient) VerifyDigest(ctx context.Context, registryURL st
 	if err != nil {
 		return false, "", fmt.Errorf("failed to access image: %w", err)
 	}
-	defer src.Close()
+	defer func() {
+		if err := src.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close image source: %v\n", err)
+		}
+	}()
 
 	// Get the manifest to compute digest
 	manifestBytes, _, err := src.GetManifest(ctx, nil)
