@@ -14,6 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package catalog provides commands for managing the automotive OS image catalog.
+// It includes operations for adding, listing, retrieving, publishing, removing, and verifying catalog images.
 package catalog
 
 import (
@@ -57,8 +59,14 @@ func newAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&addAuthSecret, "auth-secret", "", "Secret containing registry credentials")
 	cmd.Flags().BoolVar(&addBootc, "bootc", false, "Mark as bootc-compatible")
 
-	cmd.MarkFlagRequired("architecture")
-	cmd.MarkFlagRequired("distro")
+	if err := cmd.MarkFlagRequired("architecture"); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to mark required flag 'architecture': %v\n", err)
+		os.Exit(1)
+	}
+	if err := cmd.MarkFlagRequired("distro"); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to mark required flag 'distro': %v\n", err)
+		os.Exit(1)
+	}
 
 	return cmd
 }
@@ -81,7 +89,7 @@ type targetInfo struct {
 	Verified bool   `json:"verified"`
 }
 
-func runAdd(cmd *cobra.Command, args []string) error {
+func runAdd(_ *cobra.Command, args []string) error {
 	name := args[0]
 	registryURL := args[1]
 
@@ -100,7 +108,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 
 	ns := namespace
 	if ns == "" {
-		ns = "default"
+		ns = defaultNamespace
 	}
 
 	fmt.Printf("Adding image to catalog...\n")
@@ -143,7 +151,11 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to make request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Printf("Warning: failed to close response body: %v\n", err)
+		}
+	}()
 
 	body, _ := io.ReadAll(resp.Body)
 

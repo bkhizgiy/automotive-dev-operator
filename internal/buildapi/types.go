@@ -5,14 +5,19 @@ import (
 	"strings"
 )
 
+// Distro represents the OS distribution to build (e.g., cs9, autosd10-sig).
 type Distro string
 
+// Target represents the hardware target platform (e.g., qemu, raspberry-pi).
 type Target string
 
+// Architecture represents the CPU architecture (e.g., amd64, arm64).
 type Architecture string
 
+// ExportFormat represents the disk image format (e.g., qcow2, raw, simg).
 type ExportFormat string
 
+// Mode represents the build mode (bootc, image, package, or disk).
 type Mode string
 
 const (
@@ -31,11 +36,20 @@ func IsValid(s string) bool {
 	return strings.TrimSpace(s) != ""
 }
 
-func (d Distro) IsValid() bool       { return IsValid(string(d)) }
-func (t Target) IsValid() bool       { return IsValid(string(t)) }
+// IsValid returns true if the distro value is non-empty.
+func (d Distro) IsValid() bool { return IsValid(string(d)) }
+
+// IsValid returns true if the target value is non-empty.
+func (t Target) IsValid() bool { return IsValid(string(t)) }
+
+// IsValid returns true if the architecture value is non-empty.
 func (a Architecture) IsValid() bool { return IsValid(string(a)) }
+
+// IsValid returns true if the export format value is non-empty.
 func (e ExportFormat) IsValid() bool { return IsValid(string(e)) }
-func (m Mode) IsValid() bool         { return IsValid(string(m)) }
+
+// IsValid returns true if the mode value is non-empty.
+func (m Mode) IsValid() bool { return IsValid(string(m)) }
 
 // IsBootc returns true if this is bootc mode
 func (m Mode) IsBootc() bool {
@@ -47,6 +61,7 @@ func (m Mode) IsTraditional() bool {
 	return m == ModeImage || m == ModePackage
 }
 
+// ParseDistro parses a distro string and validates it.
 func ParseDistro(s string) (Distro, error) {
 	d := Distro(s)
 	if !d.IsValid() {
@@ -55,6 +70,7 @@ func ParseDistro(s string) (Distro, error) {
 	return d, nil
 }
 
+// ParseTarget parses a target string and validates it.
 func ParseTarget(s string) (Target, error) {
 	t := Target(s)
 	if !t.IsValid() {
@@ -63,6 +79,7 @@ func ParseTarget(s string) (Target, error) {
 	return t, nil
 }
 
+// ParseArchitecture parses an architecture string and validates it.
 func ParseArchitecture(s string) (Architecture, error) {
 	a := Architecture(s)
 	if !a.IsValid() {
@@ -71,6 +88,7 @@ func ParseArchitecture(s string) (Architecture, error) {
 	return a, nil
 }
 
+// ParseExportFormat parses an export format string and validates it.
 func ParseExportFormat(s string) (ExportFormat, error) {
 	e := ExportFormat(s)
 	if !e.IsValid() {
@@ -79,6 +97,7 @@ func ParseExportFormat(s string) (ExportFormat, error) {
 	return e, nil
 }
 
+// ParseMode parses a mode string, defaulting to bootc if empty.
 func ParseMode(s string) (Mode, error) {
 	m := Mode(s)
 	if !m.IsValid() {
@@ -90,10 +109,11 @@ func ParseMode(s string) (Mode, error) {
 
 // BuildRequest is the payload to create a build via the REST API
 type BuildRequest struct {
-	Name                   string               `json:"name"`
-	Manifest               string               `json:"manifest,omitempty"`
-	ManifestFileName       string               `json:"manifestFileName,omitempty"`
-	ContainerRef           string               `json:"containerRef,omitempty"` // For disk mode: existing container to convert
+	Name             string `json:"name"`
+	Manifest         string `json:"manifest,omitempty"`
+	ManifestFileName string `json:"manifestFileName,omitempty"`
+	// ContainerRef is for disk mode: existing container to convert
+	ContainerRef           string               `json:"containerRef,omitempty"`
 	Distro                 Distro               `json:"distro"`
 	Target                 Target               `json:"target"`
 	Architecture           Architecture         `json:"architecture"`
@@ -114,6 +134,7 @@ type BuildRequest struct {
 	BuilderImage   string `json:"builderImage,omitempty"`   // Custom builder image
 }
 
+// RegistryCredentials contains authentication details for container registries.
 type RegistryCredentials struct {
 	Enabled      bool   `json:"enabled"`
 	AuthType     string `json:"authType"`
@@ -159,7 +180,9 @@ type BuildListItem struct {
 }
 
 type (
-	BuildRequestAlias  = BuildRequest
+	// BuildRequestAlias is an alias for BuildRequest used for backward compatibility.
+	BuildRequestAlias = BuildRequest
+	// BuildListItemAlias is an alias for BuildListItem used for backward compatibility.
 	BuildListItemAlias = BuildListItem
 )
 

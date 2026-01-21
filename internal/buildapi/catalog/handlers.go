@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package catalog provides HTTP handlers for CatalogImage resource management via REST API.
 package catalog
 
 import (
@@ -27,6 +28,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
+)
+
+const (
+	defaultNamespace = "default"
 )
 
 // Handler handles catalog API requests
@@ -63,7 +68,6 @@ func (h *Handler) HandleListCatalogImages(c *gin.Context) {
 	}
 
 	// Build label selector for filtering
-	selector := labels.NewSelector()
 	labelRequirements := []string{}
 
 	if params.Architecture != "" {
@@ -78,8 +82,7 @@ func (h *Handler) HandleListCatalogImages(c *gin.Context) {
 
 	if len(labelRequirements) > 0 {
 		selectorStr := strings.Join(labelRequirements, ",")
-		var err error
-		selector, err = labels.Parse(selectorStr)
+		selector, err := labels.Parse(selectorStr)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid filter parameters", "details": err.Error()})
 			return
@@ -131,7 +134,7 @@ func (h *Handler) HandleListCatalogImages(c *gin.Context) {
 	}
 
 	// Convert to response
-	response := ToCatalogImageListResponse(catalogImages, catalogImages.ListMeta.Continue)
+	response := ToCatalogImageListResponse(catalogImages, catalogImages.Continue)
 	c.JSON(http.StatusOK, response)
 }
 
@@ -142,7 +145,7 @@ func (h *Handler) HandleGetCatalogImage(c *gin.Context) {
 	namespace := c.Query("namespace")
 
 	if namespace == "" {
-		namespace = "default"
+		namespace = defaultNamespace
 	}
 
 	catalogImage := &automotivev1alpha1.CatalogImage{}
@@ -172,7 +175,7 @@ func (h *Handler) HandleCreateCatalogImage(c *gin.Context) {
 	ctx := context.Background()
 	namespace := c.Query("namespace")
 	if namespace == "" {
-		namespace = "default"
+		namespace = defaultNamespace
 	}
 
 	var req CreateCatalogImageRequest
@@ -244,7 +247,7 @@ func (h *Handler) HandleDeleteCatalogImage(c *gin.Context) {
 	namespace := c.Query("namespace")
 
 	if namespace == "" {
-		namespace = "default"
+		namespace = defaultNamespace
 	}
 
 	catalogImage := &automotivev1alpha1.CatalogImage{}
@@ -275,7 +278,7 @@ func (h *Handler) HandleVerifyCatalogImage(c *gin.Context) {
 	namespace := c.Query("namespace")
 
 	if namespace == "" {
-		namespace = "default"
+		namespace = defaultNamespace
 	}
 
 	catalogImage := &automotivev1alpha1.CatalogImage{}
@@ -316,7 +319,9 @@ func (h *Handler) HandlePublishImageBuild(c *gin.Context) {
 
 	// Get the ImageBuild
 	imageBuild := &automotivev1alpha1.ImageBuild{}
-	if err := h.client.Get(ctx, client.ObjectKey{Name: req.ImageBuildName, Namespace: req.ImageBuildNamespace}, imageBuild); err != nil {
+	if err := h.client.Get(
+		ctx, client.ObjectKey{Name: req.ImageBuildName, Namespace: req.ImageBuildNamespace}, imageBuild,
+	); err != nil {
 		if client.IgnoreNotFound(err) == nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "ImageBuild not found"})
 			return

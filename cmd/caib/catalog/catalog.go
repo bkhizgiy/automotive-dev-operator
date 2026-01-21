@@ -20,6 +20,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const (
+	defaultNamespace = "default"
+)
+
 var (
 	serverURL    string
 	authToken    string

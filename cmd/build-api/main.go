@@ -1,8 +1,11 @@
+// Package main provides a REST API server for automotive OS image build operations.
+// It offers endpoints for creating builds, managing the image catalog, and downloading artifacts.
 package main
 
 import (
 	"context"
 	"flag"
+	"log"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -31,7 +34,9 @@ func main() {
 
 	// Set kubeconfig from flag if provided
 	if *kubeconfigPath != "" {
-		os.Setenv("KUBECONFIG", *kubeconfigPath)
+		if err := os.Setenv("KUBECONFIG", *kubeconfigPath); err != nil {
+			log.Fatalf("Failed to set KUBECONFIG environment variable: %v", err)
+		}
 	}
 
 	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
@@ -48,12 +53,16 @@ func main() {
 	}
 
 	if *namespace != "" {
-		os.Setenv("BUILD_API_NAMESPACE", *namespace)
+		if err := os.Setenv("BUILD_API_NAMESPACE", *namespace); err != nil {
+			log.Fatalf("Failed to set BUILD_API_NAMESPACE environment variable: %v", err)
+		}
 	}
 
 	// Set Gin mode for development/testing
 	if os.Getenv("GIN_MODE") == "" {
-		os.Setenv("GIN_MODE", "debug")
+		if err := os.Setenv("GIN_MODE", "debug"); err != nil {
+			log.Fatalf("Failed to set GIN_MODE environment variable: %v", err)
+		}
 	}
 
 	// Load API limits from OperatorConfig
@@ -96,7 +105,8 @@ func loadLimitsFromOperatorConfig(namespace string, logger logr.Logger) buildapi
 	}
 
 	operatorConfig := &automotivev1alpha1.OperatorConfig{}
-	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "config", Namespace: namespace}, operatorConfig); err != nil {
+	key := types.NamespacedName{Name: "config", Namespace: namespace}
+	if err := k8sClient.Get(context.Background(), key, operatorConfig); err != nil {
 		logger.Info("could not get OperatorConfig, using default limits", "error", err)
 		return buildapi.DefaultAPILimits()
 	}

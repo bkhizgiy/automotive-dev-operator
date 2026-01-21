@@ -36,6 +36,22 @@ import (
 	authnv1 "k8s.io/api/authentication/v1"
 )
 
+const (
+	// Build phase constants
+	phaseCompleted = "Completed"
+	phaseFailed    = "Failed"
+
+	// Image format and compression constants
+	formatImage     = "image"
+	formatQcow2     = "qcow2"
+	compressionGzip = "gzip"
+	extensionRaw    = ".raw"
+	extensionQcow2  = ".qcow2"
+	statusUnknown   = "unknown"
+	statusMissing   = "MISSING"
+	buildAPIName    = "ado-build-api"
+)
+
 // APILimits holds configurable limits for the API server
 type APILimits struct {
 	MaxManifestSize             int64
@@ -54,6 +70,7 @@ func DefaultAPILimits() APILimits {
 	}
 }
 
+// APIServer provides the REST API for build operations.
 type APIServer struct {
 	server *http.Server
 	router *gin.Engine
@@ -103,6 +120,51 @@ func LoadLimitsFromConfig(cfg *automotivev1alpha1.BuildAPIConfig) APILimits {
 		limits.MaxLogStreamDurationMinutes = cfg.MaxLogStreamDurationMinutes
 	}
 	return limits
+}
+
+// safeFilename validates that a filename is safe for use in shell commands
+// It only allows alphanumeric characters, dots, hyphens, underscores, and single forward slashes for paths
+func safeFilename(filename string) bool {
+	if filename == "" {
+		return false
+	}
+
+	// Reject dangerous characters that could be used for command injection
+	for _, char := range filename {
+		switch char {
+		case 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
+			'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+			'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+			'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+			'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+			'.', '-', '_', '/':
+			// Safe characters
+			continue
+		default:
+			// Reject any other character including quotes, semicolons, backticks, pipes, etc.
+			return false
+		}
+	}
+
+	// Reject path traversal attempts
+	if strings.Contains(filename, "..") {
+		return false
+	}
+
+	// Reject absolute paths (should be relative)
+	if strings.HasPrefix(filename, "/") {
+		return false
+	}
+
+	// Reject filenames that are just dots or empty components after splitting
+	parts := strings.Split(filename, "/")
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return false
+		}
+	}
+
+	return true
 }
 
 // Start implements manager.Runnable
@@ -290,6 +352,114 @@ func (a *APIServer) handleUploadFiles(c *gin.Context) {
 	a.uploadFiles(c, name)
 }
 
+// setupLogStreamHeaders configures HTTP headers for log streaming
+func setupLogStreamHeaders(c *gin.Context) {
+	c.Writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	c.Writer.Header().Set("Transfer-Encoding", "chunked")
+	c.Writer.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.Header().Set("X-Content-Type-Options", "nosniff")
+	c.Writer.Header().Set("Pragma", "no-cache")
+	c.Writer.WriteHeader(http.StatusOK)
+	_, _ = c.Writer.Write([]byte("Waiting for logs...\n"))
+	c.Writer.Flush()
+}
+
+// getStepContainerNames returns container names for pipeline steps
+func getStepContainerNames(pod corev1.Pod) []string {
+	stepNames := make([]string, 0, len(pod.Spec.Containers))
+	for _, cont := range pod.Spec.Containers {
+		if strings.HasPrefix(cont.Name, "step-") {
+			stepNames = append(stepNames, cont.Name)
+		}
+	}
+	if len(stepNames) == 0 {
+		for _, cont := range pod.Spec.Containers {
+			stepNames = append(stepNames, cont.Name)
+		}
+	}
+	return stepNames
+}
+
+// streamContainerLogs streams logs from a single container
+func streamContainerLogs(
+	ctx context.Context, c *gin.Context, cs *kubernetes.Clientset,
+	namespace, podName, containerName, taskName string, sinceTime *metav1.Time,
+) {
+	req := cs.CoreV1().Pods(namespace).GetLogs(
+		podName, &corev1.PodLogOptions{Container: containerName, Follow: true, SinceTime: sinceTime},
+	)
+	stream, err := req.Stream(ctx)
+	if err != nil {
+		return
+	}
+
+	_, _ = c.Writer.Write([]byte(
+		"\n===== Logs from " + taskName + "/" + strings.TrimPrefix(containerName, "step-") + " =====\n\n",
+	))
+	c.Writer.Flush()
+
+	defer func() {
+		if err := stream.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close stream: %v\n", err)
+		}
+	}()
+
+	scanner := bufio.NewScanner(stream)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		line := scanner.Bytes()
+		if _, writeErr := c.Writer.Write(line); writeErr != nil {
+			return
+		}
+		if _, writeErr := c.Writer.Write([]byte("\n")); writeErr != nil {
+			return
+		}
+		c.Writer.Flush()
+	}
+
+	if err := scanner.Err(); err != nil && err != io.EOF {
+		var errMsg []byte
+		errMsg = fmt.Appendf(errMsg, "\n[Stream error: %v]\n", err)
+		_, _ = c.Writer.Write(errMsg)
+		c.Writer.Flush()
+	}
+}
+
+// processPodLogs processes logs for all containers in a pod
+func processPodLogs(
+	ctx context.Context, c *gin.Context, cs *kubernetes.Clientset,
+	pod corev1.Pod, namespace string, sinceTime *metav1.Time,
+	streamedContainers map[string]bool, hadStream *bool,
+) {
+	stepNames := getStepContainerNames(pod)
+	taskName := pod.Labels["tekton.dev/pipelineTask"]
+	if taskName == "" {
+		taskName = pod.Name
+	}
+
+	for _, cName := range stepNames {
+		if streamedContainers[cName] {
+			continue
+		}
+
+		if !*hadStream {
+			c.Writer.Flush()
+		}
+		*hadStream = true
+
+		streamContainerLogs(ctx, c, cs, namespace, pod.Name, cName, taskName, sinceTime)
+		streamedContainers[cName] = true
+	}
+}
+
 func (a *APIServer) streamLogs(c *gin.Context, name string) {
 	namespace := resolveNamespace()
 
@@ -299,14 +469,10 @@ func (a *APIServer) streamLogs(c *gin.Context, name string) {
 		return
 	}
 
-	// Parse optional 'since' parameter to prevent log replay on reconnect
 	sinceTime := parseSinceTime(c.Query("since"))
-
-	// Limit maximum streaming duration
 	streamDuration := time.Duration(a.limits.MaxLogStreamDurationMinutes) * time.Minute
 	ctx, cancel := context.WithTimeout(c.Request.Context(), streamDuration)
 	defer cancel()
-	var podName string
 
 	ib := &automotivev1alpha1.ImageBuild{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, ib); err != nil {
@@ -317,13 +483,13 @@ func (a *APIServer) streamLogs(c *gin.Context, name string) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
 	tr := strings.TrimSpace(ib.Status.PipelineRunName)
 	if tr == "" {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "logs not available yet"})
 		return
 	}
 
-	// Get REST config and create Kubernetes clientset
 	restCfg, err := getRESTConfigFromRequest(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -335,25 +501,11 @@ func (a *APIServer) streamLogs(c *gin.Context, name string) {
 		return
 	}
 
-	// Set up streaming response with anti-buffering headers
-	c.Writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	c.Writer.Header().Set("Transfer-Encoding", "chunked")
-	c.Writer.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	c.Writer.Header().Set("Connection", "keep-alive")
-	c.Writer.Header().Set("X-Accel-Buffering", "no") // nginx
-	c.Writer.Header().Set("X-Content-Type-Options", "nosniff")
-	c.Writer.Header().Set("Pragma", "no-cache") // HTTP/1.0 compat
-
-	c.Writer.WriteHeader(http.StatusOK)
-	_, _ = c.Writer.Write([]byte("Waiting for logs...\n"))
-	c.Writer.Flush()
+	setupLogStreamHeaders(c)
 
 	pipelineRunSelector := "tekton.dev/pipelineRun=" + tr + ",tekton.dev/memberOf=tasks"
-
 	var hadStream bool
-	// Track streamed containers per pod: map[podName]map[containerName]bool
 	streamedContainers := make(map[string]map[string]bool)
-	// Track completed pods
 	completedPods := make(map[string]bool)
 
 	for {
@@ -363,17 +515,17 @@ func (a *APIServer) streamLogs(c *gin.Context, name string) {
 		default:
 		}
 
-		// List all pods for this PipelineRun
 		pods, err := cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: pipelineRunSelector})
 		if err != nil {
-			fmt.Fprintf(c.Writer, "\n[Error listing pods: %v]\n", err)
+			if _, writeErr := fmt.Fprintf(c.Writer, "\n[Error listing pods: %v]\n", err); writeErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to write error message: %v\n", writeErr)
+			}
 			c.Writer.Flush()
 			time.Sleep(2 * time.Second)
 			continue
 		}
 
 		if len(pods.Items) == 0 {
-			// No pods yet, keep waiting
 			if !hadStream {
 				_, _ = c.Writer.Write([]byte("."))
 				c.Writer.Flush()
@@ -382,112 +534,33 @@ func (a *APIServer) streamLogs(c *gin.Context, name string) {
 			continue
 		}
 
-		// Process each pod
 		allPodsComplete := true
 		for _, pod := range pods.Items {
-			podName = pod.Name
-
-			// Skip already completed pods
-			if completedPods[podName] {
+			if completedPods[pod.Name] {
 				continue
 			}
 
-			// Initialize container tracking for this pod
-			if streamedContainers[podName] == nil {
-				streamedContainers[podName] = make(map[string]bool)
+			if streamedContainers[pod.Name] == nil {
+				streamedContainers[pod.Name] = make(map[string]bool)
 			}
 
-			// Get step containers
-			stepNames := make([]string, 0, len(pod.Spec.Containers))
-			for _, cont := range pod.Spec.Containers {
-				if strings.HasPrefix(cont.Name, "step-") {
-					stepNames = append(stepNames, cont.Name)
-				}
-			}
-			if len(stepNames) == 0 {
-				for _, cont := range pod.Spec.Containers {
-					stepNames = append(stepNames, cont.Name)
-				}
-			}
+			processPodLogs(ctx, c, cs, pod, namespace, sinceTime, streamedContainers[pod.Name], &hadStream)
 
-			// Stream logs from each container
-			for _, cName := range stepNames {
-				if streamedContainers[podName][cName] {
-					continue
-				}
-
-				req := cs.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{Container: cName, Follow: true, SinceTime: sinceTime})
-				stream, err := req.Stream(ctx)
-				if err != nil {
-					// Container might not be ready yet
-					continue
-				}
-
-				if !hadStream {
-					c.Writer.Flush()
-				}
-				hadStream = true
-
-				// Show which task/step we're streaming from
-				taskName := pod.Labels["tekton.dev/pipelineTask"]
-				if taskName == "" {
-					taskName = podName
-				}
-				_, _ = c.Writer.Write([]byte("\n===== Logs from " + taskName + "/" + strings.TrimPrefix(cName, "step-") + " =====\n\n"))
-				c.Writer.Flush()
-
-				// Stream line-by-line for real-time output
-				func() {
-					defer stream.Close()
-					scanner := bufio.NewScanner(stream)
-					// Increase max line size to handle long log lines
-					scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-					for scanner.Scan() {
-						select {
-						case <-ctx.Done():
-							return
-						default:
-						}
-						line := scanner.Bytes()
-						if _, writeErr := c.Writer.Write(line); writeErr != nil {
-							return
-						}
-						if _, writeErr := c.Writer.Write([]byte("\n")); writeErr != nil {
-							return
-						}
-						c.Writer.Flush()
-					}
-					if err := scanner.Err(); err != nil && err != io.EOF {
-						var errMsg []byte
-						errMsg = fmt.Appendf(errMsg, "\n[Stream error: %v]\n", err)
-						_, _ = c.Writer.Write(errMsg)
-						c.Writer.Flush()
-					}
-				}()
-
-				streamedContainers[podName][cName] = true
-			}
-
-			// Check if this pod is complete
-			if len(streamedContainers[podName]) == len(stepNames) &&
+			stepNames := getStepContainerNames(pod)
+			if len(streamedContainers[pod.Name]) == len(stepNames) &&
 				(pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed) {
-				completedPods[podName] = true
+				completedPods[pod.Name] = true
 			} else {
 				allPodsComplete = false
 			}
 		}
 
-		// Check if build is complete by looking at ImageBuild status
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, ib); err == nil {
-			if ib.Status.Phase == "Completed" || ib.Status.Phase == "Failed" {
-				// Build is done, stop streaming
+			if ib.Status.Phase == phaseCompleted || ib.Status.Phase == phaseFailed {
 				break
 			}
 		}
 
-		// Don't break based on pod completion - rely on ImageBuild status.
-		// There can be gaps between tasks where new pods haven't started yet.
-		// Only sleep if we haven't streamed anything yet (waiting for first pod)
 		if !hadStream || allPodsComplete {
 			time.Sleep(2 * time.Second)
 		}
@@ -509,7 +582,9 @@ func (a *APIServer) streamLogs(c *gin.Context, name string) {
 	}
 }
 
-func createRegistrySecret(ctx context.Context, k8sClient client.Client, namespace, buildName string, creds *RegistryCredentials) (string, error) {
+func createRegistrySecret(
+	ctx context.Context, k8sClient client.Client, namespace, buildName string, creds *RegistryCredentials,
+) (string, error) {
 	if creds == nil || !creds.Enabled {
 		return "", nil
 	}
@@ -579,7 +654,9 @@ func createRegistrySecret(ctx context.Context, k8sClient client.Client, namespac
 }
 
 // createPushSecret creates a kubernetes.io/dockerconfigjson secret for pushing artifacts to a registry
-func createPushSecret(ctx context.Context, k8sClient client.Client, namespace, buildName string, creds *RegistryCredentials) (string, error) {
+func createPushSecret(
+	ctx context.Context, k8sClient client.Client, namespace, buildName string, creds *RegistryCredentials,
+) (string, error) {
 	if creds == nil || !creds.Enabled {
 		return "", fmt.Errorf("registry credentials are required for push")
 	}
@@ -691,50 +768,38 @@ func validateBuildName(name string) error {
 	return validateInput(name, "build name", 253, false, "/")
 }
 
-func (a *APIServer) createBuild(c *gin.Context) {
-	var req BuildRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON request"})
-		return
-	}
-
-	needsUpload := strings.Contains(req.Manifest, "source_path")
-
-	// Validate build name
+// validateBuildRequest validates the build request and applies defaults
+func validateBuildRequest(req *BuildRequest, maxManifestSize int64) error {
 	if err := validateBuildName(req.Name); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+		return err
 	}
 
-	// Validate manifest size
-	if int64(len(req.Manifest)) > a.limits.MaxManifestSize {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("manifest too large (max %d bytes)", a.limits.MaxManifestSize)})
-		return
+	if int64(len(req.Manifest)) > maxManifestSize {
+		return fmt.Errorf("manifest too large (max %d bytes)", maxManifestSize)
 	}
 
-	// Validate mode-specific requirements
 	if req.Mode == ModeDisk {
 		if req.ContainerRef == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "container-ref is required for disk mode"})
-			return
+			return fmt.Errorf("container-ref is required for disk mode")
 		}
 		if err := validateContainerRef(req.ContainerRef); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
+			return err
 		}
 	} else if req.Manifest == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "manifest is required"})
-		return
+		return fmt.Errorf("manifest is required")
 	}
 
-	// Validate optional container references
 	for field, value := range map[string]string{"container-push": req.ContainerPush, "export-oci": req.ExportOCI} {
 		if err := validateContainerRef(value); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid %s: %v", field, err)})
-			return
+			return fmt.Errorf("invalid %s: %v", field, err)
 		}
 	}
 
+	return nil
+}
+
+// applyBuildDefaults sets default values for build request fields
+func applyBuildDefaults(req *BuildRequest) error {
 	if req.Distro == "" {
 		req.Distro = "cs9"
 	}
@@ -745,39 +810,31 @@ func (a *APIServer) createBuild(c *gin.Context) {
 		req.Architecture = "arm64"
 	}
 	if req.ExportFormat == "" {
-		req.ExportFormat = "image"
+		req.ExportFormat = formatImage
 	}
 	if req.Mode == "" {
 		req.Mode = ModeBootc
 	}
-
 	if strings.TrimSpace(req.Compression) == "" {
-		req.Compression = "gzip"
+		req.Compression = compressionGzip
 	}
-	if req.Compression != "lz4" && req.Compression != "gzip" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid compression: must be lz4 or gzip"})
-		return
+	if req.Compression != "lz4" && req.Compression != compressionGzip {
+		return fmt.Errorf("invalid compression: must be lz4 or gzip")
 	}
-
 	if !req.Distro.IsValid() {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "distro cannot be empty"})
-		return
+		return fmt.Errorf("distro cannot be empty")
 	}
 	if !req.Target.IsValid() {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "target cannot be empty"})
-		return
+		return fmt.Errorf("target cannot be empty")
 	}
 	if !req.Architecture.IsValid() {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "architecture cannot be empty"})
-		return
+		return fmt.Errorf("architecture cannot be empty")
 	}
 	if !req.ExportFormat.IsValid() {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "exportFormat cannot be empty"})
-		return
+		return fmt.Errorf("exportFormat cannot be empty")
 	}
 	if !req.Mode.IsValid() {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "mode cannot be empty"})
-		return
+		return fmt.Errorf("mode cannot be empty")
 	}
 	if req.AutomotiveImageBuilder == "" {
 		req.AutomotiveImageBuilder = "quay.io/centos-sig-automotive/automotive-image-builder:1.0.0"
@@ -785,27 +842,14 @@ func (a *APIServer) createBuild(c *gin.Context) {
 	if req.ManifestFileName == "" {
 		req.ManifestFileName = "manifest.aib.yml"
 	}
+	return nil
+}
 
-	k8sClient, err := getClientFromRequest(c)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
-		return
-	}
-
-	ctx := c.Request.Context()
-	namespace := resolveNamespace()
-
-	requestedBy := resolveRequester(c)
-
-	existing := &automotivev1alpha1.ImageBuild{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: namespace}, existing); err == nil {
-		c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("ImageBuild %s already exists", req.Name)})
-		return
-	} else if !k8serrors.IsNotFound(err) {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error checking existing build: %v", err)})
-		return
-	}
-
+// createManifestConfigMap creates a ConfigMap for the build manifest
+func createManifestConfigMap(
+	ctx context.Context, k8sClient client.Client,
+	namespace string, req *BuildRequest,
+) (string, error) {
 	cfgName := fmt.Sprintf("%s-manifest", req.Name)
 	cmData := map[string]string{req.ManifestFileName: req.Manifest}
 
@@ -829,8 +873,93 @@ func (a *APIServer) createBuild(c *gin.Context) {
 		},
 		Data: cmData,
 	}
+
 	if err := k8sClient.Create(ctx, cm); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error creating manifest ConfigMap: %v", err)})
+		return "", fmt.Errorf("error creating manifest ConfigMap: %w", err)
+	}
+
+	return cfgName, nil
+}
+
+// setupBuildSecrets creates necessary secrets for the build
+func setupBuildSecrets(
+	ctx context.Context, k8sClient client.Client,
+	namespace string, req *BuildRequest,
+) (envSecretRef, pushSecretName string, err error) {
+	if req.RegistryCredentials != nil && req.RegistryCredentials.Enabled {
+		envSecretRef, err = createRegistrySecret(ctx, k8sClient, namespace, req.Name, req.RegistryCredentials)
+		if err != nil {
+			return "", "", fmt.Errorf("error creating registry secret: %w", err)
+		}
+	}
+
+	if req.PushRepository != "" {
+		if req.RegistryCredentials == nil || !req.RegistryCredentials.Enabled {
+			return "", "", fmt.Errorf("registry credentials are required when push repository is specified")
+		}
+		pushSecretName, err = createPushSecret(ctx, k8sClient, namespace, req.Name, req.RegistryCredentials)
+		if err != nil {
+			return "", "", fmt.Errorf("error creating push secret: %w", err)
+		}
+	}
+
+	return envSecretRef, pushSecretName, nil
+}
+
+// buildPublishersConfig creates Publishers configuration if needed
+func buildPublishersConfig(pushRepository, pushSecretName string) *automotivev1alpha1.Publishers {
+	if pushRepository == "" {
+		return nil
+	}
+	return &automotivev1alpha1.Publishers{
+		Registry: &automotivev1alpha1.RegistryPublisher{
+			RepositoryURL: pushRepository,
+			Secret:        pushSecretName,
+		},
+	}
+}
+
+func (a *APIServer) createBuild(c *gin.Context) {
+	var req BuildRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON request"})
+		return
+	}
+
+	needsUpload := strings.Contains(req.Manifest, "source_path")
+
+	if err := validateBuildRequest(&req, a.limits.MaxManifestSize); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := applyBuildDefaults(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	k8sClient, err := getClientFromRequest(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
+		return
+	}
+
+	ctx := c.Request.Context()
+	namespace := resolveNamespace()
+	requestedBy := resolveRequester(c)
+
+	existing := &automotivev1alpha1.ImageBuild{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: namespace}, existing); err == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("ImageBuild %s already exists", req.Name)})
+		return
+	} else if !k8serrors.IsNotFound(err) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error checking existing build: %v", err)})
+		return
+	}
+
+	cfgName, err := createManifestConfigMap(ctx, k8sClient, namespace, &req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -853,37 +982,13 @@ func (a *APIServer) createBuild(c *gin.Context) {
 		}
 	}
 
-	var envSecretRef string
-	if req.RegistryCredentials != nil && req.RegistryCredentials.Enabled {
-		secretName, err := createRegistrySecret(ctx, k8sClient, namespace, req.Name, req.RegistryCredentials)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error creating registry secret: %v", err)})
-			return
-		}
-		envSecretRef = secretName
+	envSecretRef, pushSecretName, err := setupBuildSecrets(ctx, k8sClient, namespace, &req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
 
-	// Handle push configuration
-	var publishers *automotivev1alpha1.Publishers
-	var pushSecretName string
-	if req.PushRepository != "" {
-		if req.RegistryCredentials == nil || !req.RegistryCredentials.Enabled {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "registry credentials are required when push repository is specified"})
-			return
-		}
-		var err error
-		pushSecretName, err = createPushSecret(ctx, k8sClient, namespace, req.Name, req.RegistryCredentials)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error creating push secret: %v", err)})
-			return
-		}
-		publishers = &automotivev1alpha1.Publishers{
-			Registry: &automotivev1alpha1.RegistryPublisher{
-				RepositoryURL: req.PushRepository,
-				Secret:        pushSecretName,
-			},
-		}
-	}
+	publishers := buildPublishersConfig(req.PushRepository, pushSecretName)
 
 	imageBuild := &automotivev1alpha1.ImageBuild{
 		ObjectMeta: metav1.ObjectMeta{
@@ -924,18 +1029,29 @@ func (a *APIServer) createBuild(c *gin.Context) {
 
 	// Set owner references for cascading deletion
 	if err := setConfigMapOwnerRef(ctx, k8sClient, namespace, cfgName, imageBuild); err != nil {
-		log.Printf("WARNING: failed to set owner reference on ConfigMap %s: %v (cleanup may require manual intervention)", cfgName, err)
+		log.Printf(
+			"WARNING: failed to set owner reference on ConfigMap %s: %v (cleanup may require manual intervention)",
+			cfgName, err,
+		)
 	}
 
 	if envSecretRef != "" {
 		if err := setSecretOwnerRef(ctx, k8sClient, namespace, envSecretRef, imageBuild); err != nil {
-			log.Printf("WARNING: failed to set owner reference on registry secret %s: %v (cleanup may require manual intervention)", envSecretRef, err)
+			log.Printf(
+				"WARNING: failed to set owner reference on registry secret %s: %v "+
+					"(cleanup may require manual intervention)",
+				envSecretRef, err,
+			)
 		}
 	}
 
 	if pushSecretName != "" {
 		if err := setSecretOwnerRef(ctx, k8sClient, namespace, pushSecretName, imageBuild); err != nil {
-			log.Printf("WARNING: failed to set owner reference on push secret %s: %v (cleanup may require manual intervention)", pushSecretName, err)
+			log.Printf(
+				"WARNING: failed to set owner reference on push secret %s: %v "+
+					"(cleanup may require manual intervention)",
+				pushSecretName, err,
+			)
 		}
 	}
 
@@ -967,17 +1083,17 @@ func listBuilds(c *gin.Context) {
 	for _, b := range list.Items {
 		var startStr, compStr string
 		if b.Status.StartTime != nil {
-			startStr = b.Status.StartTime.Time.Format(time.RFC3339)
+			startStr = b.Status.StartTime.Format(time.RFC3339)
 		}
 		if b.Status.CompletionTime != nil {
-			compStr = b.Status.CompletionTime.Time.Format(time.RFC3339)
+			compStr = b.Status.CompletionTime.Format(time.RFC3339)
 		}
 		resp = append(resp, BuildListItem{
 			Name:           b.Name,
 			Phase:          b.Status.Phase,
 			Message:        b.Status.Message,
 			RequestedBy:    b.Annotations["automotive.sdv.cloud.redhat.com/requested-by"],
-			CreatedAt:      b.CreationTimestamp.Time.Format(time.RFC3339),
+			CreatedAt:      b.CreationTimestamp.Format(time.RFC3339),
 			StartTime:      startStr,
 			CompletionTime: compStr,
 		})
@@ -1040,13 +1156,13 @@ func getBuild(c *gin.Context, name string) {
 		ArtifactFileName: strings.TrimSpace(build.Status.ArtifactFileName),
 		StartTime: func() string {
 			if build.Status.StartTime != nil {
-				return build.Status.StartTime.Time.Format(time.RFC3339)
+				return build.Status.StartTime.Format(time.RFC3339)
 			}
 			return ""
 		}(),
 		CompletionTime: func() string {
 			if build.Status.CompletionTime != nil {
-				return build.Status.CompletionTime.Time.Format(time.RFC3339)
+				return build.Status.CompletionTime.Format(time.RFC3339)
 			}
 			return ""
 		}(),
@@ -1075,7 +1191,8 @@ func getBuildTemplate(c *gin.Context, name string) {
 	}
 
 	cm := &corev1.ConfigMap{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: build.Spec.ManifestConfigMap, Namespace: namespace}, cm); err != nil {
+	manifestKey := types.NamespacedName{Name: build.Spec.ManifestConfigMap, Namespace: namespace}
+	if err := k8sClient.Get(ctx, manifestKey, cm); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error fetching manifest config: %v", err)})
 		return
 	}
@@ -1142,7 +1259,8 @@ func (a *APIServer) uploadFiles(c *gin.Context, name string) {
 		return
 	}
 	build := &automotivev1alpha1.ImageBuild{}
-	if err := k8sClient.Get(c.Request.Context(), types.NamespacedName{Name: name, Namespace: namespace}, build); err != nil {
+	buildKey := types.NamespacedName{Name: name, Namespace: namespace}
+	if err := k8sClient.Get(c.Request.Context(), buildKey, build); err != nil {
 		if k8serrors.IsNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 			return
@@ -1177,7 +1295,8 @@ func (a *APIServer) uploadFiles(c *gin.Context, name string) {
 	}
 
 	if c.Request.ContentLength > a.limits.MaxTotalUploadSize {
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": fmt.Sprintf("upload too large (max %d bytes)", a.limits.MaxTotalUploadSize)})
+		errMsg := fmt.Sprintf("upload too large (max %d bytes)", a.limits.MaxTotalUploadSize)
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": errMsg})
 		return
 	}
 
@@ -1212,6 +1331,12 @@ func (a *APIServer) uploadFiles(c *gin.Context, name string) {
 			return
 		}
 
+		// Validate filename for security - prevent command injection
+		if !safeFilename(dest) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid destination filename: %s", dest)})
+			return
+		}
+
 		cleanDest := path.Clean(dest)
 		if strings.HasPrefix(cleanDest, "..") || strings.HasPrefix(cleanDest, "/") {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid destination path: %s", dest)})
@@ -1225,9 +1350,15 @@ func (a *APIServer) uploadFiles(c *gin.Context, name string) {
 		}
 
 		tmpName := tmp.Name()
-		defer tmp.Close()
 		defer func() {
-			_ = os.Remove(tmpName)
+			if err := tmp.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to close temp file: %v\n", err)
+			}
+		}()
+		defer func() {
+			if err := os.Remove(tmpName); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to remove temp file: %v\n", err)
+			}
 		}()
 
 		limitedReader := io.LimitReader(part, a.limits.MaxUploadFileSize+1)
@@ -1237,17 +1368,22 @@ func (a *APIServer) uploadFiles(c *gin.Context, name string) {
 			return
 		}
 		if n > a.limits.MaxUploadFileSize {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": fmt.Sprintf("file %s exceeds maximum size (%d bytes)", dest, a.limits.MaxUploadFileSize)})
+			errMsg := fmt.Sprintf("file %s exceeds maximum size (%d bytes)", dest, a.limits.MaxUploadFileSize)
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": errMsg})
 			return
 		}
 
 		totalBytesUploaded += n
 		if totalBytesUploaded > a.limits.MaxTotalUploadSize {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": fmt.Sprintf("total upload size exceeds maximum (%d bytes)", a.limits.MaxTotalUploadSize)})
+			errMsg := fmt.Sprintf("total upload size exceeds maximum (%d bytes)", a.limits.MaxTotalUploadSize)
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": errMsg})
 			return
 		}
 
-		if err := copyFileToPod(restCfg, namespace, uploadPod.Name, uploadPod.Spec.Containers[0].Name, tmpName, "/workspace/shared/"+cleanDest); err != nil {
+		destPath := "/workspace/shared/" + cleanDest
+		if err := copyFileToPod(
+			restCfg, namespace, uploadPod.Name, uploadPod.Spec.Containers[0].Name, tmpName, destPath,
+		); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("stream to pod failed: %v", err)})
 			return
 		}
@@ -1286,7 +1422,7 @@ func (a *APIServer) listArtifacts(c *gin.Context, name string) {
 		return
 	}
 
-	if build.Status.Phase != "Completed" {
+	if build.Status.Phase != phaseCompleted {
 		c.JSON(http.StatusConflict, gin.H{"error": "artifact not available until build completes"})
 		return
 	}
@@ -1295,14 +1431,20 @@ func (a *APIServer) listArtifacts(c *gin.Context, name string) {
 	if artifactFileName == "" {
 		var ext string
 		switch build.Spec.ExportFormat {
-		case "image":
-			ext = ".raw"
-		case "qcow2":
-			ext = ".qcow2"
+		case formatImage:
+			ext = extensionRaw
+		case formatQcow2:
+			ext = extensionQcow2
 		default:
 			ext = "." + build.Spec.ExportFormat
 		}
 		artifactFileName = fmt.Sprintf("%s-%s%s", build.Spec.Distro, build.Spec.Target, ext)
+	}
+
+	// Validate filename for security - prevent command injection
+	if !safeFilename(artifactFileName) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid artifact filename"})
+		return
 	}
 
 	artifactPod, err := findReadyArtifactPod(ctx, k8sClient, namespace, name, time.Now().Add(2*time.Minute))
@@ -1322,6 +1464,7 @@ func (a *APIServer) listArtifacts(c *gin.Context, name string) {
 		return
 	}
 
+	// Use safe command construction without shell interpolation
 	partsDir := "/workspace/shared/" + artifactFileName + "-parts"
 	listReq := clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
@@ -1330,9 +1473,16 @@ func (a *APIServer) listArtifacts(c *gin.Context, name string) {
 		SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
 			Container: "fileserver",
-			Command:   []string{"sh", "-c", "set -e; dir=\"" + partsDir + "\"; if [ ! -d \"$dir\" ]; then echo MISSING; exit 0; fi; for f in \"$dir\"/*; do [ -f \"$f\" ] || continue; n=$(basename \"$f\"); s=$(wc -c < \"$f\"); printf '%s:%s\\n' \"$n\" \"$s\"; done"},
-			Stdout:    true,
-			Stderr:    true,
+			Command: []string{
+				"sh", "-c",
+				"set -e; " +
+					"if [ ! -d \"$1\" ]; then echo MISSING; exit 0; fi; " +
+					"for f in \"$1\"/*; do [ -f \"$f\" ] || continue; " +
+					"n=$(basename \"$f\"); s=$(wc -c < \"$f\"); printf '%s:%s\\n' \"$n\" \"$s\"; done",
+				"--", partsDir,
+			},
+			Stdout: true,
+			Stderr: true,
 		}, kscheme.ParameterCodec)
 	listExec, err := remotecommand.NewSPDYExecutor(restCfg, http.MethodPost, listReq.URL())
 	if err != nil {
@@ -1345,7 +1495,7 @@ func (a *APIServer) listArtifacts(c *gin.Context, name string) {
 		return
 	}
 	trim := strings.TrimSpace(out.String())
-	if trim == "" || trim == "MISSING" {
+	if trim == "" || trim == statusMissing {
 		// No parts available
 		writeJSON(c, http.StatusOK, map[string]any{"items": []any{}})
 		return
@@ -1370,7 +1520,8 @@ func (a *APIServer) streamArtifactPart(c *gin.Context, name, file string) {
 	namespace := resolveNamespace()
 	ctx := c.Request.Context()
 
-	if strings.Contains(file, "/") || strings.Contains(file, "..") || strings.TrimSpace(file) == "" {
+	// Validate file parameter for security - prevent command injection
+	if !safeFilename(file) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid file name"})
 		return
 	}
@@ -1391,7 +1542,7 @@ func (a *APIServer) streamArtifactPart(c *gin.Context, name, file string) {
 		return
 	}
 
-	if build.Status.Phase != "Completed" {
+	if build.Status.Phase != phaseCompleted {
 		c.JSON(http.StatusConflict, gin.H{"error": "artifact not available until build completes"})
 		return
 	}
@@ -1400,14 +1551,20 @@ func (a *APIServer) streamArtifactPart(c *gin.Context, name, file string) {
 	if artifactFileName == "" {
 		var ext string
 		switch build.Spec.ExportFormat {
-		case "image":
-			ext = ".raw"
-		case "qcow2":
-			ext = ".qcow2"
+		case formatImage:
+			ext = extensionRaw
+		case formatQcow2:
+			ext = extensionQcow2
 		default:
 			ext = "." + build.Spec.ExportFormat
 		}
 		artifactFileName = fmt.Sprintf("%s-%s%s", build.Spec.Distro, build.Spec.Target, ext)
+	}
+
+	// Validate filename for security - prevent command injection
+	if !safeFilename(artifactFileName) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid artifact filename"})
+		return
 	}
 
 	artifactPod, err := findReadyArtifactPod(ctx, k8sClient, namespace, name, time.Now().Add(2*time.Minute))
@@ -1427,8 +1584,8 @@ func (a *APIServer) streamArtifactPart(c *gin.Context, name, file string) {
 		return
 	}
 
+	// Use safe command construction without shell interpolation
 	gzPath := "/workspace/shared/" + artifactFileName + "-parts/" + file
-	// Check existence and size
 	sizeReq := clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(artifactPod.Name).
@@ -1436,9 +1593,13 @@ func (a *APIServer) streamArtifactPart(c *gin.Context, name, file string) {
 		SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
 			Container: "fileserver",
-			Command:   []string{"sh", "-c", "if [ -f \"" + gzPath + "\" ]; then wc -c < \"" + gzPath + "\"; else echo MISSING; fi"},
-			Stdout:    true,
-			Stderr:    true,
+			Command: []string{
+				"sh", "-c",
+				"if [ -f \"$1\" ]; then wc -c < \"$1\"; else echo MISSING; fi",
+				"--", gzPath,
+			},
+			Stdout: true,
+			Stderr: true,
 		}, kscheme.ParameterCodec)
 	sizeExec, err := remotecommand.NewSPDYExecutor(restCfg, http.MethodPost, sizeReq.URL())
 	if err != nil {
@@ -1446,12 +1607,13 @@ func (a *APIServer) streamArtifactPart(c *gin.Context, name, file string) {
 		return
 	}
 	var sizeStdout strings.Builder
-	if err := sizeExec.StreamWithContext(ctx, remotecommand.StreamOptions{Stdout: &sizeStdout, Stderr: io.Discard}); err != nil {
+	streamOpts := remotecommand.StreamOptions{Stdout: &sizeStdout, Stderr: io.Discard}
+	if err := sizeExec.StreamWithContext(ctx, streamOpts); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("size stream: %v", err)})
 		return
 	}
 	sz := strings.TrimSpace(sizeStdout.String())
-	if sz == "" || sz == "MISSING" {
+	if sz == "" || sz == statusMissing {
 		c.JSON(http.StatusNotFound, gin.H{"error": "artifact item not found"})
 		return
 	}
@@ -1505,7 +1667,7 @@ func (a *APIServer) streamDefaultArtifact(c *gin.Context, name string) {
 		return
 	}
 
-	if build.Status.Phase != "Completed" {
+	if build.Status.Phase != phaseCompleted {
 		c.JSON(http.StatusConflict, gin.H{"error": "artifact not available until build completes"})
 		return
 	}
@@ -1514,10 +1676,10 @@ func (a *APIServer) streamDefaultArtifact(c *gin.Context, name string) {
 	if artifactFileName == "" {
 		var ext string
 		switch build.Spec.ExportFormat {
-		case "image":
-			ext = ".raw"
-		case "qcow2":
-			ext = ".qcow2"
+		case formatImage:
+			ext = extensionRaw
+		case formatQcow2:
+			ext = extensionQcow2
 		default:
 			ext = "." + build.Spec.ExportFormat
 		}
@@ -1538,6 +1700,12 @@ func (a *APIServer) streamDefaultArtifact(c *gin.Context, name string) {
 		artifactFileName = artifactFileName + compressionExt
 	}
 
+	// Validate filename for security - prevent command injection
+	if !safeFilename(artifactFileName) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid artifact filename"})
+		return
+	}
+
 	restCfg, err := getRESTConfigFromRequest(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("rest config: %v", err)})
@@ -1556,9 +1724,15 @@ func (a *APIServer) streamDefaultArtifact(c *gin.Context, name string) {
 	}
 
 	podPath := "/workspace/shared/" + artifactFileName
-	a.log.Info("checking artifact file existence", "build", name, "artifactFileName", artifactFileName, "podPath", podPath, "podName", artifactPod.Name)
+	a.log.Info(
+		"checking artifact file existence",
+		"build", name,
+		"artifactFileName", artifactFileName,
+		"podPath", podPath,
+		"podName", artifactPod.Name,
+	)
 
-	// Check if file exists and get size
+	// Use safe command construction without shell interpolation
 	sizeReq := clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(artifactPod.Name).
@@ -1566,9 +1740,13 @@ func (a *APIServer) streamDefaultArtifact(c *gin.Context, name string) {
 		SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
 			Container: "fileserver",
-			Command:   []string{"sh", "-c", "if [ -f '" + podPath + "' ]; then wc -c < '" + podPath + "'; else echo MISSING; fi"},
-			Stdout:    true,
-			Stderr:    true,
+			Command: []string{
+				"sh", "-c",
+				"if [ -f \"$1\" ]; then wc -c < \"$1\"; else echo MISSING; fi",
+				"--", podPath,
+			},
+			Stdout: true,
+			Stderr: true,
 		}, kscheme.ParameterCodec)
 
 	sizeExec, err := remotecommand.NewSPDYExecutor(restCfg, http.MethodPost, sizeReq.URL())
@@ -1579,7 +1757,8 @@ func (a *APIServer) streamDefaultArtifact(c *gin.Context, name string) {
 	}
 
 	var sizeStdout strings.Builder
-	if err := sizeExec.StreamWithContext(ctx, remotecommand.StreamOptions{Stdout: &sizeStdout, Stderr: io.Discard}); err != nil {
+	streamOpts := remotecommand.StreamOptions{Stdout: &sizeStdout, Stderr: io.Discard}
+	if err := sizeExec.StreamWithContext(ctx, streamOpts); err != nil {
 		a.log.Error(err, "size stream failed", "build", name)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("size stream: %v", err)})
 		return
@@ -1587,7 +1766,7 @@ func (a *APIServer) streamDefaultArtifact(c *gin.Context, name string) {
 
 	sz := strings.TrimSpace(sizeStdout.String())
 	a.log.Info("file size check result", "build", name, "result", sz, "artifactFileName", artifactFileName)
-	if sz == "" || sz == "MISSING" {
+	if sz == "" || sz == statusMissing {
 		a.log.Info("file not found in artifact pod", "build", name, "artifactFileName", artifactFileName, "podPath", podPath)
 		c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
 		return
@@ -1655,7 +1834,8 @@ func (a *APIServer) streamArtifactByFilename(c *gin.Context, name, filename stri
 	namespace := resolveNamespace()
 	ctx := c.Request.Context()
 
-	if strings.Contains(filename, "/") || strings.Contains(filename, "..") || strings.TrimSpace(filename) == "" {
+	// Validate filename parameter for security - prevent command injection
+	if !safeFilename(filename) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid file name"})
 		return
 	}
@@ -1676,13 +1856,20 @@ func (a *APIServer) streamArtifactByFilename(c *gin.Context, name, filename stri
 		return
 	}
 
-	if build.Status.Phase != "Completed" {
+	if build.Status.Phase != phaseCompleted {
 		c.JSON(http.StatusConflict, gin.H{"error": "artifact not available until build completes"})
 		return
 	}
 
 	// Only allow the exact final artifact file name or files from the -parts directory
 	expected := strings.TrimSpace(build.Status.ArtifactFileName)
+
+	// Validate expected filename for security - prevent command injection
+	if expected != "" && !safeFilename(expected) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid artifact filename"})
+		return
+	}
+
 	base := path.Base(filename)
 	allowed := base == expected
 
@@ -1721,7 +1908,7 @@ func (a *APIServer) streamArtifactByFilename(c *gin.Context, name, filename stri
 
 	podPath := "/workspace/shared/" + base
 
-	// Check if file exists and get size
+	// Use safe command construction without shell interpolation
 	sizeReq := clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(artifactPod.Name).
@@ -1729,9 +1916,13 @@ func (a *APIServer) streamArtifactByFilename(c *gin.Context, name, filename stri
 		SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
 			Container: "fileserver",
-			Command:   []string{"sh", "-c", "if [ -f '" + podPath + "' ]; then wc -c < '" + podPath + "'; else echo MISSING; fi"},
-			Stdout:    true,
-			Stderr:    true,
+			Command: []string{
+				"sh", "-c",
+				"if [ -f \"$1\" ]; then wc -c < \"$1\"; else echo MISSING; fi",
+				"--", podPath,
+			},
+			Stdout: true,
+			Stderr: true,
 		}, kscheme.ParameterCodec)
 
 	sizeExec, err := remotecommand.NewSPDYExecutor(restCfg, http.MethodPost, sizeReq.URL())
@@ -1741,13 +1932,14 @@ func (a *APIServer) streamArtifactByFilename(c *gin.Context, name, filename stri
 	}
 
 	var sizeStdout strings.Builder
-	if err := sizeExec.StreamWithContext(ctx, remotecommand.StreamOptions{Stdout: &sizeStdout, Stderr: io.Discard}); err != nil {
+	streamOpts := remotecommand.StreamOptions{Stdout: &sizeStdout, Stderr: io.Discard}
+	if err := sizeExec.StreamWithContext(ctx, streamOpts); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("size stream: %v", err)})
 		return
 	}
 
 	sz := strings.TrimSpace(sizeStdout.String())
-	if sz == "" || sz == "MISSING" {
+	if sz == "" || sz == statusMissing {
 		c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
 		return
 	}
@@ -1800,7 +1992,11 @@ func copyFileToPod(config *rest.Config, namespace, podName, containerName, local
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close file: %v\n", err)
+		}
+	}()
 	info, err := f.Stat()
 	if err != nil {
 		return err
@@ -1809,7 +2005,14 @@ func copyFileToPod(config *rest.Config, namespace, podName, containerName, local
 	pr, pw := io.Pipe()
 	go func() {
 		tw := tar.NewWriter(pw)
-		defer func() { tw.Close(); pw.Close() }()
+		defer func() {
+			if err := tw.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to close tar writer: %v\n", err)
+			}
+			if err := pw.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to close pipe writer: %v\n", err)
+			}
+		}()
 		hdr := &tar.Header{Name: path.Base(podPath), Mode: 0600, Size: info.Size(), ModTime: info.ModTime()}
 		if err := tw.WriteHeader(hdr); err != nil {
 			pw.CloseWithError(err)
@@ -1822,7 +2025,7 @@ func copyFileToPod(config *rest.Config, namespace, podName, containerName, local
 	}()
 
 	destDir := path.Dir(podPath)
-	cmd := []string{"/bin/sh", "-c", fmt.Sprintf("mkdir -p %s && tar -x -C %s", destDir, destDir)}
+	cmd := []string{"/bin/sh", "-c", "mkdir -p \"$1\" && tar -x -C \"$1\"", "--", destDir}
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
@@ -1841,10 +2044,16 @@ func copyFileToPod(config *rest.Config, namespace, podName, containerName, local
 	if err != nil {
 		return err
 	}
-	return executor.StreamWithContext(context.Background(), remotecommand.StreamOptions{Stdin: pr, Stdout: io.Discard, Stderr: io.Discard})
+	streamOpts := remotecommand.StreamOptions{Stdin: pr, Stdout: io.Discard, Stderr: io.Discard}
+	return executor.StreamWithContext(context.Background(), streamOpts)
 }
 
-func setConfigMapOwnerRef(ctx context.Context, c client.Client, namespace, configMapName string, owner *automotivev1alpha1.ImageBuild) error {
+func setConfigMapOwnerRef(
+	ctx context.Context,
+	c client.Client,
+	namespace, configMapName string,
+	owner *automotivev1alpha1.ImageBuild,
+) error {
 	cm := &corev1.ConfigMap{}
 	if err := c.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: namespace}, cm); err != nil {
 		return err
@@ -1855,7 +2064,12 @@ func setConfigMapOwnerRef(ctx context.Context, c client.Client, namespace, confi
 	return c.Update(ctx, cm)
 }
 
-func setSecretOwnerRef(ctx context.Context, c client.Client, namespace, secretName string, owner *automotivev1alpha1.ImageBuild) error {
+func setSecretOwnerRef(
+	ctx context.Context,
+	c client.Client,
+	namespace, secretName string,
+	owner *automotivev1alpha1.ImageBuild,
+) error {
 	secret := &corev1.Secret{}
 	if err := c.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, secret); err != nil {
 		return err
@@ -1964,7 +2178,12 @@ func extractBearerToken(c *gin.Context) string {
 }
 
 // findReadyArtifactPod finds a running and ready artifact pod for the given ImageBuild
-func findReadyArtifactPod(ctx context.Context, k8sClient client.Client, namespace, buildName string, deadline time.Time) (*corev1.Pod, error) {
+func findReadyArtifactPod(
+	ctx context.Context,
+	k8sClient client.Client,
+	namespace, buildName string,
+	deadline time.Time,
+) (*corev1.Pod, error) {
 	for {
 		podList := &corev1.PodList{}
 		if err := k8sClient.List(ctx, podList,
@@ -1997,23 +2216,23 @@ func findReadyArtifactPod(ctx context.Context, k8sClient client.Client, namespac
 func resolveRequester(c *gin.Context) string {
 	token := extractBearerToken(c)
 	if token == "" {
-		return "unknown"
+		return statusUnknown
 	}
 
 	cfg, err := getRESTConfigFromRequest(c)
 	if err != nil {
-		return "unknown"
+		return statusUnknown
 	}
 
 	clientset, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		return "unknown"
+		return statusUnknown
 	}
 
 	tr := &authnv1.TokenReview{Spec: authnv1.TokenReviewSpec{Token: token}}
 	res, err := clientset.AuthenticationV1().TokenReviews().Create(c.Request.Context(), tr, metav1.CreateOptions{})
 	if err != nil || !res.Status.Authenticated || res.Status.User.Username == "" {
-		return "unknown"
+		return statusUnknown
 	}
 
 	return res.Status.User.Username

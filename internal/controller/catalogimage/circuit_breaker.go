@@ -245,7 +245,10 @@ type CircuitBreakerRegistryClient struct {
 }
 
 // NewCircuitBreakerRegistryClient creates a new circuit breaker wrapped registry client
-func NewCircuitBreakerRegistryClient(client RegistryClient, breakers *CircuitBreakerRegistry) *CircuitBreakerRegistryClient {
+func NewCircuitBreakerRegistryClient(
+	client RegistryClient,
+	breakers *CircuitBreakerRegistry,
+) *CircuitBreakerRegistryClient {
 	return &CircuitBreakerRegistryClient{
 		client:   client,
 		breakers: breakers,
@@ -253,7 +256,11 @@ func NewCircuitBreakerRegistryClient(client RegistryClient, breakers *CircuitBre
 }
 
 // VerifyImageAccessible checks if the image is accessible, respecting circuit breaker state
-func (c *CircuitBreakerRegistryClient) VerifyImageAccessible(ctx context.Context, registryURL string, auth *types.DockerAuthConfig) (bool, error) {
+func (c *CircuitBreakerRegistryClient) VerifyImageAccessible(
+	ctx context.Context,
+	registryURL string,
+	auth *types.DockerAuthConfig,
+) (bool, error) {
 	canAttempt, state := c.breakers.CanAttempt(registryURL)
 	if !canAttempt {
 		return false, &CircuitBreakerError{
@@ -273,7 +280,11 @@ func (c *CircuitBreakerRegistryClient) VerifyImageAccessible(ctx context.Context
 }
 
 // GetImageMetadata retrieves metadata, respecting circuit breaker state
-func (c *CircuitBreakerRegistryClient) GetImageMetadata(ctx context.Context, registryURL string, auth *types.DockerAuthConfig) (*automotivev1alpha1.RegistryMetadata, error) {
+func (c *CircuitBreakerRegistryClient) GetImageMetadata(
+	ctx context.Context,
+	registryURL string,
+	auth *types.DockerAuthConfig,
+) (*automotivev1alpha1.RegistryMetadata, error) {
 	canAttempt, state := c.breakers.CanAttempt(registryURL)
 	if !canAttempt {
 		return nil, &CircuitBreakerError{
@@ -293,7 +304,12 @@ func (c *CircuitBreakerRegistryClient) GetImageMetadata(ctx context.Context, reg
 }
 
 // VerifyDigest verifies the digest, respecting circuit breaker state
-func (c *CircuitBreakerRegistryClient) VerifyDigest(ctx context.Context, registryURL string, expectedDigest string, auth *types.DockerAuthConfig) (bool, string, error) {
+func (c *CircuitBreakerRegistryClient) VerifyDigest(
+	ctx context.Context,
+	registryURL string,
+	expectedDigest string,
+	auth *types.DockerAuthConfig,
+) (bool, string, error) {
 	canAttempt, state := c.breakers.CanAttempt(registryURL)
 	if !canAttempt {
 		return false, "", &CircuitBreakerError{

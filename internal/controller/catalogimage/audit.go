@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package catalogimage provides event recording and audit logging for CatalogImage resources.
 package catalogimage
 
 import (
@@ -58,7 +59,11 @@ func NewAuditRecorder(recorder record.EventRecorder, scheme *runtime.Scheme) *Au
 }
 
 // RecordPublished records that an image was published to the catalog
-func (a *AuditRecorder) RecordPublished(_ context.Context, catalogImage *automotivev1alpha1.CatalogImage, source string) {
+func (a *AuditRecorder) RecordPublished(
+	_ context.Context,
+	catalogImage *automotivev1alpha1.CatalogImage,
+	source string,
+) {
 	a.recorder.Eventf(catalogImage, corev1.EventTypeNormal, string(AuditEventPublished),
 		"Image published to catalog from %s", source)
 }
@@ -70,7 +75,11 @@ func (a *AuditRecorder) RecordVerified(_ context.Context, catalogImage *automoti
 }
 
 // RecordUnavailable records that an image became unavailable
-func (a *AuditRecorder) RecordUnavailable(_ context.Context, catalogImage *automotivev1alpha1.CatalogImage, reason string) {
+func (a *AuditRecorder) RecordUnavailable(
+	_ context.Context,
+	catalogImage *automotivev1alpha1.CatalogImage,
+	reason string,
+) {
 	a.recorder.Eventf(catalogImage, corev1.EventTypeWarning, string(AuditEventUnavailable),
 		"Image became unavailable: %s", reason)
 }
@@ -88,6 +97,8 @@ func (a *AuditRecorder) RecordAccessError(_ context.Context, catalogImage *autom
 }
 
 // CatalogImageLister provides methods to list CatalogImages efficiently
+//
+//nolint:revive // Name intentionally includes resource type for clarity
 type CatalogImageLister struct {
 	client client.Client
 }
@@ -98,7 +109,11 @@ func NewCatalogImageLister(client client.Client) *CatalogImageLister {
 }
 
 // ListByPhase lists CatalogImages by phase using the field index
-func (l *CatalogImageLister) ListByPhase(ctx context.Context, namespace string, phase automotivev1alpha1.CatalogImagePhase) (*automotivev1alpha1.CatalogImageList, error) {
+func (l *CatalogImageLister) ListByPhase(
+	ctx context.Context,
+	namespace string,
+	phase automotivev1alpha1.CatalogImagePhase,
+) (*automotivev1alpha1.CatalogImageList, error) {
 	list := &automotivev1alpha1.CatalogImageList{}
 	opts := []client.ListOption{
 		client.MatchingFields{"status.phase": string(phase)},
@@ -113,7 +128,10 @@ func (l *CatalogImageLister) ListByPhase(ctx context.Context, namespace string, 
 }
 
 // ListByRegistryURL lists CatalogImages by registry URL using the field index
-func (l *CatalogImageLister) ListByRegistryURL(ctx context.Context, namespace, registryURL string) (*automotivev1alpha1.CatalogImageList, error) {
+func (l *CatalogImageLister) ListByRegistryURL(
+	ctx context.Context,
+	namespace, registryURL string,
+) (*automotivev1alpha1.CatalogImageList, error) {
 	list := &automotivev1alpha1.CatalogImageList{}
 	opts := []client.ListOption{
 		client.MatchingFields{"spec.registryUrl": registryURL},
@@ -128,7 +146,10 @@ func (l *CatalogImageLister) ListByRegistryURL(ctx context.Context, namespace, r
 }
 
 // ListAvailable lists all Available CatalogImages
-func (l *CatalogImageLister) ListAvailable(ctx context.Context, namespace string) (*automotivev1alpha1.CatalogImageList, error) {
+func (l *CatalogImageLister) ListAvailable(
+	ctx context.Context,
+	namespace string,
+) (*automotivev1alpha1.CatalogImageList, error) {
 	return l.ListByPhase(ctx, namespace, automotivev1alpha1.CatalogImagePhaseAvailable)
 }
 

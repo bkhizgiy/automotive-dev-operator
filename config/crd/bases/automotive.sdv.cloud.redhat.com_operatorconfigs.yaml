@@ -150,7 +150,8 @@ spec:
                     description: |-
                       Tolerations specifies tolerations to be added to build pods
                       Enables scheduling on tainted nodes for dedicated/exclusive access
-                      Example: [{"key": "automotive.sdv.cloud.redhat.com/dedicated", "operator": "Equal", "value": "builds", "effect": "NoSchedule"}]
+                      Example: [{"key": "automotive.sdv.cloud.redhat.com/dedicated", "operator": "Equal",
+                                "value": "builds", "effect": "NoSchedule"}]
                     items:
                       description: |-
                         The pod this Toleration is attached to tolerates any taint that matches

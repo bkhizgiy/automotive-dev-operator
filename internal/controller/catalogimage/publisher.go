@@ -73,7 +73,12 @@ type Publisher struct {
 }
 
 // NewPublisher creates a new Publisher
-func NewPublisher(client client.Client, registryClient RegistryClient, auditRecorder *AuditRecorder, log logr.Logger) *Publisher {
+func NewPublisher(
+	client client.Client,
+	registryClient RegistryClient,
+	auditRecorder *AuditRecorder,
+	log logr.Logger,
+) *Publisher {
 	return &Publisher{
 		client:         client,
 		registryClient: registryClient,
@@ -149,7 +154,12 @@ func (p *Publisher) Publish(ctx context.Context, opts PublishOptions) (*PublishR
 }
 
 // PublishFromImageBuild creates a CatalogImage from a completed ImageBuild
-func (p *Publisher) PublishFromImageBuild(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild, catalogName string, tags []string) (*PublishResult, error) {
+func (p *Publisher) PublishFromImageBuild(
+	ctx context.Context,
+	imageBuild *automotivev1alpha1.ImageBuild,
+	catalogName string,
+	tags []string,
+) (*PublishResult, error) {
 	log := p.log.WithValues("imageBuild", imageBuild.Name, "namespace", imageBuild.Namespace)
 
 	// Validate ImageBuild is completed
@@ -258,7 +268,10 @@ func (p *Publisher) buildCatalogImage(opts PublishOptions) *automotivev1alpha1.C
 }
 
 // verifyAndExtractMetadata verifies registry accessibility and extracts metadata
-func (p *Publisher) verifyAndExtractMetadata(ctx context.Context, opts PublishOptions) (bool, *automotivev1alpha1.RegistryMetadata, error) {
+func (p *Publisher) verifyAndExtractMetadata(
+	ctx context.Context,
+	opts PublishOptions,
+) (bool, *automotivev1alpha1.RegistryMetadata, error) {
 	// Get authentication config
 	var auth *types.DockerAuthConfig
 	var err error
