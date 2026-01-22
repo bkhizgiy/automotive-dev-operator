@@ -88,8 +88,7 @@ type AIBSpec struct {
 
 // ExportSpec defines the configuration for exporting build artifacts
 type ExportSpec struct {
-	// Format specifies the disk image output format
-	// +kubebuilder:validation:Enum=raw;qcow2;simg
+	// Format specifies the disk image output format (e.g., raw, qcow2, simg, or any AIB-supported format)
 	// +kubebuilder:default=qcow2
 	Format string `json:"format,omitempty"`
 

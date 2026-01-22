@@ -800,9 +800,7 @@ func applyBuildDefaults(req *BuildRequest) error {
 	if !req.Architecture.IsValid() {
 		return fmt.Errorf("architecture cannot be empty")
 	}
-	if !req.ExportFormat.IsValid() {
-		return fmt.Errorf("exportFormat cannot be empty")
-	}
+	// ExportFormat validation removed - allow AIB to handle format validation
 	if !req.Mode.IsValid() {
 		return fmt.Errorf("mode cannot be empty")
 	}
@@ -863,7 +861,8 @@ func setupBuildSecrets(
 		}
 	}
 
-	if req.PushRepository != "" {
+	// Create push secret if pushing to registry (PushRepository for bootc, ExportOCI for disk images)
+	if req.PushRepository != "" || req.ExportOCI != "" {
 		if req.RegistryCredentials == nil || !req.RegistryCredentials.Enabled {
 			return "", "", fmt.Errorf("registry credentials are required when push repository is specified")
 		}

@@ -409,11 +409,11 @@ case "$BUILD_MODE" in
           "containers-storage:$CONTAINER_REF"
       fi
 
-      # to-disk-image only accepts: --format, --build-container, src_container, out
       echo "Running to-disk-image"
       aib --verbose to-disk-image \
         "${FORMAT_ARGS[@]}" \
         "${BUILD_CONTAINER_ARGS[@]}" \
+        "${AIB_EXTRA_ARGS[@]}" \
         "$CONTAINER_REF" \
         "/output/${exportFile}"
 

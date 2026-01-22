@@ -3,6 +3,7 @@ package main
 
 import (
 	"bufio"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -62,6 +63,7 @@ var (
 	timeout                int
 	waitForBuild           bool
 	customDefs             []string
+	aibExtraArgs           []string
 	followLogs             bool
 	version                string
 	compressionAlgo        string
@@ -280,6 +282,7 @@ Examples:
 	buildCmd.Flags().StringVar(&builderImage, "builder-image", "", "custom builder container")
 	buildCmd.Flags().StringVar(&storageClass, "storage-class", "", "Kubernetes storage class for build workspace")
 	buildCmd.Flags().StringArrayVarP(&customDefs, "define", "D", []string{}, "custom definition KEY=VALUE")
+	buildCmd.Flags().StringArrayVar(&aibExtraArgs, "extra-args", []string{}, "extra arguments to pass to AIB (can be repeated)")
 	buildCmd.Flags().IntVar(&timeout, "timeout", 60, "timeout in minutes")
 	buildCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", false, "wait for build to complete")
 	buildCmd.Flags().BoolVarP(&followLogs, "follow", "f", true, "follow build logs")
@@ -311,6 +314,7 @@ Examples:
 		"quay.io/centos-sig-automotive/automotive-image-builder:latest", "AIB container image",
 	)
 	diskCmd.Flags().StringVar(&storageClass, "storage-class", "", "Kubernetes storage class")
+	diskCmd.Flags().StringArrayVar(&aibExtraArgs, "extra-args", []string{}, "extra arguments to pass to AIB (can be repeated)")
 	diskCmd.Flags().IntVar(&timeout, "timeout", 60, "timeout in minutes")
 	diskCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", false, "wait for build to complete")
 	diskCmd.Flags().BoolVarP(&followLogs, "follow", "f", true, "follow build logs")
@@ -323,7 +327,7 @@ Examples:
 	buildDevCmd.Flags().StringVarP(&target, "target", "t", "qemu", "target platform")
 	buildDevCmd.Flags().StringVarP(&architecture, "arch", "a", getDefaultArch(), "architecture (amd64, arm64)")
 	buildDevCmd.Flags().StringVar(&mode, "mode", "", "build mode: image (ostree) or package (required)")
-	buildDevCmd.Flags().StringVar(&exportFormat, "format", "", "export format: qcow2, raw, simg, etc. (required)")
+	buildDevCmd.Flags().StringVar(&exportFormat, "format", "", "export format: qcow2, raw, simg, etc.")
 	buildDevCmd.Flags().StringVarP(&outputDir, "output", "o", "", "download artifact to file from registry (requires --push)")
 	buildDevCmd.Flags().StringVar(&compressionAlgo, "compress", "gzip", "compression algorithm (gzip, lz4, xz)")
 	buildDevCmd.Flags().StringVar(&exportOCI, "push", "", "push disk image as OCI artifact to registry")
@@ -333,11 +337,11 @@ Examples:
 	)
 	buildDevCmd.Flags().StringVar(&storageClass, "storage-class", "", "Kubernetes storage class")
 	buildDevCmd.Flags().StringArrayVarP(&customDefs, "define", "D", []string{}, "custom definition KEY=VALUE")
+	buildDevCmd.Flags().StringArrayVar(&aibExtraArgs, "extra-args", []string{}, "extra arguments to pass to AIB (can be repeated)")
 	buildDevCmd.Flags().IntVar(&timeout, "timeout", 60, "timeout in minutes")
 	buildDevCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", false, "wait for build to complete")
 	buildDevCmd.Flags().BoolVarP(&followLogs, "follow", "f", true, "follow build logs")
 	_ = buildDevCmd.MarkFlagRequired("mode")
-	_ = buildDevCmd.MarkFlagRequired("format")
 
 	// Add all commands
 	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, catalog.NewCatalogCmd())
@@ -416,6 +420,7 @@ func runBuild(_ *cobra.Command, args []string) {
 		AutomotiveImageBuilder: automotiveImageBuilder,
 		StorageClass:           storageClass,
 		CustomDefs:             customDefs,
+		AIBExtraArgs:           aibExtraArgs,
 		Compression:            compressionAlgo,
 		ContainerPush:          containerPush,
 		BuildDiskImage:         buildDiskImage,
@@ -510,6 +515,7 @@ func runDisk(_ *cobra.Command, args []string) {
 		Mode:                   buildapitypes.ModeDisk,
 		AutomotiveImageBuilder: automotiveImageBuilder,
 		StorageClass:           storageClass,
+		AIBExtraArgs:           aibExtraArgs,
 		Compression:            compressionAlgo,
 		ExportOCI:              exportOCI,
 	}
@@ -769,6 +775,7 @@ func runBuildDev(_ *cobra.Command, args []string) {
 		AutomotiveImageBuilder: automotiveImageBuilder,
 		StorageClass:           storageClass,
 		CustomDefs:             customDefs,
+		AIBExtraArgs:           aibExtraArgs,
 		Compression:            compressionAlgo,
 		ExportOCI:              exportOCI,
 	}
@@ -1150,6 +1157,8 @@ func findLocalFileReferences(manifestContent string) ([]map[string]string, error
 // compressionExtension returns the file extension for a compression algorithm
 func compressionExtension(algo string) string {
 	switch algo {
+	case "tar.gz":
+		return ".tar.gz"
 	case "gzip":
 		return ".gz"
 	case "lz4":
@@ -1164,7 +1173,8 @@ func compressionExtension(algo string) string {
 // hasCompressionExtension checks if a filename already has a compression extension
 func hasCompressionExtension(filename string) bool {
 	lower := strings.ToLower(filename)
-	return strings.HasSuffix(lower, ".gz") ||
+	return strings.HasSuffix(lower, ".tar.gz") ||
+		strings.HasSuffix(lower, ".gz") ||
 		strings.HasSuffix(lower, ".lz4") ||
 		strings.HasSuffix(lower, ".xz")
 }
@@ -1190,6 +1200,10 @@ func detectFileCompression(filePath string) string {
 
 	// Check for gzip magic number
 	if n >= 2 && header[0] == 0x1f && header[1] == 0x8b {
+		// Check if it's a gzipped tar by decompressing and looking for tar magic
+		if isTarInsideGzip(filePath) {
+			return "tar.gz"
+		}
 		return "gzip"
 	}
 
@@ -1205,6 +1219,31 @@ func detectFileCompression(filePath string) string {
 	}
 
 	return ""
+}
+
+// isTarInsideGzip checks if a gzip file contains a tar archive
+func isTarInsideGzip(filePath string) bool {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = file.Close() }()
+
+	gzReader, err := gzip.NewReader(file)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = gzReader.Close() }()
+
+	// Read enough bytes to check for tar magic at offset 257 ("ustar")
+	header := make([]byte, 512)
+	n, err := io.ReadFull(gzReader, header)
+	if err != nil && n < 262 {
+		return false
+	}
+
+	// Tar magic "ustar" is at offset 257
+	return n >= 262 && string(header[257:262]) == "ustar"
 }
 
 func runList(_ *cobra.Command, _ []string) {

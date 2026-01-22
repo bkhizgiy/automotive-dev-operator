@@ -544,6 +544,13 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 				{Name: "manifest-config-workspace"},
 				{Name: "registry-auth", Optional: true},
 			},
+			Results: []tektonv1.PipelineResult{
+				{
+					Name:        "artifact-filename",
+					Description: "The final artifact filename produced by the build",
+					Value:       tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: "$(tasks.build-image.results.artifact-filename)"},
+				},
+			},
 			Tasks: []tektonv1.PipelineTask{
 				{
 					Name: "prepare-builder",
