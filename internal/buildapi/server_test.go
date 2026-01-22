@@ -76,7 +76,6 @@ var _ = Describe("APIServer", func() {
 			{"POST", "/v1/builds"},
 			{"GET", "/v1/builds/test-build"},
 			{"GET", "/v1/builds/test-build/logs"},
-			{"GET", "/v1/builds/test-build/artifacts"},
 			{"GET", "/v1/builds/test-build/template"},
 			{"POST", "/v1/builds/test-build/uploads"},
 		}

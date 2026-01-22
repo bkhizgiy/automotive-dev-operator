@@ -140,12 +140,6 @@ spec:
                       RuntimeClassName specifies the runtime class to use for the build pod
                       More info: https://kubernetes.io/docs/concepts/containers/runtime-class/
                     type: string
-                  serveExpiryHours:
-                    description: |-
-                      ServeExpiryHours specifies how long to serve build artifacts before automatic cleanup
-                      Default: 24
-                    format: int32
-                    type: integer
                   tolerations:
                     description: |-
                       Tolerations specifies tolerations to be added to build pods

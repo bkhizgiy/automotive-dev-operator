@@ -409,7 +409,6 @@ func (r *OperatorConfigReconciler) deployOSBuilds(
 			MemoryVolumeSize: config.Spec.OSBuilds.MemoryVolumeSize,
 			PVCSize:          config.Spec.OSBuilds.PVCSize,
 			RuntimeClassName: config.Spec.OSBuilds.RuntimeClassName,
-			ServeExpiryHours: config.Spec.OSBuilds.ServeExpiryHours,
 		}
 	}
 

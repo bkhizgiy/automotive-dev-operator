@@ -40,11 +40,6 @@ type BuildConfig struct {
 	// More info: https://kubernetes.io/docs/concepts/containers/runtime-class/
 	// +optional
 	RuntimeClassName string `json:"runtimeClassName,omitempty"`
-
-	// ServeExpiryHours specifies how long to serve build artifacts before automatic cleanup
-	// Default: 24
-	// +optional
-	ServeExpiryHours int32 `json:"serveExpiryHours,omitempty"`
 }
 
 // JumpstarterTargetMapping defines the Jumpstarter configuration for a specific build target
@@ -128,11 +123,6 @@ type OSBuildsConfig struct {
 	// More info: https://kubernetes.io/docs/concepts/containers/runtime-class/
 	// +optional
 	RuntimeClassName string `json:"runtimeClassName,omitempty"`
-
-	// ServeExpiryHours specifies how long to serve build artifacts before automatic cleanup
-	// Default: 24
-	// +optional
-	ServeExpiryHours int32 `json:"serveExpiryHours,omitempty"`
 
 	// ClusterRegistryRoute is the external route for the cluster's internal image registry
 	// Required for bootc builds to allow nested containers to pull builder images

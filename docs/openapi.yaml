@@ -131,45 +131,6 @@ paths:
             text/plain:
               schema:
                 type: string
-  /v1/builds/{name}/artifact:
-    parameters:
-      - in: path
-        name: name
-        schema:
-          type: string
-        required: true
-    get:
-      summary: Download built artifact
-      operationId: downloadArtifact
-      responses:
-        '200':
-          description: Artifact stream
-          headers:
-            Content-Disposition:
-              description: Suggested filename for download
-              schema:
-                type: string
-            Content-Length:
-              description: Artifact size in bytes (when known)
-              schema:
-                type: string
-          content:
-            application/octet-stream:
-              schema:
-                type: string
-                format: binary
-        '409':
-          description: Build not completed
-          content:
-            text/plain:
-              schema:
-                type: string
-        '503':
-          description: Artifact pod not ready
-          content:
-            text/plain:
-              schema:
-                type: string
 components:
   schemas:
     BuildRequest:
@@ -209,12 +170,6 @@ components:
           type: array
           items:
             type: string
-        serveArtifact:
-          type: boolean
-          description: Create artifact serving pod on completion
-        exposeRoute:
-          type: boolean
-          description: Create external route/URL (OpenShift)
     BuildResponse:
       type: object
       properties:
@@ -224,12 +179,6 @@ components:
           type: string
         message:
           type: string
-        artifactURL:
-          type: string
-          nullable: true
-        artifactFileName:
-          type: string
-          nullable: true
     BuildListItem:
       type: object
       properties:

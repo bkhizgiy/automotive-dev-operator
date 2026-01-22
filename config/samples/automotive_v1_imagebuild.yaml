@@ -19,8 +19,6 @@ spec:
   #storageClass: "lvms-vg1"  # use cluster default if not specified
   automotiveImageBuilder: "quay.io/centos-sig-automotive/automotive-image-builder:1.0.0"
   manifestConfigMap: mpp
-  serveArtifact: false
-  serveExpiryHours: 24
   #runtimeClassName: "kata"
 # publishers:
 #     registry:

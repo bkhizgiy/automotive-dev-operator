@@ -16,10 +16,6 @@ spec:
     # Default: "8Gi"
     pvcSize: "8Gi"
 
-    # How long to serve build artifacts before automatic cleanup (in hours)
-    # Default: 24
-    serveExpiryHours: 24
-
     # Optional: Use memory-backed volumes for faster builds
     # Requires memoryVolumeSize to be set if enabled
     # useMemoryVolumes: false
