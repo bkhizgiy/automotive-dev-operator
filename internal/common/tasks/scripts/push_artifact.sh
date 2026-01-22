@@ -19,6 +19,9 @@ if [ ! -f "$exportFile" ]; then
 fi
 
 case "$exportFile" in
+  *.tar.gz)
+    mediaType="application/gzip"
+    ;;
   *.gz)
     mediaType="application/gzip"
     ;;

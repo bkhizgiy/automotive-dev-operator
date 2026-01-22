@@ -32,21 +32,6 @@ const (
 	phaseFailed    = "Failed"
 )
 
-// compressionToExtension maps compression algorithm names to file extensions.
-func compressionToExtension(compression string) string {
-	switch compression {
-	case "lz4":
-		return "lz4"
-	case "xz":
-		return "xz"
-	case "gzip":
-		return "gz"
-	default:
-		// Default to gz for unknown compression types
-		return "gz"
-	}
-}
-
 // ImageBuildReconciler reconciles a ImageBuild object
 //
 //nolint:revive // Name follows Kubebuilder convention for reconcilers
@@ -259,8 +244,10 @@ func (r *ImageBuildReconciler) checkBuildProgress(
 
 		// Check if push is configured
 		if imageBuild.Spec.HasDiskExport() {
+			// Extract artifact filename from build results
+			artifactFilename := extractArtifactFilename(pipelineRun)
 			// Start push task
-			if err := r.createPushTaskRun(ctx, imageBuild); err != nil {
+			if err := r.createPushTaskRun(ctx, imageBuild, artifactFilename); err != nil {
 				log.Error(err, "Failed to create push TaskRun")
 				fresh.Status.Phase = phaseFailed
 				fresh.Status.Message = fmt.Sprintf("Failed to start push: %v", err)
@@ -617,9 +604,9 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 	return nil
 }
 
-func (r *ImageBuildReconciler) createPushTaskRun(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) error {
+func (r *ImageBuildReconciler) createPushTaskRun(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild, artifactFilename string) error {
 	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
-	log.Info("Creating push TaskRun for ImageBuild")
+	log.Info("Creating push TaskRun for ImageBuild", "artifactFilename", artifactFilename)
 
 	if !imageBuild.Spec.HasDiskExport() {
 		return fmt.Errorf("no disk export configured")
@@ -652,12 +639,11 @@ func (r *ImageBuildReconciler) createPushTaskRun(ctx context.Context, imageBuild
 		return fmt.Errorf("push secret reference is required: pushSecretRef must be set for registry authentication")
 	}
 
-	compression := imageBuild.Spec.GetCompression()
-	compressionExt := compressionToExtension(compression)
+	if artifactFilename == "" {
+		return fmt.Errorf("artifact filename is required for push")
+	}
 
 	pushTask := tasks.GeneratePushArtifactRegistryTask(OperatorNamespace)
-
-	artifactFilename := fmt.Sprintf("%s-%s.%s.%s", distro, target, exportFormat, compressionExt)
 
 	params := []tektonv1.Param{
 		{
@@ -765,8 +751,19 @@ func (r *ImageBuildReconciler) handlePushingState(
 	log := r.Log.WithValues("imagebuild", nsName)
 
 	if imageBuild.Status.PushTaskRunName == "" {
+		// Fetch PipelineRun to get artifact filename from results
+		pipelineRun := &tektonv1.PipelineRun{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      imageBuild.Status.PipelineRunName,
+			Namespace: imageBuild.Namespace,
+		}, pipelineRun); err != nil {
+			log.Error(err, "Failed to get PipelineRun for artifact filename")
+			return ctrl.Result{}, err
+		}
+		artifactFilename := extractArtifactFilename(pipelineRun)
+
 		// No push TaskRun yet, create one
-		if err := r.createPushTaskRun(ctx, imageBuild); err != nil {
+		if err := r.createPushTaskRun(ctx, imageBuild, artifactFilename); err != nil {
 			log.Error(err, "Failed to create push TaskRun")
 			msg := fmt.Sprintf("Failed to create push TaskRun: %v", err)
 			if statusErr := r.updateStatus(ctx, imageBuild, phaseFailed, msg); statusErr != nil {
@@ -937,6 +934,16 @@ func extractProvenance(pipelineRun *tektonv1.PipelineRun, aibImage string) (aibI
 	}
 
 	return aibImageUsed, builderImageUsed
+}
+
+// extractArtifactFilename extracts the artifact filename from PipelineRun results
+func extractArtifactFilename(pipelineRun *tektonv1.PipelineRun) string {
+	for _, result := range pipelineRun.Status.Results {
+		if result.Name == "artifact-filename" {
+			return result.Value.StringVal
+		}
+	}
+	return ""
 }
 
 func isTaskRunSuccessful(taskRun *tektonv1.TaskRun) bool {

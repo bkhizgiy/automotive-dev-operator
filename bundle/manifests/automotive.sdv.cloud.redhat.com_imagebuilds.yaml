@@ -121,11 +121,8 @@ spec:
                     type: object
                   format:
                     default: qcow2
-                    description: Format specifies the disk image output format
-                    enum:
-                    - raw
-                    - qcow2
-                    - simg
+                    description: Format specifies the disk image output format (e.g.,
+                      raw, qcow2, simg, or any AIB-supported format)
                     type: string
                 type: object
               pushSecretRef:
