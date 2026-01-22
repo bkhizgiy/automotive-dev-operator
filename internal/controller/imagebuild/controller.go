@@ -32,6 +32,21 @@ const (
 	phaseFailed    = "Failed"
 )
 
+// compressionToExtension maps compression algorithm names to file extensions.
+func compressionToExtension(compression string) string {
+	switch compression {
+	case "lz4":
+		return "lz4"
+	case "xz":
+		return "xz"
+	case "gzip":
+		return "gz"
+	default:
+		// Default to gz for unknown compression types
+		return "gz"
+	}
+}
+
 // ImageBuildReconciler reconciles a ImageBuild object
 //
 //nolint:revive // Name follows Kubebuilder convention for reconcilers
@@ -96,7 +111,7 @@ func (r *ImageBuildReconciler) handleInitialState(
 		types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace},
 	)
 
-	if imageBuild.Spec.InputFilesServer {
+	if imageBuild.Spec.GetInputFilesServer() {
 		if err := r.createUploadPod(ctx, imageBuild); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to create upload server: %w", err)
 		}
@@ -237,8 +252,13 @@ func (r *ImageBuildReconciler) checkBuildProgress(
 
 		patch := client.MergeFrom(fresh.DeepCopy())
 
+		// Extract and populate build provenance
+		aibImageUsed, builderImageUsed := extractProvenance(pipelineRun, fresh.Spec.GetAIBImage())
+		fresh.Status.AIBImageUsed = aibImageUsed
+		fresh.Status.BuilderImageUsed = builderImageUsed
+
 		// Check if push is configured
-		if imageBuild.Spec.Publishers != nil && imageBuild.Spec.Publishers.Registry != nil {
+		if imageBuild.Spec.HasDiskExport() {
 			// Start push task
 			if err := r.createPushTaskRun(ctx, imageBuild); err != nil {
 				log.Error(err, "Failed to create push TaskRun")
@@ -380,77 +400,77 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 			Name: "distro",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
-				StringVal: imageBuild.Spec.Distro,
+				StringVal: imageBuild.Spec.GetDistro(),
 			},
 		},
 		{
 			Name: "target",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
-				StringVal: imageBuild.Spec.Target,
+				StringVal: imageBuild.Spec.GetTarget(),
 			},
 		},
 		{
 			Name: "mode",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
-				StringVal: imageBuild.Spec.Mode,
+				StringVal: imageBuild.Spec.GetMode(),
 			},
 		},
 		{
 			Name: "export-format",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
-				StringVal: imageBuild.Spec.ExportFormat,
+				StringVal: imageBuild.Spec.GetExportFormat(),
 			},
 		},
 		{
 			Name: "automotive-image-builder",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
-				StringVal: imageBuild.Spec.AutomotiveImageBuilder,
+				StringVal: imageBuild.Spec.GetAIBImage(),
 			},
 		},
 		{
 			Name: "compression",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
-				StringVal: imageBuild.Spec.Compression,
+				StringVal: imageBuild.Spec.GetCompression(),
 			},
 		},
 		{
 			Name: "container-push",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
-				StringVal: imageBuild.Spec.ContainerPush,
+				StringVal: imageBuild.Spec.GetContainerPush(),
 			},
 		},
 		{
 			Name: "build-disk-image",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
-				StringVal: fmt.Sprintf("%t", imageBuild.Spec.BuildDiskImage),
+				StringVal: fmt.Sprintf("%t", imageBuild.Spec.GetBuildDiskImage()),
 			},
 		},
 		{
 			Name: "export-oci",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
-				StringVal: imageBuild.Spec.ExportOCI,
+				StringVal: imageBuild.Spec.GetExportOCI(),
 			},
 		},
 		{
 			Name: "builder-image",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
-				StringVal: imageBuild.Spec.BuilderImage,
+				StringVal: imageBuild.Spec.GetBuilderImage(),
 			},
 		},
 		{
 			Name: "secret-ref",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
-				StringVal: imageBuild.Spec.EnvSecretRef,
+				StringVal: imageBuild.Spec.SecretRef,
 			},
 		},
 	}
@@ -480,12 +500,12 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 	}
 
 	// Add container-ref param for disk mode
-	if imageBuild.Spec.ContainerRef != "" {
+	if imageBuild.Spec.GetContainerRef() != "" {
 		params = append(params, tektonv1.Param{
 			Name: "container-ref",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
-				StringVal: imageBuild.Spec.ContainerRef,
+				StringVal: imageBuild.Spec.GetContainerRef(),
 			},
 		})
 	}
@@ -501,17 +521,17 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 			Name: "manifest-config-workspace",
 			ConfigMap: &corev1.ConfigMapVolumeSource{
 				LocalObjectReference: corev1.LocalObjectReference{
-					Name: imageBuild.Spec.ManifestConfigMap,
+					Name: imageBuild.Spec.GetManifestConfigMap(),
 				},
 			},
 		},
 	}
 
-	if imageBuild.Spec.EnvSecretRef != "" {
+	if imageBuild.Spec.SecretRef != "" {
 		pipelineWorkspaces = append(pipelineWorkspaces, tektonv1.WorkspaceBinding{
 			Name: "registry-auth",
 			Secret: &corev1.SecretVolumeSource{
-				SecretName: imageBuild.Spec.EnvSecretRef,
+				SecretName: imageBuild.Spec.SecretRef,
 			},
 		})
 	}
@@ -601,39 +621,85 @@ func (r *ImageBuildReconciler) createPushTaskRun(ctx context.Context, imageBuild
 	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
 	log.Info("Creating push TaskRun for ImageBuild")
 
-	if imageBuild.Spec.Publishers == nil || imageBuild.Spec.Publishers.Registry == nil {
-		return fmt.Errorf("no registry publisher configured")
+	if !imageBuild.Spec.HasDiskExport() {
+		return fmt.Errorf("no disk export configured")
 	}
 
+	// Validate required fields for push operation
+	repositoryURL := imageBuild.Spec.GetLegacyExportURL()
+	if repositoryURL == "" {
+		return fmt.Errorf("repository URL is required for push: export.disk.oci must be set")
+	}
+
+	distro := imageBuild.Spec.GetDistro()
+	if distro == "" {
+		return fmt.Errorf("distro is required for push: aib.distro must be set")
+	}
+
+	target := imageBuild.Spec.GetTarget()
+	if target == "" {
+		return fmt.Errorf("target is required for push: aib.target must be set")
+	}
+
+	exportFormat := imageBuild.Spec.GetExportFormat()
+	// exportFormat has a default of "qcow2", but validate anyway
+	if exportFormat == "" {
+		return fmt.Errorf("export format is required for push")
+	}
+
+	pushSecretRef := imageBuild.Spec.GetPushSecretRef()
+	if pushSecretRef == "" {
+		return fmt.Errorf("push secret reference is required: pushSecretRef must be set for registry authentication")
+	}
+
+	compression := imageBuild.Spec.GetCompression()
+	compressionExt := compressionToExtension(compression)
+
 	pushTask := tasks.GeneratePushArtifactRegistryTask(OperatorNamespace)
+
+	artifactFilename := fmt.Sprintf("%s-%s.%s.%s", distro, target, exportFormat, compressionExt)
 
 	params := []tektonv1.Param{
 		{
 			Name: "distro",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
-				StringVal: imageBuild.Spec.Distro,
+				StringVal: distro,
 			},
 		},
 		{
 			Name: "target",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
-				StringVal: imageBuild.Spec.Target,
+				StringVal: target,
 			},
 		},
 		{
 			Name: "export-format",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
-				StringVal: imageBuild.Spec.ExportFormat,
+				StringVal: exportFormat,
+			},
+		},
+		{
+			Name: "repository-url",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: repositoryURL,
 			},
 		},
 		{
 			Name: "secret-ref",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
-				StringVal: imageBuild.Spec.EnvSecretRef,
+				StringVal: pushSecretRef,
+			},
+		},
+		{
+			Name: "artifact-filename",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: artifactFilename,
 			},
 		},
 	}
@@ -773,17 +839,13 @@ func (r *ImageBuildReconciler) cleanupTransientSecrets(
 	imageBuild *automotivev1alpha1.ImageBuild,
 	log logr.Logger,
 ) {
-	// Cleanup registry auth secret (EnvSecretRef)
-	if imageBuild.Spec.EnvSecretRef != "" {
-		r.deleteSecretWithRetry(ctx, imageBuild.Namespace, imageBuild.Spec.EnvSecretRef, "registry auth", log)
+	// Cleanup registry auth secret (SecretRef)
+	if imageBuild.Spec.SecretRef != "" {
+		r.deleteSecretWithRetry(ctx, imageBuild.Namespace, imageBuild.Spec.SecretRef, "registry auth", log)
 	}
-
-	// Cleanup push secret (Publishers.Registry.Secret)
-	if imageBuild.Spec.Publishers != nil && imageBuild.Spec.Publishers.Registry != nil {
-		secretName := imageBuild.Spec.Publishers.Registry.Secret
-		if secretName != "" {
-			r.deleteSecretWithRetry(ctx, imageBuild.Namespace, secretName, "push", log)
-		}
+	// Cleanup push secret (PushSecretRef)
+	if imageBuild.Spec.PushSecretRef != "" {
+		r.deleteSecretWithRetry(ctx, imageBuild.Namespace, imageBuild.Spec.PushSecretRef, "push auth", log)
 	}
 }
 
@@ -860,6 +922,21 @@ func isPipelineRunSuccessful(pipelineRun *tektonv1.PipelineRun) bool {
 		}
 	}
 	return false
+}
+
+// extractProvenance extracts build provenance information from PipelineRun results
+func extractProvenance(pipelineRun *tektonv1.PipelineRun, aibImage string) (aibImageUsed, builderImageUsed string) {
+	aibImageUsed = aibImage // Always record the AIB image that was requested
+
+	// Extract builder image from prepare-builder task result
+	for _, result := range pipelineRun.Status.Results {
+		if result.Name == "builder-image-ref" {
+			builderImageUsed = result.Value.StringVal
+			break
+		}
+	}
+
+	return aibImageUsed, builderImageUsed
 }
 
 func isTaskRunSuccessful(taskRun *tektonv1.TaskRun) bool {

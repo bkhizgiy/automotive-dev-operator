@@ -39,99 +39,126 @@ spec:
           spec:
             description: ImageBuildSpec defines the desired state of ImageBuild
             properties:
-              architecture:
-                description: Architecture specifies the target architecture
-                type: string
-              automotiveImageBuilder:
-                description: AutomotiveImageBuilder specifies the image to use for
-                  building
-                type: string
-              buildDiskImage:
-                description: BuildDiskImage indicates whether to build a disk image
-                  from the bootc container
-                type: boolean
-              builderImage:
-                description: BuilderImage is a custom builder image to use
-                type: string
-              compression:
-                default: gzip
-                description: Compression specifies the compression algorithm for artifacts
-                enum:
-                - lz4
-                - gzip
-                - xz
-                type: string
-              containerPush:
-                description: ContainerPush is the registry URL to push the bootc container
-                  image
-                type: string
-              containerRef:
-                description: |-
-                  ContainerRef is the reference to an existing bootc container image
-                  Used with mode=disk to create a disk image from an existing container
-                type: string
-              distro:
-                description: Distro specifies the distribution to build for (e.g.,
-                  "cs9")
-                type: string
-              envSecretRef:
-                description: |-
-                  EnvSecretRef is the name of the secret containing environment variables for the build
-                  These environment variables will be available during the build process and can be used
-                  for private registry authentication (e.g., REGISTRY_USERNAME, REGISTRY_PASSWORD, REGISTRY_AUTH_FILE)
-                type: string
-              exportFormat:
-                description: ExportFormat specifies the output format (image, qcow2)
-                type: string
-              exportOci:
-                description: ExportOCI is the registry URL to push the disk image
-                  as an OCI artifact
-                type: string
-              inputFilesServer:
-                description: InputFilesServer indicates if there's a server for files
-                  referenced locally in the manifest
-                type: boolean
-              manifestConfigMap:
-                description: ManifestConfigMap specifies the name of the ConfigMap
-                  containing the manifest configuration
-                type: string
-              mode:
-                description: Mode specifies the build mode (package, image)
-                type: string
-              publishers:
-                description: Publishers defines where to publish the built artifacts
+              aib:
+                description: AIB contains automotive-image-builder specific configuration
                 properties:
-                  registry:
-                    description: Registry configuration for publishing to an OCI registry
-                    properties:
-                      repositoryUrl:
-                        description: RepositoryURL is the URL of the OCI registry
-                          repository
-                        type: string
-                      secret:
-                        description: Secret is the name of the secret containing registry
-                          credentials
-                        type: string
-                    required:
-                    - repositoryUrl
-                    - secret
-                    type: object
+                  builderImage:
+                    description: |-
+                      BuilderImage specifies a custom osbuild builder container image
+                      If not specified for bootc builds, one is automatically built and cached
+                    type: string
+                  containerRef:
+                    description: |-
+                      ContainerRef is the reference to an existing bootc container image
+                      Required when mode=disk to create a disk image from an existing container
+                    type: string
+                  distro:
+                    description: Distro specifies the distribution to build for (e.g.,
+                      "autosd")
+                    type: string
+                  image:
+                    description: |-
+                      Image specifies the automotive-image-builder container image to use
+                      If not specified, the default from OperatorConfig is used
+                    type: string
+                  inputFilesServer:
+                    description: |-
+                      InputFilesServer indicates if an upload server should be created for local file references
+                      When true, the build waits in "Uploading" phase until files are uploaded
+                    type: boolean
+                  manifestConfigMap:
+                    description: ManifestConfigMap specifies the name of the ConfigMap
+                      containing the AIB manifest
+                    type: string
+                  mode:
+                    default: image
+                    description: Mode specifies the build mode
+                    enum:
+                    - package
+                    - image
+                    - bootc
+                    - disk
+                    type: string
+                  target:
+                    description: Target specifies the build target platform (e.g.,
+                      "qemu", "aws")
+                    type: string
+                required:
+                - distro
+                - target
                 type: object
+              architecture:
+                description: Architecture specifies the target architecture (e.g.,
+                  "amd64", "arm64")
+                type: string
+              export:
+                description: Export contains configuration for exporting build artifacts
+                properties:
+                  buildDiskImage:
+                    description: BuildDiskImage indicates whether to build a disk
+                      image from the bootc container
+                    type: boolean
+                  compression:
+                    default: gzip
+                    description: Compression specifies the compression algorithm for
+                      artifacts
+                    enum:
+                    - lz4
+                    - gzip
+                    - xz
+                    type: string
+                  container:
+                    description: Container is the OCI registry URL to push the bootc
+                      container image
+                    type: string
+                  disk:
+                    description: Disk contains configuration for disk image export
+                    properties:
+                      oci:
+                        description: OCI is the registry URL to push the disk image
+                          as an OCI artifact
+                        type: string
+                    type: object
+                  format:
+                    default: qcow2
+                    description: Format specifies the disk image output format
+                    enum:
+                    - raw
+                    - qcow2
+                    - simg
+                    type: string
+                type: object
+              pushSecretRef:
+                description: |-
+                  PushSecretRef is the name of the kubernetes.io/dockerconfigjson secret for pushing artifacts
+                  This is separate from SecretRef because push operations require docker config format
+                type: string
               runtimeClassName:
                 description: RuntimeClassName specifies the runtime class to use for
                   the build pod
+                type: string
+              secretRef:
+                description: |-
+                  SecretRef is the name of the secret containing credentials for registry operations
+                  The secret should contain keys like REGISTRY_AUTH_FILE for authentication
                 type: string
               storageClass:
                 description: StorageClass is the name of the storage class to use
                   for the build PVC
                 type: string
-              target:
-                description: Target specifies the build target (e.g., "qemu")
-                type: string
             type: object
           status:
             description: ImageBuildStatus defines the observed state of ImageBuild
             properties:
+              aibImageUsed:
+                description: AIBImageUsed is the automotive-image-builder container
+                  image that was used for the build
+                type: string
+              builderImageUsed:
+                description: |-
+                  BuilderImageUsed is the osbuild builder container image that was used for the build
+                  This is particularly useful for bootc builds where the builder may be auto-generated
+                type: string
               completionTime:
                 description: CompletionTime is when the build finished
                 format: date-time

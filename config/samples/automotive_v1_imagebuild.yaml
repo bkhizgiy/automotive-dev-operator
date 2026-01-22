@@ -7,20 +7,31 @@ metadata:
   name: imagebuild-sample
   annotations:
     description: >
-      Example ImageBuild CR. The architecture can be set to any supported value like
-      "aarch64", "x86_64", etc. See your build platform's documentation for supported values.
+      Example ImageBuild CR showing the new nested structure.
+      This example demonstrates a traditional AIB build with optional disk export.
 spec:
-  #architecture: "arm64"
-  architecture: "amd64"
-  distro: "cs9"
-  target: "qemu"
-  mode: "image"
-  exportFormat: "qcow2"
+  # ─── Common Configuration ───
+  architecture: "amd64"  # or "arm64"
   #storageClass: "lvms-vg1"  # use cluster default if not specified
-  automotiveImageBuilder: "quay.io/centos-sig-automotive/automotive-image-builder:1.0.0"
-  manifestConfigMap: mpp
-  #runtimeClassName: "kata"
-# publishers:
-#     registry:
-#       repositoryUrl: "quay.io/bzlotnik/automotive-image:latest"
-#       secret: "registry-credentials"
+  #runtimeClassName: "kata"   # optional container runtime
+  #secretRef: "registry-credentials"  # optional registry authentication
+
+  # ─── AIB Configuration ───
+  aib:
+    distro: "autosd"           # required: distribution to build
+    target: "qemu"          # required: target platform
+    mode: "image"           # package, image, bootc, disk
+    manifestConfigMap: mpp  # required: ConfigMap with AIB manifest
+    image: "quay.io/centos-sig-automotive/automotive-image-builder:1.0.0"
+    #builderImage: ""       # optional: custom osbuild builder
+    #inputFilesServer: false # optional: enable file upload server
+    #containerRef: ""       # required for mode=disk
+
+  # ─── Export Configuration ───
+  export:
+    format: "qcow2"         # raw, qcow2, simg
+    compression: "gzip"     # gzip, lz4, xz
+    buildDiskImage: false   # whether to create disk image
+    #container: "quay.io/myorg/my-container:latest"  # bootc container destination
+    #disk:                  # disk image export options
+    #  oci: "quay.io/myorg/my-disk:latest"  # export disk as OCI artifact

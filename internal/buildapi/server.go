@@ -771,7 +771,7 @@ func validateBuildRequest(req *BuildRequest, maxManifestSize int64) error {
 // applyBuildDefaults sets default values for build request fields
 func applyBuildDefaults(req *BuildRequest) error {
 	if req.Distro == "" {
-		req.Distro = "cs9"
+		req.Distro = "autosd"
 	}
 	if req.Target == "" {
 		req.Target = "qemu"
@@ -876,16 +876,36 @@ func setupBuildSecrets(
 	return envSecretRef, pushSecretName, nil
 }
 
-// buildPublishersConfig creates Publishers configuration if needed
-func buildPublishersConfig(pushRepository, pushSecretName string) *automotivev1alpha1.Publishers {
-	if pushRepository == "" {
-		return nil
+// buildExportSpec creates ExportSpec configuration from build request
+func buildExportSpec(req *BuildRequest) *automotivev1alpha1.ExportSpec {
+	export := &automotivev1alpha1.ExportSpec{
+		Format:         string(req.ExportFormat),
+		Compression:    req.Compression,
+		BuildDiskImage: req.BuildDiskImage,
+		Container:      req.ContainerPush,
 	}
-	return &automotivev1alpha1.Publishers{
-		Registry: &automotivev1alpha1.RegistryPublisher{
-			RepositoryURL: pushRepository,
-			Secret:        pushSecretName,
-		},
+
+	// Set disk export if OCI URL is specified
+	if req.ExportOCI != "" {
+		export.Disk = &automotivev1alpha1.DiskExport{
+			OCI: req.ExportOCI,
+		}
+	}
+
+	return export
+}
+
+// buildAIBSpec creates AIBSpec configuration from build request
+func buildAIBSpec(req *BuildRequest, manifestConfigMap string, inputFilesServer bool) *automotivev1alpha1.AIBSpec {
+	return &automotivev1alpha1.AIBSpec{
+		Distro:            string(req.Distro),
+		Target:            string(req.Target),
+		Mode:              string(req.Mode),
+		ManifestConfigMap: manifestConfigMap,
+		Image:             req.AutomotiveImageBuilder,
+		BuilderImage:      req.BuilderImage,
+		InputFilesServer:  inputFilesServer,
+		ContainerRef:      req.ContainerRef,
 	}
 }
 
@@ -948,8 +968,6 @@ func (a *APIServer) createBuild(c *gin.Context) {
 		return
 	}
 
-	publishers := buildPublishersConfig(req.PushRepository, pushSecretName)
-
 	imageBuild := &automotivev1alpha1.ImageBuild{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      req.Name,
@@ -960,23 +978,12 @@ func (a *APIServer) createBuild(c *gin.Context) {
 			},
 		},
 		Spec: automotivev1alpha1.ImageBuildSpec{
-			Distro:                 string(req.Distro),
-			Target:                 string(req.Target),
-			Architecture:           string(req.Architecture),
-			ExportFormat:           string(req.ExportFormat),
-			Mode:                   string(req.Mode),
-			AutomotiveImageBuilder: req.AutomotiveImageBuilder,
-			StorageClass:           req.StorageClass,
-			ManifestConfigMap:      cfgName,
-			InputFilesServer:       needsUpload,
-			EnvSecretRef:           envSecretRef,
-			Compression:            req.Compression,
-			Publishers:             publishers,
-			ContainerPush:          req.ContainerPush,
-			BuildDiskImage:         req.BuildDiskImage,
-			ExportOCI:              req.ExportOCI,
-			BuilderImage:           req.BuilderImage,
-			ContainerRef:           req.ContainerRef,
+			Architecture:  string(req.Architecture),
+			StorageClass:  req.StorageClass,
+			SecretRef:     envSecretRef,
+			PushSecretRef: pushSecretName,
+			AIB:           buildAIBSpec(&req, cfgName, needsUpload),
+			Export:        buildExportSpec(&req),
 		},
 	}
 	if err := k8sClient.Create(ctx, imageBuild); err != nil {
@@ -1085,17 +1092,14 @@ func getBuild(c *gin.Context, name string) {
 			if operatorConfig.Status.JumpstarterAvailable {
 				jumpstarterInfo = &JumpstarterInfo{Available: true}
 				if operatorConfig.Spec.Jumpstarter != nil {
-					if mapping, ok := operatorConfig.Spec.Jumpstarter.TargetMappings[build.Spec.Target]; ok {
+					if mapping, ok := operatorConfig.Spec.Jumpstarter.TargetMappings[build.Spec.GetTarget()]; ok {
 						jumpstarterInfo.ExporterSelector = mapping.Selector
 						flashCmd := mapping.FlashCmd
 						// Replace placeholders in flash command
 						if flashCmd != "" {
-							imageURI := build.Spec.ExportOCI
-							if imageURI == "" && build.Spec.Publishers != nil && build.Spec.Publishers.Registry != nil {
-								imageURI = build.Spec.Publishers.Registry.RepositoryURL
-							}
+							imageURI := build.Spec.GetExportOCI()
 							if imageURI == "" {
-								imageURI = build.Spec.ContainerPush
+								imageURI = build.Spec.GetContainerPush()
 							}
 							if imageURI != "" {
 								flashCmd = strings.ReplaceAll(flashCmd, "{image_uri}", imageURI)
@@ -1151,7 +1155,7 @@ func getBuildTemplate(c *gin.Context, name string) {
 	}
 
 	cm := &corev1.ConfigMap{}
-	manifestKey := types.NamespacedName{Name: build.Spec.ManifestConfigMap, Namespace: namespace}
+	manifestKey := types.NamespacedName{Name: build.Spec.GetManifestConfigMap(), Namespace: namespace}
 	if err := k8sClient.Get(ctx, manifestKey, cm); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error fetching manifest config: %v", err)})
 		return
@@ -1195,15 +1199,15 @@ func getBuildTemplate(c *gin.Context, name string) {
 			Name:                   build.Name,
 			Manifest:               manifest,
 			ManifestFileName:       manifestFileName,
-			Distro:                 Distro(build.Spec.Distro),
-			Target:                 Target(build.Spec.Target),
+			Distro:                 Distro(build.Spec.GetDistro()),
+			Target:                 Target(build.Spec.GetTarget()),
 			Architecture:           Architecture(build.Spec.Architecture),
-			ExportFormat:           ExportFormat(build.Spec.ExportFormat),
-			Mode:                   Mode(build.Spec.Mode),
-			AutomotiveImageBuilder: build.Spec.AutomotiveImageBuilder,
+			ExportFormat:           ExportFormat(build.Spec.GetExportFormat()),
+			Mode:                   Mode(build.Spec.GetMode()),
+			AutomotiveImageBuilder: build.Spec.GetAIBImage(),
 			CustomDefs:             nil,
 			AIBExtraArgs:           aibExtra,
-			Compression:            build.Spec.Compression,
+			Compression:            build.Spec.GetCompression(),
 		},
 		SourceFiles: sourceFiles,
 	})

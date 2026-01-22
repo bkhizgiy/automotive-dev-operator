@@ -181,14 +181,14 @@ func (p *Publisher) PublishFromImageBuild(
 	// Build metadata from ImageBuild
 	metadata := &automotivev1alpha1.CatalogImageMetadata{
 		Architecture: NormalizeArchitecture(imageBuild.Spec.Architecture),
-		Distro:       imageBuild.Spec.Distro,
-		BuildMode:    imageBuild.Spec.Mode,
+		Distro:       imageBuild.Spec.GetDistro(),
+		BuildMode:    imageBuild.Spec.GetMode(),
 	}
 
 	// Add hardware target if specified
-	if imageBuild.Spec.Target != "" {
+	if imageBuild.Spec.GetTarget() != "" {
 		metadata.Targets = []automotivev1alpha1.HardwareTarget{
-			{Name: imageBuild.Spec.Target, Verified: true},
+			{Name: imageBuild.Spec.GetTarget(), Verified: true},
 		}
 	}
 
@@ -304,14 +304,14 @@ func (p *Publisher) verifyAndExtractMetadata(
 
 // extractRegistryURL extracts the registry URL from an ImageBuild
 func (p *Publisher) extractRegistryURL(imageBuild *automotivev1alpha1.ImageBuild) string {
-	// Check ContainerPush first (direct push destination)
-	if imageBuild.Spec.ContainerPush != "" {
-		return imageBuild.Spec.ContainerPush
+	// Check container export first (bootc container destination)
+	if url := imageBuild.Spec.GetContainerPush(); url != "" {
+		return url
 	}
 
-	// Check Publishers.Registry
-	if imageBuild.Spec.Publishers != nil && imageBuild.Spec.Publishers.Registry != nil {
-		return imageBuild.Spec.Publishers.Registry.RepositoryURL
+	// Check disk OCI export
+	if url := imageBuild.Spec.GetExportOCI(); url != "" {
+		return url
 	}
 
 	return ""
