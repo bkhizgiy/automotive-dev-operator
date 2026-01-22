@@ -337,12 +337,10 @@ func (h *Handler) HandlePublishImageBuild(c *gin.Context) {
 		return
 	}
 
-	// Determine registry URL from ImageBuild
-	registryURL := ""
-	if imageBuild.Spec.ContainerPush != "" {
-		registryURL = imageBuild.Spec.ContainerPush
-	} else if imageBuild.Spec.Publishers != nil && imageBuild.Spec.Publishers.Registry != nil {
-		registryURL = imageBuild.Spec.Publishers.Registry.RepositoryURL
+	// Determine registry URL from ImageBuild (container push or disk OCI export)
+	registryURL := imageBuild.Spec.GetContainerPush()
+	if registryURL == "" {
+		registryURL = imageBuild.Spec.GetExportOCI()
 	}
 
 	if registryURL == "" {
@@ -365,15 +363,15 @@ func (h *Handler) HandlePublishImageBuild(c *gin.Context) {
 		Tags:        req.Tags,
 		Metadata: &automotivev1alpha1.CatalogImageMetadata{
 			Architecture: imageBuild.Spec.Architecture,
-			Distro:       imageBuild.Spec.Distro,
-			BuildMode:    imageBuild.Spec.Mode,
+			Distro:       imageBuild.Spec.GetDistro(),
+			BuildMode:    imageBuild.Spec.GetMode(),
 		},
 	}
 
 	// Add hardware target if available
-	if imageBuild.Spec.Target != "" {
+	if imageBuild.Spec.GetTarget() != "" {
 		catalogImage.Spec.Metadata.Targets = []automotivev1alpha1.HardwareTarget{
-			{Name: imageBuild.Spec.Target, Verified: true},
+			{Name: imageBuild.Spec.GetTarget(), Verified: true},
 		}
 	}
 
