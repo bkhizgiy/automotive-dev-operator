@@ -18,7 +18,6 @@ type BuildConfig struct {
 	MemoryVolumeSize string
 	PVCSize          string
 	RuntimeClassName string
-	ServeExpiryHours int32
 }
 
 // AutomotiveImageBuilder is the default container image for the automotive image builder.

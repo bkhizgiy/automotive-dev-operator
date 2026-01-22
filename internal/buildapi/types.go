@@ -123,7 +123,6 @@ type BuildRequest struct {
 	StorageClass           string               `json:"storageClass"`
 	CustomDefs             []string             `json:"customDefs"`
 	AIBExtraArgs           []string             `json:"aibExtraArgs"`
-	ServeArtifact          bool                 `json:"serveArtifact"`
 	Compression            string               `json:"compression,omitempty"`
 	RegistryCredentials    *RegistryCredentials `json:"registryCredentials,omitempty"`
 	PushRepository         string               `json:"pushRepository,omitempty"`
@@ -157,15 +156,13 @@ type JumpstarterInfo struct {
 
 // BuildResponse is returned by POST and GET build operations
 type BuildResponse struct {
-	Name             string           `json:"name"`
-	Phase            string           `json:"phase"`
-	Message          string           `json:"message"`
-	RequestedBy      string           `json:"requestedBy,omitempty"`
-	ArtifactURL      string           `json:"artifactURL,omitempty"`
-	ArtifactFileName string           `json:"artifactFileName,omitempty"`
-	StartTime        string           `json:"startTime,omitempty"`
-	CompletionTime   string           `json:"completionTime,omitempty"`
-	Jumpstarter      *JumpstarterInfo `json:"jumpstarter,omitempty"`
+	Name           string           `json:"name"`
+	Phase          string           `json:"phase"`
+	Message        string           `json:"message"`
+	RequestedBy    string           `json:"requestedBy,omitempty"`
+	StartTime      string           `json:"startTime,omitempty"`
+	CompletionTime string           `json:"completionTime,omitempty"`
+	Jumpstarter    *JumpstarterInfo `json:"jumpstarter,omitempty"`
 }
 
 // BuildListItem represents a build in the list API

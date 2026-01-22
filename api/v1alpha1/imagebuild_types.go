@@ -56,17 +56,8 @@ type ImageBuildSpec struct {
 	// RuntimeClassName specifies the runtime class to use for the build pod
 	RuntimeClassName string `json:"runtimeClassName,omitempty"`
 
-	// ServeArtifact determines whether to make the built artifact available for download
-	ServeArtifact bool `json:"serveArtifact,omitempty"`
-
-	// ServeExpiryHours specifies how long to serve the artifact before cleanup (default: 24)
-	ServeExpiryHours int32 `json:"serveExpiryHours,omitempty"`
-
 	// InputFilesServer indicates if there's a server for files referenced locally in the manifest
 	InputFilesServer bool `json:"inputFilesServer,omitempty"`
-
-	// ExposeRoute indicates whether to expose the a route for the artifacts
-	ExposeRoute bool `json:"exposeRoute,omitempty"`
 
 	// EnvSecretRef is the name of the secret containing environment variables for the build
 	// These environment variables will be available during the build process and can be used
@@ -132,20 +123,11 @@ type ImageBuildStatus struct {
 	// PVCName is the name of the PVC where the artifact is stored
 	PVCName string `json:"pvcName,omitempty"`
 
-	// ArtifactPath is the path inside the PVC where the artifact is stored
-	ArtifactPath string `json:"artifactPath,omitempty"`
-
-	// ArtifactFileName is the name of the artifact file inside the PVC
-	ArtifactFileName string `json:"artifactFileName,omitempty"`
-
 	// PipelineRunName is the name of the active PipelineRun for this build
 	PipelineRunName string `json:"pipelineRunName,omitempty"`
 
 	// PushTaskRunName is the name of the TaskRun for pushing artifacts to registry
 	PushTaskRunName string `json:"pushTaskRunName,omitempty"`
-
-	// ArtifactURL is the route URL created to expose the artifacts
-	ArtifactURL string `json:"artifactURL,omitempty"`
 
 	// Conditions represent the latest available observations of the ImageBuild's state
 	// +optional

@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -168,160 +167,6 @@ var _ = Describe("controller", Ordered, func() {
 			EventuallyWithOffset(1, verifyBuildAPIDeployment, 3*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
-		It("should download artifacts via caib CLI", func() {
-			var err error
-
-			By("building the caib CLI")
-			cmd := exec.Command("make", "build-caib")
-			_, err = utils.Run(cmd)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-
-			By("creating a mock completed ImageBuild CR")
-			imageBuildYAML := `
-apiVersion: automotive.sdv.cloud.redhat.com/v1alpha1
-kind: ImageBuild
-metadata:
-  name: test-download-build
-  namespace: automotive-dev-operator-system
-spec:
-  distro: autosd
-  target: qemu
-  architecture: arm64
-  exportFormat: qcow2
-  mode: image
-  serveArtifact: true
-  compression: gzip
-`
-			cmd = exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(imageBuildYAML)
-			_, err = utils.Run(cmd)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-
-			By("creating a mock artifact pod with test file")
-			artifactPodYAML := `
-apiVersion: v1
-kind: Pod
-metadata:
-  name: test-download-artifact-pod
-  namespace: automotive-dev-operator-system
-  labels:
-    app.kubernetes.io/name: artifact-pod
-    automotive.sdv.cloud.redhat.com/imagebuild-name: test-download-build
-spec:
-  containers:
-  - name: fileserver
-    image: busybox:latest
-    command:
-      - sh
-      - -c
-      - |
-        mkdir -p /workspace/shared &&
-        echo 'test artifact content for e2e download test' > /workspace/shared/test-artifact.qcow2.gz &&
-        sleep 3600
-    readinessProbe:
-      exec:
-        command: ["test", "-f", "/workspace/shared/test-artifact.qcow2.gz"]
-      initialDelaySeconds: 1
-      periodSeconds: 1
-`
-			cmd = exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(artifactPodYAML)
-			_, err = utils.Run(cmd)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-
-			By("waiting for artifact pod to be ready")
-			verifyArtifactPodReady := func() error {
-				cmd = exec.Command("kubectl", "get", "pod", "test-download-artifact-pod",
-					"-n", namespace, "-o", "jsonpath={.status.containerStatuses[0].ready}")
-				output, err := utils.Run(cmd)
-				if err != nil {
-					return err
-				}
-				if string(output) != "true" {
-					return fmt.Errorf("artifact pod not ready yet: %s", output)
-				}
-				return nil
-			}
-			EventuallyWithOffset(1, verifyArtifactPodReady, 2*time.Minute, 2*time.Second).Should(Succeed())
-
-			By("patching ImageBuild status to Completed")
-			statusPatch := `{"status":{"phase":"Completed","artifactFileName":"test-artifact.qcow2.gz",` +
-				`"message":"Build completed successfully"}}`
-			cmd = exec.Command("kubectl", "patch", "imagebuild", "test-download-build",
-				"-n", namespace, "--type=merge", "--subresource=status", "-p", statusPatch)
-			_, err = utils.Run(cmd)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-
-			By("getting a ServiceAccount token for authentication")
-			cmd = exec.Command("kubectl", "create", "token", "ado-controller-manager", "-n", namespace)
-			tokenOutput, err := utils.Run(cmd)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-			token := strings.TrimSpace(string(tokenOutput))
-			ExpectWithOffset(1, token).NotTo(BeEmpty())
-
-			By("creating output directory for download")
-			projectDir, err := utils.GetProjectDir()
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-			outputDir := filepath.Join(projectDir, "test-download-output")
-			err = os.MkdirAll(outputDir, 0755)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-			defer func() {
-				if err := os.RemoveAll(outputDir); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to remove output directory: %v\n", err)
-				}
-			}()
-
-			By("running caib download via port-forward")
-			// Start port-forward to build-api service
-			portForwardCmd := exec.Command("kubectl", "port-forward",
-				"service/ado-build-api", "18080:8080", "-n", namespace)
-			err = portForwardCmd.Start()
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-			defer func() {
-				if portForwardCmd.Process != nil {
-					_ = portForwardCmd.Process.Kill()
-				}
-			}()
-
-			// Wait for port-forward to be ready
-			time.Sleep(3 * time.Second)
-
-			// Run caib download
-			caibPath := filepath.Join(projectDir, "bin", "caib")
-			downloadCmd := exec.Command(caibPath, "download",
-				"--server", "http://localhost:18080",
-				"--token", token,
-				"--name", "test-download-build",
-				"--output-dir", outputDir,
-			)
-			downloadOutput, err := utils.Run(downloadCmd)
-			if err != nil {
-				// Collect debug info on failure
-				debugCmd := exec.Command("kubectl", "logs", "-n", namespace,
-					"-l", "app.kubernetes.io/component=build-api", "--tail=50")
-				logs, _ := utils.Run(debugCmd)
-				Fail(fmt.Sprintf("caib download failed: %v\nOutput: %s\nBuild API logs:\n%s", err, downloadOutput, logs))
-			}
-
-			By("verifying the downloaded file exists")
-			downloadedFile := filepath.Join(outputDir, "test-artifact.qcow2.gz")
-			_, err = os.Stat(downloadedFile)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Downloaded file should exist")
-
-			By("verifying the downloaded file has correct content")
-			content, err := os.ReadFile(downloadedFile)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-			ExpectWithOffset(1, strings.TrimSpace(string(content))).To(Equal("test artifact content for e2e download test"))
-
-			By("cleaning up test resources")
-			cmd = exec.Command("kubectl", "delete", "imagebuild", "test-download-build",
-				"-n", namespace, "--ignore-not-found=true")
-			_, _ = utils.Run(cmd)
-			cmd = exec.Command("kubectl", "delete", "pod", "test-download-artifact-pod",
-				"-n", namespace, "--ignore-not-found=true")
-			_, _ = utils.Run(cmd)
-		})
-
 		It("should build a real automotive image", func() {
 			var err error
 
@@ -435,12 +280,6 @@ spec:
 			pipelineRunName, err := utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 			ExpectWithOffset(1, string(pipelineRunName)).NotTo(BeEmpty(), "PipelineRunName should be set")
-
-			cmd = exec.Command("kubectl", "get", "imagebuild", "e2e-real-build",
-				"-n", namespace, "-o", "jsonpath={.status.artifactFileName}")
-			artifactFileName, err := utils.Run(cmd)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-			ExpectWithOffset(1, string(artifactFileName)).To(ContainSubstring("qcow2"), "Artifact filename should contain qcow2")
 
 			cmd = exec.Command("kubectl", "get", "imagebuild", "e2e-real-build",
 				"-n", namespace, "-o", "jsonpath={.status.message}")

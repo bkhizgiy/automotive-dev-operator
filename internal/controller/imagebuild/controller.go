@@ -18,7 +18,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -32,47 +31,6 @@ const (
 	phaseCompleted = "Completed"
 	phaseFailed    = "Failed"
 )
-
-// getFormatExtension returns the file extension for an export format
-func getFormatExtension(format string) string {
-	switch format {
-	case "image":
-		return ".raw"
-	case "qcow2":
-		return ".qcow2"
-	default:
-		if format != "" {
-			return "." + format
-		}
-		return ".raw"
-	}
-}
-
-// getCompressionExtension returns the file extension for a compression algorithm
-func getCompressionExtension(compression string) string {
-	if compression == "" || compression == "none" {
-		return ""
-	}
-
-	switch compression {
-	case "gzip":
-		return ".gz"
-	case "lz4":
-		return ".lz4"
-	case "xz":
-		return ".xz"
-	default:
-		return ""
-	}
-}
-
-// buildArtifactFilename constructs the artifact filename with proper extensions
-func buildArtifactFilename(distro, target, exportFormat, compression string) string {
-	baseFormat := getFormatExtension(exportFormat)
-	compressionExt := getCompressionExtension(compression)
-
-	return fmt.Sprintf("%s-%s%s%s", distro, target, baseFormat, compressionExt)
-}
 
 // ImageBuildReconciler reconciles a ImageBuild object
 //
@@ -238,69 +196,9 @@ func (r *ImageBuildReconciler) handleBuildingState(
 }
 
 func (r *ImageBuildReconciler) handleCompletedState(
-	ctx context.Context,
-	imageBuild *automotivev1alpha1.ImageBuild,
+	_ context.Context,
+	_ *automotivev1alpha1.ImageBuild,
 ) (ctrl.Result, error) {
-	if !imageBuild.Spec.ServeArtifact {
-		return ctrl.Result{}, nil
-	}
-
-	log := r.Log.WithValues(
-		"imagebuild",
-		types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace},
-	)
-
-	expiryHours := int32(24)
-	if imageBuild.Spec.ServeExpiryHours > 0 {
-		expiryHours = imageBuild.Spec.ServeExpiryHours
-	}
-
-	if imageBuild.Status.CompletionTime == nil {
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-	}
-
-	expiryAt := imageBuild.Status.CompletionTime.Add(time.Duration(expiryHours) * time.Hour)
-	now := time.Now()
-	if now.Before(expiryAt) {
-		return ctrl.Result{RequeueAfter: time.Until(expiryAt)}, nil
-	}
-
-	svcName := fmt.Sprintf("%s-artifact-service", imageBuild.Name)
-	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: svcName, Namespace: imageBuild.Namespace}}
-	if err := r.Delete(ctx, svc); err != nil && !errors.IsNotFound(err) {
-		log.Error(err, "failed to delete artifact Service", "service", svcName)
-	}
-
-	routeName := fmt.Sprintf("%s-artifacts", imageBuild.Name)
-	route := &routev1.Route{ObjectMeta: metav1.ObjectMeta{Name: routeName, Namespace: imageBuild.Namespace}}
-	if err := r.Delete(ctx, route); err != nil && !errors.IsNotFound(err) {
-		log.Error(err, "failed to delete artifact Route", "route", routeName)
-	}
-
-	podName := fmt.Sprintf("%s-artifact-pod", imageBuild.Name)
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: imageBuild.Namespace}}
-	if err := r.Delete(ctx, pod); err != nil && !errors.IsNotFound(err) {
-		log.Error(err, "failed to delete artifact Pod", "pod", podName)
-	}
-
-	cmName := fmt.Sprintf("%s-nginx-config", imageBuild.Name)
-	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: imageBuild.Namespace}}
-	if err := r.Delete(ctx, cm); err != nil && !errors.IsNotFound(err) {
-		log.Error(err, "failed to delete nginx ConfigMap", "configMap", cmName)
-	}
-
-	fresh := &automotivev1alpha1.ImageBuild{}
-	if err := r.Get(ctx, types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}, fresh); err == nil {
-		patch := client.MergeFrom(fresh.DeepCopy())
-		fresh.Status.ArtifactURL = ""
-		fresh.Status.ArtifactFileName = ""
-		fresh.Status.ArtifactPath = ""
-		fresh.Status.Message = "Build expired"
-		if err := r.Status().Patch(ctx, fresh, patch); err != nil {
-			log.Error(err, "failed to update ImageBuild status after expiry cleanup")
-		}
-	}
-
 	return ctrl.Result{}, nil
 }
 
@@ -331,36 +229,6 @@ func (r *ImageBuildReconciler) checkBuildProgress(
 	}
 
 	if isPipelineRunSuccessful(pipelineRun) {
-		var artifactFileName string
-		// Get results from the build-image task in the pipeline
-		for _, childStatus := range pipelineRun.Status.ChildReferences {
-			if childStatus.PipelineTaskName == "build-image" {
-				taskRun := &tektonv1.TaskRun{}
-				trNS := types.NamespacedName{Name: childStatus.Name, Namespace: imageBuild.Namespace}
-				if err := r.Get(ctx, trNS, taskRun); err == nil {
-					for _, res := range taskRun.Status.Results {
-						if res.Name == "artifact-filename" && res.Value.StringVal != "" {
-							artifactFileName = res.Value.StringVal
-							break
-						}
-					}
-				}
-				break
-			}
-		}
-
-		if imageBuild.Spec.ServeArtifact {
-			if err := r.createArtifactPod(ctx, imageBuild); err != nil {
-				return ctrl.Result{}, err
-			}
-
-			if imageBuild.Spec.ExposeRoute {
-				if err := r.createArtifactServingResources(ctx, imageBuild); err != nil {
-					return ctrl.Result{}, err
-				}
-			}
-		}
-
 		fresh := &automotivev1alpha1.ImageBuild{}
 		nsName := types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}
 		if err := r.Get(ctx, nsName, fresh); err != nil {
@@ -368,10 +236,6 @@ func (r *ImageBuildReconciler) checkBuildProgress(
 		}
 
 		patch := client.MergeFrom(fresh.DeepCopy())
-
-		if artifactFileName != "" {
-			fresh.Status.ArtifactFileName = artifactFileName
-		}
 
 		// Check if push is configured
 		if imageBuild.Spec.Publishers != nil && imageBuild.Spec.Publishers.Registry != nil {
@@ -410,11 +274,6 @@ func (r *ImageBuildReconciler) checkBuildProgress(
 
 		// Cleanup transient secrets
 		r.cleanupTransientSecrets(ctx, imageBuild, r.Log)
-
-		// Update artifact info after status is set
-		if imageBuild.Spec.ServeArtifact {
-			return r.updateArtifactInfo(ctx, imageBuild)
-		}
 
 		return ctrl.Result{}, nil
 	}
@@ -483,7 +342,6 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 			MemoryVolumeSize: operatorConfig.Spec.OSBuilds.MemoryVolumeSize,
 			PVCSize:          operatorConfig.Spec.OSBuilds.PVCSize,
 			RuntimeClassName: operatorConfig.Spec.OSBuilds.RuntimeClassName,
-			ServeExpiryHours: operatorConfig.Spec.OSBuilds.ServeExpiryHours,
 		}
 	}
 	_ = buildConfig // buildConfig used for PVC sizing if needed
@@ -905,294 +763,7 @@ func (r *ImageBuildReconciler) handlePushingState(
 		return ctrl.Result{}, err
 	}
 
-	// Update artifact info if serving
-	if imageBuild.Spec.ServeArtifact && isTaskRunSuccessful(taskRun) {
-		return r.updateArtifactInfo(ctx, imageBuild)
-	}
-
 	return ctrl.Result{}, nil
-}
-
-func (r *ImageBuildReconciler) updateArtifactInfo(
-	ctx context.Context,
-	imageBuild *automotivev1alpha1.ImageBuild,
-) (ctrl.Result, error) {
-	nsName := types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}
-	log := r.Log.WithValues("imagebuild", nsName)
-
-	latestImageBuild := &automotivev1alpha1.ImageBuild{}
-	if err := r.Get(ctx, nsName, latestImageBuild); err != nil {
-		log.Error(err, "Failed to get latest ImageBuild")
-		return ctrl.Result{}, err
-	}
-
-	pvcName := latestImageBuild.Status.PVCName
-	if pvcName == "" {
-		log.Error(nil, "No PVC name found in ImageBuild status")
-		return ctrl.Result{}, fmt.Errorf("no PVC name found in ImageBuild status")
-	}
-
-	// Only set ArtifactFileName if it's not already set (from Tekton results)
-	if latestImageBuild.Status.ArtifactFileName == "" {
-		fileName := buildArtifactFilename(
-			latestImageBuild.Spec.Distro,
-			latestImageBuild.Spec.Target,
-			latestImageBuild.Spec.ExportFormat,
-			latestImageBuild.Spec.Compression,
-		)
-		latestImageBuild.Status.ArtifactFileName = fileName
-	}
-
-	log.Info("Setting artifact info", "pvc", pvcName, "fileName", latestImageBuild.Status.ArtifactFileName)
-
-	patch := client.MergeFrom(latestImageBuild.DeepCopy())
-
-	latestImageBuild.Status.ArtifactPath = "/"
-
-	if err := r.Status().Patch(ctx, latestImageBuild, patch); err != nil {
-		log.Error(err, "Failed to patch status with artifact info")
-		return ctrl.Result{RequeueAfter: time.Second * 5}, nil
-	}
-
-	if latestImageBuild.Spec.ExposeRoute {
-		routeName := "ado-build-api"
-		route := &routev1.Route{}
-		if err := r.Get(ctx, client.ObjectKey{Name: routeName, Namespace: latestImageBuild.Namespace}, route); err != nil {
-			log.Error(err, "Error getting route, will retry")
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-		}
-
-		if len(route.Status.Ingress) == 0 || route.Status.Ingress[0].Host == "" {
-			log.Info("route status not yet populated with host", "route", routeName)
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-		}
-
-		scheme := "https"
-		if route.Spec.TLS == nil {
-			scheme = "http"
-			log.Info("TLS is not enabled")
-		}
-
-		artifactURL := fmt.Sprintf("%s://%s", scheme, route.Status.Ingress[0].Host)
-		log.Info("setting artifact URL in status", "url", artifactURL)
-
-		freshBuild := &automotivev1alpha1.ImageBuild{}
-		nsName := types.NamespacedName{Name: latestImageBuild.Name, Namespace: latestImageBuild.Namespace}
-		if err := r.Get(ctx, nsName, freshBuild); err != nil {
-			log.Error(err, "Failed to get fresh ImageBuild for URL update")
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-		}
-
-		urlPatch := client.MergeFrom(freshBuild.DeepCopy())
-		freshBuild.Status.ArtifactURL = artifactURL
-
-		if err := r.Status().Patch(ctx, freshBuild, urlPatch); err != nil {
-			log.Error(err, "failed to update ImageBuild status with route URL")
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-		}
-
-		log.Info("artifact serving resources created and status updated", "route", route.Status.Ingress[0].Host)
-	}
-
-	return ctrl.Result{}, nil
-}
-
-func (r *ImageBuildReconciler) createArtifactPod(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) error {
-	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
-
-	podName := fmt.Sprintf("%s-artifact-pod", imageBuild.Name)
-	existingPod := &corev1.Pod{}
-	err := r.Get(ctx, types.NamespacedName{
-		Name:      podName,
-		Namespace: imageBuild.Namespace,
-	}, existingPod)
-
-	if err == nil {
-		if existingPod.Status.Phase == corev1.PodRunning {
-			log.Info("Artifact pod already exists and is running", "pod", podName)
-			return nil
-		}
-	} else if !errors.IsNotFound(err) {
-		return fmt.Errorf("error checking for existing pod: %w", err)
-	}
-
-	workspacePVCName := imageBuild.Status.PVCName
-	if workspacePVCName == "" {
-		var err error
-		workspacePVCName, err = r.getOrCreateWorkspacePVC(ctx, imageBuild)
-		if err != nil {
-			return err
-		}
-
-		fresh := &automotivev1alpha1.ImageBuild{}
-		nsName := types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}
-		if err := r.Get(ctx, nsName, fresh); err != nil {
-			return fmt.Errorf("failed to get fresh ImageBuild: %w", err)
-		}
-
-		fresh.Status.PVCName = workspacePVCName
-		if err := r.Status().Update(ctx, fresh); err != nil {
-			return fmt.Errorf("failed to update ImageBuild status with PVC name: %w", err)
-		}
-
-		imageBuild.Status.PVCName = workspacePVCName
-	}
-
-	nginxConfigMapName, err := r.createNginxConfigMap(ctx, imageBuild)
-	if err != nil {
-		return fmt.Errorf("failed to create nginx config map: %w", err)
-	}
-
-	labels := map[string]string{
-		"app.kubernetes.io/managed-by":                    "automotive-dev-operator",
-		"automotive.sdv.cloud.redhat.com/imagebuild-name": imageBuild.Name,
-		"app.kubernetes.io/name":                          "artifact-pod",
-	}
-
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      podName,
-			Namespace: imageBuild.Namespace,
-			Labels:    labels,
-			OwnerReferences: []metav1.OwnerReference{
-				{
-					APIVersion:         imageBuild.APIVersion,
-					Kind:               imageBuild.Kind,
-					Name:               imageBuild.Name,
-					UID:                imageBuild.UID,
-					Controller:         ptr.To(true),
-					BlockOwnerDeletion: ptr.To(true),
-				},
-			},
-		},
-		Spec: corev1.PodSpec{
-			SecurityContext: &corev1.PodSecurityContext{
-				RunAsUser:    ptr.To[int64](1000),
-				RunAsGroup:   ptr.To[int64](1000),
-				FSGroup:      ptr.To[int64](1000),
-				RunAsNonRoot: ptr.To(true),
-			},
-			Containers: []corev1.Container{
-				{
-					Name:  "fileserver",
-					Image: "quay.io/nginx/nginx-unprivileged:latest",
-					Ports: []corev1.ContainerPort{
-						{
-							ContainerPort: 8080,
-							Protocol:      corev1.ProtocolTCP,
-						},
-					},
-					Resources: corev1.ResourceRequirements{
-						Requests: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("100m"),
-							corev1.ResourceMemory: resource.MustParse("64Mi"),
-						},
-						Limits: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("200m"),
-							corev1.ResourceMemory: resource.MustParse("128Mi"),
-						},
-					},
-					VolumeMounts: []corev1.VolumeMount{
-						{
-							Name:      "artifacts",
-							MountPath: "/workspace/shared",
-							ReadOnly:  true,
-						},
-						{
-							Name:      "nginx-config",
-							MountPath: "/etc/nginx/conf.d",
-							ReadOnly:  true,
-						},
-					},
-				},
-			},
-			Volumes: []corev1.Volume{
-				{
-					Name: "artifacts",
-					VolumeSource: corev1.VolumeSource{
-						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-							ClaimName: workspacePVCName,
-						},
-					},
-				},
-				{
-					Name: "nginx-config",
-					VolumeSource: corev1.VolumeSource{
-						ConfigMap: &corev1.ConfigMapVolumeSource{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: nginxConfigMapName,
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	if err := r.Create(ctx, pod); err != nil && !errors.IsAlreadyExists(err) {
-		return fmt.Errorf("failed to create artifact pod: %w", err)
-	}
-
-	log.Info("Created artifact pod, will check status on next reconciliation", "pod", podName)
-	return nil
-}
-
-func (r *ImageBuildReconciler) createNginxConfigMap(
-	ctx context.Context,
-	imageBuild *automotivev1alpha1.ImageBuild,
-) (string, error) {
-	configMapName := fmt.Sprintf("%s-nginx-config", imageBuild.Name)
-
-	configMap := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      configMapName,
-			Namespace: imageBuild.Namespace,
-			OwnerReferences: []metav1.OwnerReference{
-				{
-					APIVersion:         imageBuild.APIVersion,
-					Kind:               imageBuild.Kind,
-					Name:               imageBuild.Name,
-					UID:                imageBuild.UID,
-					Controller:         ptr.To(true),
-					BlockOwnerDeletion: ptr.To(true),
-				},
-			},
-		},
-		Data: map[string]string{
-			"default.conf": `
-server {
-    listen 8080;
-    server_name localhost;
-
-    # Serve artifacts directly from the mounted PVC
-    root /workspace/shared;
-    autoindex on;
-    autoindex_exact_size off;
-    autoindex_localtime on;
-
-    location / {
-        try_files $uri =404;
-        add_header Cache-Control "no-store" always;
-        add_header X-Content-Type-Options nosniff always;
-    }
-
-    error_page   500 502 503 504  /50x.html;
-    location = /50x.html {
-        root   /usr/share/nginx/html;
-    }
-}
-    `,
-		},
-	}
-
-	if err := r.Create(ctx, configMap); err != nil {
-		if errors.IsAlreadyExists(err) {
-			return configMapName, nil
-		}
-		return "", fmt.Errorf("failed to create nginx config ConfigMap: %w", err)
-	}
-
-	return configMapName, nil
 }
 
 // cleanupTransientSecrets deletes any transient secrets created for this build
@@ -1265,12 +836,6 @@ func (r *ImageBuildReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Secret{})
-
-	// Only add Route ownership if the Route CRD is available (OpenShift only)
-	_, err := mgr.GetRESTMapper().RESTMapping(routev1.GroupVersion.WithKind("Route").GroupKind())
-	if err == nil {
-		builder = builder.Owns(&routev1.Route{})
-	}
 
 	return builder.Complete(r)
 }
@@ -1541,111 +1106,5 @@ func (r *ImageBuildReconciler) shutdownUploadPod(ctx context.Context, imageBuild
 	}
 
 	log.Info("Upload pod deleted")
-	return nil
-}
-
-func (r *ImageBuildReconciler) createArtifactServingResources(
-	ctx context.Context,
-	imageBuild *automotivev1alpha1.ImageBuild,
-) error {
-	nsName := types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}
-	log := r.Log.WithValues("imagebuild", nsName)
-
-	podList := &corev1.PodList{}
-	if err := r.List(ctx, podList,
-		client.InNamespace(imageBuild.Namespace),
-		client.MatchingLabels{
-			"app.kubernetes.io/name":                          "artifact-pod",
-			"automotive.sdv.cloud.redhat.com/imagebuild-name": imageBuild.Name,
-		}); err != nil {
-		return fmt.Errorf("failed to list artifact pods: %w", err)
-	}
-
-	if len(podList.Items) == 0 {
-		return fmt.Errorf("no existing artifact pod found for ImageBuild %s", imageBuild.Name)
-	}
-	artifactPod := &podList.Items[0]
-
-	svcName := fmt.Sprintf("%s-artifact-service", imageBuild.Name)
-	svc := &corev1.Service{}
-	err := r.Get(ctx, types.NamespacedName{Name: svcName, Namespace: imageBuild.Namespace}, svc)
-	if errors.IsNotFound(err) {
-		log.Info("Creating artifact service", "name", svcName)
-		svc = &corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      svcName,
-				Namespace: imageBuild.Namespace,
-				Labels:    artifactPod.Labels,
-				OwnerReferences: []metav1.OwnerReference{
-					{
-						APIVersion:         imageBuild.APIVersion,
-						Kind:               imageBuild.Kind,
-						Name:               imageBuild.Name,
-						UID:                imageBuild.UID,
-						Controller:         ptr.To(true),
-						BlockOwnerDeletion: ptr.To(true),
-					},
-				},
-			},
-			Spec: corev1.ServiceSpec{
-				Selector: artifactPod.Labels,
-				Ports: []corev1.ServicePort{
-					{
-						Name:       "http",
-						Port:       8080,
-						TargetPort: intstr.FromInt(8080),
-					},
-				},
-			},
-		}
-		if err := r.Create(ctx, svc); err != nil {
-			return fmt.Errorf("failed to create service: %w", err)
-		}
-	} else if err != nil {
-		return fmt.Errorf("failed to check for existing service: %w", err)
-	} else {
-		log.Info("Artifact service already exists", "name", svcName)
-	}
-
-	routeName := fmt.Sprintf("%s-artifacts", imageBuild.Name)
-	route := &routev1.Route{}
-	err = r.Get(ctx, types.NamespacedName{Name: routeName, Namespace: imageBuild.Namespace}, route)
-	if errors.IsNotFound(err) {
-		log.Info("Creating artifact route", "name", routeName)
-		route = &routev1.Route{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      routeName,
-				Namespace: imageBuild.Namespace,
-				Labels:    artifactPod.Labels,
-				OwnerReferences: []metav1.OwnerReference{
-					{
-						APIVersion:         imageBuild.APIVersion,
-						Kind:               imageBuild.Kind,
-						Name:               imageBuild.Name,
-						UID:                imageBuild.UID,
-						Controller:         ptr.To(true),
-						BlockOwnerDeletion: ptr.To(true),
-					},
-				},
-			},
-			Spec: routev1.RouteSpec{
-				To: routev1.RouteTargetReference{
-					Kind: "Service",
-					Name: svcName,
-				},
-				Port: &routev1.RoutePort{
-					TargetPort: intstr.FromInt(8080),
-				},
-			},
-		}
-		if err := r.Create(ctx, route); err != nil {
-			return fmt.Errorf("failed to create route: %w", err)
-		}
-	} else if err != nil {
-		return fmt.Errorf("failed to check for existing route: %w", err)
-	} else {
-		log.Info("Artifact route already exists", "name", routeName)
-	}
-
 	return nil
 }
