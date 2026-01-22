@@ -54,7 +54,7 @@ spec:
                     type: string
                   distro:
                     description: Distro specifies the distribution to build for (e.g.,
-                      "cs9", "autosd")
+                      "autosd")
                     type: string
                   image:
                     description: |-
@@ -128,6 +128,11 @@ spec:
                     - simg
                     type: string
                 type: object
+              pushSecretRef:
+                description: |-
+                  PushSecretRef is the name of the kubernetes.io/dockerconfigjson secret for pushing artifacts
+                  This is separate from SecretRef because push operations require docker config format
+                type: string
               runtimeClassName:
                 description: RuntimeClassName specifies the runtime class to use for
                   the build pod

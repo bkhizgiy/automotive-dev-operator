@@ -32,6 +32,21 @@ const (
 	phaseFailed    = "Failed"
 )
 
+// compressionToExtension maps compression algorithm names to file extensions.
+func compressionToExtension(compression string) string {
+	switch compression {
+	case "lz4":
+		return "lz4"
+	case "xz":
+		return "xz"
+	case "gzip":
+		return "gz"
+	default:
+		// Default to gz for unknown compression types
+		return "gz"
+	}
+}
+
 // ImageBuildReconciler reconciles a ImageBuild object
 //
 //nolint:revive // Name follows Kubebuilder convention for reconcilers
@@ -610,49 +625,81 @@ func (r *ImageBuildReconciler) createPushTaskRun(ctx context.Context, imageBuild
 		return fmt.Errorf("no disk export configured")
 	}
 
+	// Validate required fields for push operation
+	repositoryURL := imageBuild.Spec.GetLegacyExportURL()
+	if repositoryURL == "" {
+		return fmt.Errorf("repository URL is required for push: export.disk.oci must be set")
+	}
+
+	distro := imageBuild.Spec.GetDistro()
+	if distro == "" {
+		return fmt.Errorf("distro is required for push: aib.distro must be set")
+	}
+
+	target := imageBuild.Spec.GetTarget()
+	if target == "" {
+		return fmt.Errorf("target is required for push: aib.target must be set")
+	}
+
+	exportFormat := imageBuild.Spec.GetExportFormat()
+	// exportFormat has a default of "qcow2", but validate anyway
+	if exportFormat == "" {
+		return fmt.Errorf("export format is required for push")
+	}
+
+	pushSecretRef := imageBuild.Spec.GetPushSecretRef()
+	if pushSecretRef == "" {
+		return fmt.Errorf("push secret reference is required: pushSecretRef must be set for registry authentication")
+	}
+
+	compression := imageBuild.Spec.GetCompression()
+	compressionExt := compressionToExtension(compression)
+
 	pushTask := tasks.GeneratePushArtifactRegistryTask(OperatorNamespace)
+
+	artifactFilename := fmt.Sprintf("%s-%s.%s.%s", distro, target, exportFormat, compressionExt)
 
 	params := []tektonv1.Param{
 		{
 			Name: "distro",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
-				StringVal: imageBuild.Spec.GetDistro(),
+				StringVal: distro,
 			},
 		},
 		{
 			Name: "target",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
-				StringVal: imageBuild.Spec.GetTarget(),
+				StringVal: target,
 			},
 		},
 		{
 			Name: "export-format",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
-				StringVal: imageBuild.Spec.GetExportFormat(),
+				StringVal: exportFormat,
 			},
 		},
 		{
 			Name: "repository-url",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
-				StringVal: imageBuild.Spec.GetLegacyExportURL(),
+				StringVal: repositoryURL,
 			},
 		},
 		{
 			Name: "secret-ref",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
-				StringVal: imageBuild.Spec.SecretRef,
+				StringVal: pushSecretRef,
 			},
 		},
 		{
 			Name: "artifact-filename",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
-				StringVal: fmt.Sprintf("%s-%s.%s.gz", imageBuild.Spec.GetDistro(), imageBuild.Spec.GetTarget(), imageBuild.Spec.GetExportFormat()),
+				StringVal: artifactFilename,
 			},
 		},
 	}
@@ -795,6 +842,10 @@ func (r *ImageBuildReconciler) cleanupTransientSecrets(
 	// Cleanup registry auth secret (SecretRef)
 	if imageBuild.Spec.SecretRef != "" {
 		r.deleteSecretWithRetry(ctx, imageBuild.Namespace, imageBuild.Spec.SecretRef, "registry auth", log)
+	}
+	// Cleanup push secret (PushSecretRef)
+	if imageBuild.Spec.PushSecretRef != "" {
+		r.deleteSecretWithRetry(ctx, imageBuild.Namespace, imageBuild.Spec.PushSecretRef, "push auth", log)
 	}
 }
 

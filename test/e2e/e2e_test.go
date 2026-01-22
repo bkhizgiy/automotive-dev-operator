@@ -208,14 +208,22 @@ metadata:
   name: e2e-real-build
   namespace: automotive-dev-operator-system
 spec:
-  distro: autosd
-  target: qemu
+  # Common fields
   architecture: %s
-  exportFormat: qcow2
-  mode: image
-  manifestConfigMap: e2e-real-build-manifest
-  compression: gzip
-  automotiveImageBuilder: quay.io/centos-sig-automotive/automotive-image-builder:latest
+
+  # AIB configuration
+  aib:
+    distro: autosd
+    target: qemu
+    mode: image
+    manifestConfigMap: e2e-real-build-manifest
+    image: quay.io/centos-sig-automotive/automotive-image-builder:latest
+
+  # Export configuration
+  export:
+    format: qcow2
+    compression: gzip
+    buildDiskImage: false
 `, arch)
 			cmd = exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(imageBuildYAML)

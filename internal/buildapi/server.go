@@ -771,7 +771,7 @@ func validateBuildRequest(req *BuildRequest, maxManifestSize int64) error {
 // applyBuildDefaults sets default values for build request fields
 func applyBuildDefaults(req *BuildRequest) error {
 	if req.Distro == "" {
-		req.Distro = "cs9"
+		req.Distro = "autosd"
 	}
 	if req.Target == "" {
 		req.Target = "qemu"
@@ -978,11 +978,12 @@ func (a *APIServer) createBuild(c *gin.Context) {
 			},
 		},
 		Spec: automotivev1alpha1.ImageBuildSpec{
-			Architecture: string(req.Architecture),
-			StorageClass: req.StorageClass,
-			SecretRef:    envSecretRef,
-			AIB:          buildAIBSpec(&req, cfgName, needsUpload),
-			Export:       buildExportSpec(&req),
+			Architecture:  string(req.Architecture),
+			StorageClass:  req.StorageClass,
+			SecretRef:     envSecretRef,
+			PushSecretRef: pushSecretName,
+			AIB:           buildAIBSpec(&req, cfgName, needsUpload),
+			Export:        buildExportSpec(&req),
 		},
 	}
 	if err := k8sClient.Create(ctx, imageBuild); err != nil {

@@ -38,6 +38,10 @@ type ImageBuildSpec struct {
 	// The secret should contain keys like REGISTRY_AUTH_FILE for authentication
 	SecretRef string `json:"secretRef,omitempty"`
 
+	// PushSecretRef is the name of the kubernetes.io/dockerconfigjson secret for pushing artifacts
+	// This is separate from SecretRef because push operations require docker config format
+	PushSecretRef string `json:"pushSecretRef,omitempty"`
+
 	// ─── Nested configuration ───
 
 	// AIB contains automotive-image-builder specific configuration
@@ -49,7 +53,7 @@ type ImageBuildSpec struct {
 
 // AIBSpec defines the automotive-image-builder configuration
 type AIBSpec struct {
-	// Distro specifies the distribution to build for (e.g., "cs9", "autosd")
+	// Distro specifies the distribution to build for (e.g., "autosd")
 	// +kubebuilder:validation:Required
 	Distro string `json:"distro"`
 
@@ -280,6 +284,11 @@ func (s *ImageBuildSpec) GetContainerPush() string {
 		return s.Export.Container
 	}
 	return ""
+}
+
+// GetPushSecretRef returns the push secret reference for docker config auth
+func (s *ImageBuildSpec) GetPushSecretRef() string {
+	return s.PushSecretRef
 }
 
 // GetExportOCI returns the disk OCI export URL
