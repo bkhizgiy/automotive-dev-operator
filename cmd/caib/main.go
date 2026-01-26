@@ -749,9 +749,14 @@ func runBuildDev(_ *cobra.Command, args []string) {
 	}
 
 	// Validate mode
-	parsedMode := buildapitypes.ModePackage
-	if mode == "image" {
+	var parsedMode buildapitypes.Mode
+	switch mode {
+	case "image":
 		parsedMode = buildapitypes.ModeImage
+	case "package":
+		parsedMode = buildapitypes.ModePackage
+	default:
+		handleError(fmt.Errorf("invalid --mode %q (expected: %q or %q)", mode, buildapitypes.ModeImage, buildapitypes.ModePackage))
 	}
 
 	// Extract registry URL and credentials
