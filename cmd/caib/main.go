@@ -341,7 +341,6 @@ Examples:
 	buildDevCmd.Flags().IntVar(&timeout, "timeout", 60, "timeout in minutes")
 	buildDevCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", false, "wait for build to complete")
 	buildDevCmd.Flags().BoolVarP(&followLogs, "follow", "f", true, "follow build logs")
-	_ = buildDevCmd.MarkFlagRequired("mode")
 
 	// Add all commands
 	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, catalog.NewCatalogCmd())
