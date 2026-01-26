@@ -131,6 +131,11 @@ type BuildRequest struct {
 	BuildDiskImage bool   `json:"buildDiskImage,omitempty"` // Build disk image from bootc container
 	ExportOCI      string `json:"exportOci,omitempty"`      // Registry URL to push disk as OCI artifact
 	BuilderImage   string `json:"builderImage,omitempty"`   // Custom builder image
+
+	// Flash configuration for Jumpstarter device flashing after build
+	FlashEnabled       bool   `json:"flashEnabled,omitempty"`       // Enable flashing after build
+	FlashClientConfig  string `json:"flashClientConfig,omitempty"`  // Base64-encoded Jumpstarter client config
+	FlashLeaseDuration string `json:"flashLeaseDuration,omitempty"` // Lease duration in HH:MM:SS format
 }
 
 // RegistryCredentials contains authentication details for container registries.
@@ -152,6 +157,47 @@ type JumpstarterInfo struct {
 	ExporterSelector string `json:"exporterSelector,omitempty"`
 	// FlashCmd is the command for flashing the device
 	FlashCmd string `json:"flashCmd,omitempty"`
+	// LeaseID is the Jumpstarter lease ID acquired during flash
+	LeaseID string `json:"leaseId,omitempty"`
+}
+
+// FlashRequest is the payload to flash an image via Jumpstarter
+type FlashRequest struct {
+	// Name is the flash job name (auto-generated if omitted)
+	Name string `json:"name"`
+	// ImageRef is the OCI registry reference of the disk image to flash
+	ImageRef string `json:"imageRef"`
+	// Target is the target platform for exporter lookup from OperatorConfig
+	Target string `json:"target,omitempty"`
+	// ExporterSelector is the direct label selector for Jumpstarter exporters (alternative to Target)
+	ExporterSelector string `json:"exporterSelector,omitempty"`
+	// FlashCmd is the command template for flashing (optional, can come from OperatorConfig)
+	FlashCmd string `json:"flashCmd,omitempty"`
+	// ClientConfig is the base64-encoded Jumpstarter client config file content
+	ClientConfig string `json:"clientConfig"`
+	// LeaseDuration is the Jumpstarter lease duration in HH:MM:SS format (default: "01:00:00")
+	LeaseDuration string `json:"leaseDuration,omitempty"`
+}
+
+// FlashResponse is returned by flash operations
+type FlashResponse struct {
+	Name           string `json:"name"`
+	Phase          string `json:"phase"`
+	Message        string `json:"message"`
+	RequestedBy    string `json:"requestedBy,omitempty"`
+	StartTime      string `json:"startTime,omitempty"`
+	CompletionTime string `json:"completionTime,omitempty"`
+	TaskRunName    string `json:"taskRunName,omitempty"`
+}
+
+// FlashListItem represents a flash TaskRun in the list API
+type FlashListItem struct {
+	Name           string `json:"name"`
+	Phase          string `json:"phase"`
+	Message        string `json:"message"`
+	RequestedBy    string `json:"requestedBy,omitempty"`
+	CreatedAt      string `json:"createdAt"`
+	CompletionTime string `json:"completionTime,omitempty"`
 }
 
 // BuildResponse is returned by POST and GET build operations

@@ -81,6 +81,11 @@ spec:
                 description: Jumpstarter defines configuration for Jumpstarter device
                   flashing integration
                 properties:
+                  image:
+                    default: quay.io/jumpstarter-dev/jumpstarter:latest
+                    description: Image is the container image for Jumpstarter CLI
+                      operations
+                    type: string
                   targetMappings:
                     additionalProperties:
                       description: JumpstarterTargetMapping defines the Jumpstarter

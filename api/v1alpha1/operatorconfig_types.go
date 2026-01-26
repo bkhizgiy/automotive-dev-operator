@@ -54,11 +54,27 @@ type JumpstarterTargetMapping struct {
 	FlashCmd string `json:"flashCmd,omitempty"`
 }
 
+// DefaultJumpstarterImage is the default container image for Jumpstarter CLI operations
+const DefaultJumpstarterImage = "quay.io/jumpstarter-dev/jumpstarter:latest"
+
 // JumpstarterConfig defines configuration for Jumpstarter device flashing integration
 type JumpstarterConfig struct {
+	// Image is the container image for Jumpstarter CLI operations
+	// +kubebuilder:default="quay.io/jumpstarter-dev/jumpstarter:latest"
+	// +optional
+	Image string `json:"image,omitempty"`
+
 	// TargetMappings maps build targets to Jumpstarter exporter configurations
 	// +optional
 	TargetMappings map[string]JumpstarterTargetMapping `json:"targetMappings,omitempty"`
+}
+
+// GetJumpstarterImage returns the Jumpstarter image to use, falling back to the default
+func (c *JumpstarterConfig) GetJumpstarterImage() string {
+	if c != nil && c.Image != "" {
+		return c.Image
+	}
+	return DefaultJumpstarterImage
 }
 
 // BuildAPIConfig defines configuration for the Build API server

@@ -24,3 +24,8 @@ var PushArtifactScript string
 
 // BuildBuilderScript contains the embedded shell script for building the builder image.
 var BuildBuilderScript string
+
+//go:embed scripts/flash_image.sh
+
+// FlashImageScript contains the embedded shell script for flashing images via Jumpstarter.
+var FlashImageScript string

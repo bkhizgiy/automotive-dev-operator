@@ -67,9 +67,8 @@ echo "Using OpenShift internal registry: ${INTERNAL_REGISTRY}"
 REGISTRY=${REGISTRY:-${INTERNAL_REGISTRY}}
 CATALOG_NAMESPACE=${CATALOG_NAMESPACE:-openshift-marketplace}
 
-# Use git SHA for unique operator image tag to avoid node-level caching issues
-GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "dev")
-OPERATOR_TAG="${GIT_SHA}-$(date +%s)"
+# Use 'latest' tag - Kubernetes defaults to imagePullPolicy: Always for latest
+OPERATOR_TAG="latest"
 OPERATOR_IMG="${REGISTRY}/${NAMESPACE}/automotive-dev-operator:${OPERATOR_TAG}"
 
 BUNDLE_IMG="${REGISTRY}/${CATALOG_NAMESPACE}/automotive-dev-operator-bundle:v${VERSION}"
@@ -208,10 +207,13 @@ echo "Generating bundle..."
 make bundle IMG=${OPERATOR_IMG} VERSION=${VERSION}
 
 echo ""
-echo "Fixing OPERATOR_IMAGE env var in bundle..."
-# The bundle generator doesn't replace env var values, only container images
-# We need to manually update the OPERATOR_IMAGE env var to use the internal registry with unique tag
+echo "Fixing image references in bundle to use internal registry..."
+# The bundle generator uses the external registry route for container images,
+# but pods can't authenticate to the external route. Replace ALL image references
+# (both container images and env var values) with the internal service URL.
 OPERATOR_IMG_INTERNAL="image-registry.openshift-image-registry.svc:5000/${NAMESPACE}/automotive-dev-operator:${OPERATOR_TAG}"
+sed -i.bak "s|${REGISTRY}/${NAMESPACE}/automotive-dev-operator:${OPERATOR_TAG}|${OPERATOR_IMG_INTERNAL}|g" bundle/manifests/automotive-dev-operator.clusterserviceversion.yaml
+# Also fix the legacy controller:latest pattern if it exists
 sed -i.bak "s|value: controller:latest|value: ${OPERATOR_IMG_INTERNAL}|g" bundle/manifests/automotive-dev-operator.clusterserviceversion.yaml
 rm -f bundle/manifests/automotive-dev-operator.clusterserviceversion.yaml.bak
 

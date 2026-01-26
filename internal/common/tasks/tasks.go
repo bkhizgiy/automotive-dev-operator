@@ -4,6 +4,7 @@ import (
 	_ "embed" // Required for go:embed directives
 	"time"
 
+	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -538,17 +539,78 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 						StringVal: "",
 					},
 				},
+				// Flash (Jumpstarter) parameters
+				{
+					Name:        "flash-enabled",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Enable flashing the image to hardware via Jumpstarter (true/false)",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "false",
+					},
+				},
+				{
+					Name:        "flash-image-ref",
+					Type:        tektonv1.ParamTypeString,
+					Description: "OCI image reference to flash to the device",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "",
+					},
+				},
+				{
+					Name:        "flash-exporter-selector",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Jumpstarter exporter selector label (e.g., 'board=j784s4evm')",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "",
+					},
+				},
+				{
+					Name:        "flash-cmd",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Custom flash command (default: j storage flash ${IMAGE_REF})",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "",
+					},
+				},
+				{
+					Name:        "flash-lease-duration",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Jumpstarter lease duration in HH:MM:SS format",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "03:00:00",
+					},
+				},
+				{
+					Name:        "jumpstarter-image",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Container image for Jumpstarter CLI operations",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: automotivev1alpha1.DefaultJumpstarterImage,
+					},
+				},
 			},
 			Workspaces: []tektonv1.PipelineWorkspaceDeclaration{
 				{Name: "shared-workspace"},
 				{Name: "manifest-config-workspace"},
 				{Name: "registry-auth", Optional: true},
+				{Name: "jumpstarter-client", Optional: true},
 			},
 			Results: []tektonv1.PipelineResult{
 				{
 					Name:        "artifact-filename",
 					Description: "The final artifact filename produced by the build",
 					Value:       tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: "$(tasks.build-image.results.artifact-filename)"},
+				},
+				{
+					Name:        "lease-id",
+					Description: "The Jumpstarter lease ID acquired during flash (empty if flash not enabled)",
+					Value:       tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: "$(tasks.flash-image.results.lease-id)"},
 				},
 			},
 			Tasks: []tektonv1.PipelineTask{
@@ -855,6 +917,92 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 						},
 					},
 				},
+				{
+					Name: "flash-image",
+					TaskRef: &tektonv1.TaskRef{
+						ResolverRef: tektonv1.ResolverRef{
+							Resolver: "cluster",
+							Params: []tektonv1.Param{
+								{
+									Name: "kind",
+									Value: tektonv1.ParamValue{
+										Type:      tektonv1.ParamTypeString,
+										StringVal: "task",
+									},
+								},
+								{
+									Name: "name",
+									Value: tektonv1.ParamValue{
+										Type:      tektonv1.ParamTypeString,
+										StringVal: "flash-image",
+									},
+								},
+								{
+									Name: "namespace",
+									Value: tektonv1.ParamValue{
+										Type:      tektonv1.ParamTypeString,
+										StringVal: namespace,
+									},
+								},
+							},
+						},
+					},
+					Params: []tektonv1.Param{
+						{
+							Name: "image-ref",
+							Value: tektonv1.ParamValue{
+								Type:      tektonv1.ParamTypeString,
+								StringVal: "$(params.flash-image-ref)",
+							},
+						},
+						{
+							Name: "exporter-selector",
+							Value: tektonv1.ParamValue{
+								Type:      tektonv1.ParamTypeString,
+								StringVal: "$(params.flash-exporter-selector)",
+							},
+						},
+						{
+							Name: "flash-cmd",
+							Value: tektonv1.ParamValue{
+								Type:      tektonv1.ParamTypeString,
+								StringVal: "$(params.flash-cmd)",
+							},
+						},
+						{
+							Name: "lease-duration",
+							Value: tektonv1.ParamValue{
+								Type:      tektonv1.ParamTypeString,
+								StringVal: "$(params.flash-lease-duration)",
+							},
+						},
+						{
+							Name: "jumpstarter-image",
+							Value: tektonv1.ParamValue{
+								Type:      tektonv1.ParamTypeString,
+								StringVal: "$(params.jumpstarter-image)",
+							},
+						},
+					},
+					Workspaces: []tektonv1.WorkspacePipelineTaskBinding{
+						{Name: "jumpstarter-client", Workspace: "jumpstarter-client"},
+					},
+					// Flash runs after push-disk-artifact (if it ran) or build-image
+					RunAfter: []string{"push-disk-artifact"},
+					When: []tektonv1.WhenExpression{
+						{
+							Input:    "$(params.flash-enabled)",
+							Operator: "in",
+							Values:   []string{"true"},
+						},
+						{
+							Input:    "$(params.flash-exporter-selector)",
+							Operator: "notin",
+							Values:   []string{"", "null"},
+						},
+					},
+					Timeout: &metav1.Duration{Duration: 4 * time.Hour},
+				},
 			},
 		},
 	}
@@ -1031,6 +1179,114 @@ func GeneratePrepareBuilderTask(namespace string) *tektonv1.Task {
 							Medium: corev1.StorageMediumMemory,
 						},
 					},
+				},
+			},
+		},
+	}
+}
+
+// GenerateFlashTask creates a Tekton Task for flashing images to hardware via Jumpstarter
+func GenerateFlashTask(namespace string) *tektonv1.Task {
+	return &tektonv1.Task{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "tekton.dev/v1",
+			Kind:       "Task",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "flash-image",
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "automotive-dev-operator",
+				"app.kubernetes.io/part-of":    "automotive-dev",
+			},
+		},
+		Spec: tektonv1.TaskSpec{
+			Params: []tektonv1.ParamSpec{
+				{
+					Name:        "image-ref",
+					Type:        tektonv1.ParamTypeString,
+					Description: "OCI image reference to flash to the device",
+				},
+				{
+					Name:        "exporter-selector",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Jumpstarter exporter selector label (e.g., 'board=j784s4evm')",
+				},
+				{
+					Name:        "flash-cmd",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Command to run for flashing (default: j storage flash ${IMAGE_REF})",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "",
+					},
+				},
+				{
+					Name:        "lease-duration",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Lease duration in HH:MM:SS format",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "03:00:00",
+					},
+				},
+				{
+					Name:        "jumpstarter-image",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Container image for Jumpstarter CLI operations",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: automotivev1alpha1.DefaultJumpstarterImage,
+					},
+				},
+			},
+			Results: []tektonv1.TaskResult{
+				{
+					Name:        "lease-id",
+					Type:        tektonv1.ResultsTypeString,
+					Description: "The Jumpstarter lease ID acquired for the device",
+				},
+			},
+			Workspaces: []tektonv1.WorkspaceDeclaration{
+				{
+					Name:        "jumpstarter-client",
+					Description: "Workspace containing the Jumpstarter client config (client.yaml)",
+					MountPath:   "/workspace/jumpstarter-client",
+					Optional:    true,
+				},
+			},
+			Steps: []tektonv1.Step{
+				{
+					Name:  "flash",
+					Image: "$(params.jumpstarter-image)",
+					Env: []corev1.EnvVar{
+						{
+							Name:  "IMAGE_REF",
+							Value: "$(params.image-ref)",
+						},
+						{
+							Name:  "EXPORTER_SELECTOR",
+							Value: "$(params.exporter-selector)",
+						},
+						{
+							Name:  "FLASH_CMD",
+							Value: "$(params.flash-cmd)",
+						},
+						{
+							Name:  "LEASE_DURATION",
+							Value: "$(params.lease-duration)",
+						},
+						{
+							Name:  "JMP_CLIENT_CONFIG",
+							Value: "/workspace/jumpstarter-client/client.yaml",
+						},
+						{
+							Name:  "RESULTS_LEASE_ID_PATH",
+							Value: "$(results.lease-id.path)",
+						},
+					},
+					Script:  FlashImageScript,
+					Timeout: &metav1.Duration{Duration: 4 * time.Hour},
 				},
 			},
 		},

@@ -125,6 +125,22 @@ spec:
                       raw, qcow2, simg, or any AIB-supported format)
                     type: string
                 type: object
+              flash:
+                description: Flash contains configuration for flashing the built image
+                  to hardware via Jumpstarter
+                properties:
+                  clientConfigSecretRef:
+                    description: |-
+                      ClientConfigSecretRef is the name of the secret containing the Jumpstarter client config
+                      The secret should have a key "client.yaml" with the config contents
+                      If set, flash is enabled automatically
+                    type: string
+                  leaseDuration:
+                    default: "03:00:00"
+                    description: LeaseDuration is the duration for the device lease
+                      in HH:MM:SS format
+                    type: string
+                type: object
               pushSecretRef:
                 description: |-
                   PushSecretRef is the name of the kubernetes.io/dockerconfigjson secret for pushing artifacts
@@ -218,6 +234,13 @@ spec:
                   - type
                   type: object
                 type: array
+              flashTaskRunName:
+                description: FlashTaskRunName is the name of the TaskRun for flashing
+                  to hardware
+                type: string
+              leaseId:
+                description: LeaseID is the Jumpstarter lease ID acquired during flash
+                type: string
               message:
                 description: Message provides more detail about the current phase
                 type: string
@@ -234,6 +257,7 @@ spec:
                 - Uploading
                 - Building
                 - Pushing
+                - Flashing
                 - Completed
                 - Failed
                 type: string
