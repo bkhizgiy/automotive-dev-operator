@@ -3,8 +3,12 @@ package operatorconfig
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"os"
+	"strings"
+	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	routev1 "github.com/openshift/api/route/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -15,7 +19,8 @@ import (
 )
 
 const (
-	defaultOperatorImage = "quay.io/rh-sdv-cloud/automotive-dev-operator:latest"
+	defaultOperatorImage      = "quay.io/rh-sdv-cloud/automotive-dev-operator:latest"
+	buildAPIAuthConfigMapName = "ado-build-api-authentication"
 )
 
 // getOperatorImage returns the operator image from env var or default
@@ -53,12 +58,56 @@ func (r *OperatorConfigReconciler) buildBuildAPIContainers(isOpenShift bool) []c
 						},
 					},
 				},
+				{
+					Name:  "AUTH_CONFIG_PATH",
+					Value: "/etc/build-api/config",
+				},
+				{
+					Name: "INTERNAL_JWT_ISSUER",
+					ValueFrom: &corev1.EnvVarSource{
+						SecretKeyRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: internalJWTSecretName,
+							},
+							Key: "issuer",
+						},
+					},
+				},
+				{
+					Name: "INTERNAL_JWT_AUDIENCE",
+					ValueFrom: &corev1.EnvVarSource{
+						SecretKeyRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: internalJWTSecretName,
+							},
+							Key: "audience",
+						},
+					},
+				},
+				{
+					Name: "INTERNAL_JWT_KEY",
+					ValueFrom: &corev1.EnvVarSource{
+						SecretKeyRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: internalJWTSecretName,
+							},
+							Key: "signing-key",
+						},
+					},
+				},
 			},
 			Ports: []corev1.ContainerPort{
 				{
 					Name:          "http",
 					ContainerPort: 8080,
 					Protocol:      corev1.ProtocolTCP,
+				},
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{
+					Name:      "build-api-auth-config",
+					MountPath: "/etc/build-api",
+					ReadOnly:  true,
 				},
 			},
 			SecurityContext: &corev1.SecurityContext{
@@ -179,6 +228,18 @@ func (r *OperatorConfigReconciler) buildBuildAPIDeployment(isOpenShift bool) *ap
 						},
 					},
 					Containers: r.buildBuildAPIContainers(isOpenShift),
+					Volumes: []corev1.Volume{
+						{
+							Name: "build-api-auth-config",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: buildAPIAuthConfigMapName,
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
@@ -324,6 +385,87 @@ func (r *OperatorConfigReconciler) buildOAuthSecret(name string) *corev1.Secret 
 			"cookie-secret": []byte(base64.StdEncoding.EncodeToString(cookieSecret)[:32]),
 		},
 	}
+}
+
+func (r *OperatorConfigReconciler) buildBuildAPIAuthConfigMap() *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      buildAPIAuthConfigMapName,
+			Namespace: operatorNamespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":      "automotive-dev-operator",
+				"app.kubernetes.io/component": "build-api",
+				"app.kubernetes.io/part-of":   "automotive-dev-operator",
+			},
+		},
+		Data: map[string]string{
+			"config": strings.TrimSpace(defaultAuthenticationConfig()), // Use 'config' key to match Jumpstarter
+		},
+	}
+}
+
+func defaultAuthenticationConfig() string {
+	return `
+internal:
+  prefix: "internal:"
+jwt: []
+`
+}
+
+func (r *OperatorConfigReconciler) buildInternalJWTSecret(name string) (*corev1.Secret, error) {
+	signingKey, err := generateRandomToken(32)
+	if err != nil {
+		return nil, err
+	}
+
+	issuer := "ado-build-api"
+	audience := "ado-build-api"
+	expiresAt := time.Now().Add(365 * 24 * time.Hour)
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
+		Issuer:    issuer,
+		Subject:   "internal",
+		Audience:  jwt.ClaimStrings{audience},
+		IssuedAt:  jwt.NewNumericDate(time.Now().Add(-1 * time.Minute)),
+		NotBefore: jwt.NewNumericDate(time.Now().Add(-1 * time.Minute)),
+		ExpiresAt: jwt.NewNumericDate(expiresAt),
+	})
+	signedToken, err := token.SignedString([]byte(signingKey))
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign internal JWT: %w", err)
+	}
+
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: operatorNamespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":      "automotive-dev-operator",
+				"app.kubernetes.io/component": "build-api",
+				"app.kubernetes.io/part-of":   "automotive-dev-operator",
+			},
+		},
+		Type: corev1.SecretTypeOpaque,
+		StringData: map[string]string{
+			"signing-key": signingKey,
+			"token":       signedToken,
+			"issuer":      issuer,
+			"audience":    audience,
+			"expires-at":  expiresAt.Format(time.RFC3339),
+		},
+	}, nil
+}
+
+func generateRandomToken(length int) (string, error) {
+	const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	bytes := make([]byte, length)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	for i := range bytes {
+		bytes[i] = charset[int(bytes[i])%len(charset)]
+	}
+	return string(bytes), nil
 }
 
 func boolPtr(b bool) *bool {
