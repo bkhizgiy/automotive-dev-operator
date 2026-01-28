@@ -388,7 +388,7 @@ func (r *OperatorConfigReconciler) cleanupBuildAPI(ctx context.Context) error {
 	return nil
 }
 
-func (r *OperatorConfigReconciler) ensureBuildAPIInternalJWTSecret(ctx context.Context, owner *automotivev1alpha1.OperatorConfig) error {
+func (r *OperatorConfigReconciler) ensureBuildAPIInternalJWTSecret(ctx context.Context, _ *automotivev1alpha1.OperatorConfig) error {
 	secret := &corev1.Secret{}
 	err := r.Get(ctx, client.ObjectKey{Name: internalJWTSecretName, Namespace: operatorNamespace}, secret)
 	if err != nil {

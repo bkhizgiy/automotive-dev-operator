@@ -1,3 +1,4 @@
+// Package auth provides OIDC authentication functionality for the caib CLI.
 package auth
 
 import (
@@ -11,6 +12,7 @@ import (
 	"time"
 )
 
+// GetOIDCConfigFromAPI fetches OIDC configuration from the Build API server.
 func GetOIDCConfigFromAPI(serverURL string) (*OIDCConfig, error) {
 	insecureTLS := strings.EqualFold(os.Getenv("CAIB_INSECURE_TLS"), "true") || os.Getenv("CAIB_INSECURE_TLS") == "1"
 	client := &http.Client{
@@ -30,7 +32,11 @@ func GetOIDCConfigFromAPI(serverURL string) (*OIDCConfig, error) {
 	if err != nil {
 		return nil, nil
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			// Ignore close errors on response body
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, nil
@@ -76,7 +82,10 @@ func GetOIDCConfigFromAPI(serverURL string) (*OIDCConfig, error) {
 
 // GetOIDCConfigFromLocalConfig tries to read from local config file
 func GetOIDCConfigFromLocalConfig() (*OIDCConfig, error) {
-	homeDir, _ := os.UserHomeDir()
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
 	configPath := filepath.Join(homeDir, tokenCacheDir, "config.json")
 
 	data, err := os.ReadFile(configPath)
@@ -112,7 +121,10 @@ func GetOIDCConfigFromLocalConfig() (*OIDCConfig, error) {
 
 // SaveOIDCConfig saves OIDC config to local file
 func SaveOIDCConfig(config *OIDCConfig) error {
-	homeDir, _ := os.UserHomeDir()
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
 	configPath := filepath.Join(homeDir, tokenCacheDir, "config.json")
 
 	configData := map[string]interface{}{

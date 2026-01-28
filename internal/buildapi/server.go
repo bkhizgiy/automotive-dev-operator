@@ -1761,36 +1761,6 @@ func extractBearerToken(c *gin.Context) string {
 	return strings.TrimSpace(token)
 }
 
-// findReadyArtifactPod finds a running and ready artifact pod for the given ImageBuild
-func findReadyArtifactPod(ctx context.Context, k8sClient client.Client, namespace, buildName string, deadline time.Time) (*corev1.Pod, error) {
-	for {
-		podList := &corev1.PodList{}
-		if err := k8sClient.List(ctx, podList,
-			client.InNamespace(namespace),
-			client.MatchingLabels{
-				"app.kubernetes.io/name":                          "artifact-pod",
-				"automotive.sdv.cloud.redhat.com/imagebuild-name": buildName,
-			}); err != nil {
-			return nil, fmt.Errorf("error listing artifact pods: %w", err)
-		}
-
-		for i := range podList.Items {
-			p := &podList.Items[i]
-			if p.Status.Phase == corev1.PodRunning {
-				for _, cs := range p.Status.ContainerStatuses {
-					if cs.Name == "fileserver" && cs.Ready {
-						return p, nil
-					}
-				}
-			}
-		}
-
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("artifact pod not ready")
-		}
-		time.Sleep(2 * time.Second)
-	}
-}
 
 func (a *APIServer) resolveRequester(c *gin.Context) string {
 	if v, ok := c.Get("requester"); ok {

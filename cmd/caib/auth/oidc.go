@@ -1,3 +1,4 @@
+// Package auth provides OIDC authentication functionality for the caib CLI.
 package auth
 
 import (
@@ -26,30 +27,37 @@ const (
 	tokenCacheFile = "token.json"
 )
 
+// TokenCache stores cached OIDC token information.
 type TokenCache struct {
 	Token     string    `json:"token"`
 	ExpiresAt time.Time `json:"expires_at"`
 	Issuer    string    `json:"issuer"`
 }
 
+// OIDCConfig holds OIDC provider configuration.
 type OIDCConfig struct {
 	IssuerURL string
 	ClientID  string
 	Scopes    []string
 }
 
+// OIDCAuth handles OIDC authentication flow and token management.
 type OIDCAuth struct {
 	config     OIDCConfig
 	tokenCache *TokenCache
 	cachePath  string
 }
 
+// NewOIDCAuth creates a new OIDC authenticator instance.
 func NewOIDCAuth(issuerURL, clientID string, scopes []string) *OIDCAuth {
 	if len(scopes) == 0 {
 		scopes = []string{"openid", "profile", "email"}
 	}
 
-	homeDir, _ := os.UserHomeDir()
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
 	cachePath := filepath.Join(homeDir, tokenCacheDir, tokenCacheFile)
 
 	return &OIDCAuth{
@@ -62,6 +70,7 @@ func NewOIDCAuth(issuerURL, clientID string, scopes []string) *OIDCAuth {
 	}
 }
 
+// GetToken retrieves a valid OIDC token, using cache if available.
 func (a *OIDCAuth) GetToken(ctx context.Context) (string, error) {
 	token, _, err := a.GetTokenWithStatus(ctx)
 	return token, err
@@ -90,6 +99,7 @@ func (a *OIDCAuth) GetTokenWithStatus(ctx context.Context) (string, bool, error)
 	return token, false, nil
 }
 
+// IsTokenValid checks if a token is valid and not expired.
 func (a *OIDCAuth) IsTokenValid(token string) bool {
 	parser := jwt.NewParser()
 	claims := jwt.MapClaims{}
@@ -128,7 +138,9 @@ func (a *OIDCAuth) authenticate(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to find available port: %w", err)
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
-	listener.Close()
+	if err := listener.Close(); err != nil {
+		return "", fmt.Errorf("failed to close listener: %w", err)
+	}
 
 	redirectURI := fmt.Sprintf("http://localhost:%d/callback", port)
 
@@ -149,7 +161,6 @@ func (a *OIDCAuth) authenticate(ctx context.Context) (string, error) {
 
 	// Create callback server
 	codeChan := make(chan string, 1)
-	stateChan := make(chan string, 1)
 	errChan := make(chan error, 1)
 
 	server := &http.Server{
@@ -167,28 +178,27 @@ func (a *OIDCAuth) authenticate(ctx context.Context) (string, error) {
 			if errorParam != "" {
 				errChan <- fmt.Errorf("OIDC error: %s", errorParam)
 				w.WriteHeader(http.StatusBadRequest)
-				fmt.Fprintf(w, "Authentication failed: %s", errorParam)
+				_, _ = fmt.Fprintf(w, "Authentication failed: %s", errorParam)
 				return
 			}
 
 			if code == "" {
 				errChan <- fmt.Errorf("no authorization code received")
 				w.WriteHeader(http.StatusBadRequest)
-				fmt.Fprintf(w, "No authorization code received")
+				_, _ = fmt.Fprintf(w, "No authorization code received")
 				return
 			}
 
 			if returnedState != state {
 				errChan <- fmt.Errorf("state mismatch")
 				w.WriteHeader(http.StatusBadRequest)
-				fmt.Fprintf(w, "State mismatch")
+				_, _ = fmt.Fprintf(w, "State mismatch")
 				return
 			}
 
 			codeChan <- code
-			stateChan <- returnedState
 			w.WriteHeader(http.StatusOK)
-			fmt.Fprintf(w, "Authentication successful! You can close this window.")
+			_, _ = fmt.Fprintf(w, "Authentication successful! You can close this window.")
 		}),
 	}
 
@@ -208,7 +218,7 @@ func (a *OIDCAuth) authenticate(ctx context.Context) (string, error) {
 	// Wait for callback
 	select {
 	case code := <-codeChan:
-		server.Shutdown(ctx)
+		_ = server.Shutdown(ctx)
 		// Exchange code for token
 		token, err := a.exchangeCodeForToken(ctx, discovery.TokenEndpoint, code, redirectURI, codeVerifier)
 		if err != nil {
@@ -222,13 +232,13 @@ func (a *OIDCAuth) authenticate(ctx context.Context) (string, error) {
 
 		return token, nil
 	case err := <-errChan:
-		server.Shutdown(ctx)
+		_ = server.Shutdown(ctx)
 		return "", err
 	case <-ctx.Done():
-		server.Shutdown(ctx)
+		_ = server.Shutdown(ctx)
 		return "", ctx.Err()
 	case <-time.After(5 * time.Minute):
-		server.Shutdown(ctx)
+		_ = server.Shutdown(ctx)
 		return "", fmt.Errorf("authentication timeout")
 	}
 }
@@ -252,7 +262,11 @@ func (a *OIDCAuth) exchangeCodeForToken(ctx context.Context, tokenEndpoint, code
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			// Ignore close errors on response body
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -278,6 +292,7 @@ func (a *OIDCAuth) exchangeCodeForToken(ctx context.Context, tokenEndpoint, code
 	return token, nil
 }
 
+// DiscoveryDocument represents the OIDC discovery document structure.
 type DiscoveryDocument struct {
 	AuthorizationEndpoint string `json:"authorization_endpoint"`
 	TokenEndpoint         string `json:"token_endpoint"`
@@ -289,7 +304,11 @@ func (a *OIDCAuth) getDiscovery(discoveryURL string) (*DiscoveryDocument, error)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			// Ignore close errors on response body
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("discovery request failed: %s", resp.Status)
@@ -356,7 +375,9 @@ func (a *OIDCAuth) saveTokenCache(token string) error {
 
 func generateRandomString(length int) string {
 	b := make([]byte, length)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("failed to generate random string: %v", err))
+	}
 	return base64.URLEncoding.EncodeToString(b)[:length]
 }
 

@@ -16,12 +16,14 @@ import (
 	apiserver "k8s.io/apiserver/pkg/apis/apiserver"
 )
 
+// AuthenticationConfiguration defines the authentication configuration structure.
 type AuthenticationConfiguration struct {
 	ClientID string                              `json:"clientId"`
 	Internal InternalAuthConfig                  `json:"internal"`
 	JWT      []apiserverv1beta1.JWTAuthenticator `json:"jwt"`
 }
 
+// InternalAuthConfig defines internal authentication configuration.
 type InternalAuthConfig struct {
 	Prefix string `json:"prefix"`
 }
@@ -132,7 +134,7 @@ func newJWTAuthenticator(ctx context.Context, config AuthenticationConfiguration
 	_ = apiserver.AddToScheme(scheme)
 	_ = apiserverv1beta1.AddToScheme(scheme)
 
-	var jwtAuthenticators []authenticator.Token
+	jwtAuthenticators := make([]authenticator.Token, 0, len(config.JWT))
 	for _, jwtAuthenticator := range config.JWT {
 		var oidcCAContent oidc.CAContentProvider
 		if jwtAuthenticator.Issuer.CertificateAuthority != "" {
