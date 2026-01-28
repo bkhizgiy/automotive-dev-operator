@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"sort"
 	"strings"
 	"time"
 
@@ -33,6 +34,8 @@ import (
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi/catalog"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/tasks"
+	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 	authnv1 "k8s.io/api/authentication/v1"
 )
 
@@ -40,6 +43,8 @@ const (
 	// Build phase constants
 	phaseCompleted = "Completed"
 	phaseFailed    = "Failed"
+	phasePending   = "Pending"
+	phaseRunning   = "Running"
 
 	// Image format and compression constants
 	formatImage     = "image"
@@ -50,6 +55,9 @@ const (
 	statusUnknown   = "unknown"
 	statusMissing   = "MISSING"
 	buildAPIName    = "ado-build-api"
+
+	// Flash TaskRun constants
+	flashTaskRunLabel = "automotive.sdv.cloud.redhat.com/flash-taskrun"
 )
 
 // APILimits holds configurable limits for the API server
@@ -221,6 +229,15 @@ func (a *APIServer) createRouter() *gin.Engine {
 			buildsGroup.GET("/:name/logs", a.handleStreamLogs)
 			buildsGroup.GET("/:name/template", a.handleGetBuildTemplate)
 			buildsGroup.POST("/:name/uploads", a.handleUploadFiles)
+		}
+
+		flashGroup := v1.Group("/flash")
+		flashGroup.Use(a.authMiddleware())
+		{
+			flashGroup.POST("", a.handleCreateFlash)
+			flashGroup.GET("", a.handleListFlash)
+			flashGroup.GET("/:name", a.handleGetFlash)
+			flashGroup.GET("/:name/logs", a.handleFlashLogs)
 		}
 
 		// Register catalog routes with authentication
@@ -504,6 +521,18 @@ func (a *APIServer) streamLogs(c *gin.Context, name string) {
 			continue
 		}
 
+		// Sort pods by start time so logs appear in execution order
+		sort.Slice(pods.Items, func(i, j int) bool {
+			// Pods without start time go last
+			if pods.Items[i].Status.StartTime == nil {
+				return false
+			}
+			if pods.Items[j].Status.StartTime == nil {
+				return true
+			}
+			return pods.Items[i].Status.StartTime.Before(pods.Items[j].Status.StartTime)
+		})
+
 		allPodsComplete := true
 		for _, pod := range pods.Items {
 			if completedPods[pod.Name] {
@@ -525,13 +554,12 @@ func (a *APIServer) streamLogs(c *gin.Context, name string) {
 			}
 		}
 
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, ib); err == nil {
-			if ib.Status.Phase == phaseCompleted || ib.Status.Phase == phaseFailed {
-				break
-			}
+		// Check if build is complete AND all pod logs have been streamed
+		if shouldExitLogStream(ctx, k8sClient, name, namespace, ib, allPodsComplete) {
+			break
 		}
 
-		if !hadStream || allPodsComplete {
+		if !hadStream || !allPodsComplete {
 			time.Sleep(2 * time.Second)
 		}
 		if !hadStream {
@@ -542,6 +570,27 @@ func (a *APIServer) streamLogs(c *gin.Context, name string) {
 		}
 	}
 
+	writeLogStreamFooter(c, hadStream)
+}
+
+// shouldExitLogStream checks if the log streaming loop should exit
+func shouldExitLogStream(
+	ctx context.Context,
+	k8sClient client.Client,
+	name, namespace string,
+	ib *automotivev1alpha1.ImageBuild,
+	allPodsComplete bool,
+) bool {
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, ib); err == nil {
+		if (ib.Status.Phase == phaseCompleted || ib.Status.Phase == phaseFailed) && allPodsComplete {
+			return true
+		}
+	}
+	return false
+}
+
+// writeLogStreamFooter writes the final message after log streaming ends
+func writeLogStreamFooter(c *gin.Context, hadStream bool) {
 	if !hadStream {
 		_, _ = c.Writer.Write([]byte("\n[No logs available]\n"))
 	} else {
@@ -967,6 +1016,24 @@ func (a *APIServer) createBuild(c *gin.Context) {
 		return
 	}
 
+	var flashSpec *automotivev1alpha1.FlashSpec
+	var flashSecretName string
+	if req.FlashEnabled {
+		if req.FlashClientConfig == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "flash enabled but client config is required"})
+			return
+		}
+		flashSecretName = req.Name + "-jumpstarter-client"
+		if err := createFlashClientSecret(ctx, k8sClient, namespace, flashSecretName, req.FlashClientConfig); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error creating flash client secret: %v", err)})
+			return
+		}
+		flashSpec = &automotivev1alpha1.FlashSpec{
+			ClientConfigSecretRef: flashSecretName,
+			LeaseDuration:         req.FlashLeaseDuration,
+		}
+	}
+
 	imageBuild := &automotivev1alpha1.ImageBuild{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      req.Name,
@@ -983,6 +1050,7 @@ func (a *APIServer) createBuild(c *gin.Context) {
 			PushSecretRef: pushSecretName,
 			AIB:           buildAIBSpec(&req, cfgName, needsUpload),
 			Export:        buildExportSpec(&req),
+			Flash:         flashSpec,
 		},
 	}
 	if err := k8sClient.Create(ctx, imageBuild); err != nil {
@@ -1014,6 +1082,16 @@ func (a *APIServer) createBuild(c *gin.Context) {
 				"WARNING: failed to set owner reference on push secret %s: %v "+
 					"(cleanup may require manual intervention)",
 				pushSecretName, err,
+			)
+		}
+	}
+
+	if flashSecretName != "" {
+		if err := setSecretOwnerRef(ctx, k8sClient, namespace, flashSecretName, imageBuild); err != nil {
+			log.Printf(
+				"WARNING: failed to set owner reference on flash client secret %s: %v "+
+					"(cleanup may require manual intervention)",
+				flashSecretName, err,
 			)
 		}
 	}
@@ -1090,6 +1168,10 @@ func getBuild(c *gin.Context, name string) {
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: "config", Namespace: namespace}, operatorConfig); err == nil {
 			if operatorConfig.Status.JumpstarterAvailable {
 				jumpstarterInfo = &JumpstarterInfo{Available: true}
+				// Include lease ID if flash was executed
+				if build.Status.LeaseID != "" {
+					jumpstarterInfo.LeaseID = build.Status.LeaseID
+				}
 				if operatorConfig.Spec.Jumpstarter != nil {
 					if mapping, ok := operatorConfig.Spec.Jumpstarter.TargetMappings[build.Spec.GetTarget()]; ok {
 						jumpstarterInfo.ExporterSelector = mapping.Selector
@@ -1457,6 +1539,37 @@ func setSecretOwnerRef(
 	return c.Update(ctx, secret)
 }
 
+// createFlashClientSecret creates a secret containing the Jumpstarter client config
+func createFlashClientSecret(
+	ctx context.Context,
+	c client.Client,
+	namespace, secretName, base64Config string,
+) error {
+	// Decode base64 client config
+	configBytes, err := base64.StdEncoding.DecodeString(base64Config)
+	if err != nil {
+		return fmt.Errorf("failed to decode client config: %w", err)
+	}
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "build-api",
+				"app.kubernetes.io/part-of":    "automotive-dev",
+				"app.kubernetes.io/component":  "jumpstarter-client",
+			},
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"client.yaml": configBytes,
+		},
+	}
+
+	return c.Create(ctx, secret)
+}
+
 func writeJSON(c *gin.Context, status int, v any) {
 	c.Header("Cache-Control", "no-store")
 	c.IndentedJSON(status, v)
@@ -1514,6 +1627,9 @@ func getClientFromRequest(c *gin.Context) (client.Client, error) {
 	}
 	if err := corev1.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("failed to add core scheme: %w", err)
+	}
+	if err := tektonv1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("failed to add tekton scheme: %w", err)
 	}
 
 	k8sClient, err := client.New(cfg, client.Options{Scheme: scheme})
@@ -1577,4 +1693,425 @@ func resolveRequester(c *gin.Context) string {
 	}
 
 	return res.Status.User.Username
+}
+
+// Flash API handlers
+
+func (a *APIServer) handleCreateFlash(c *gin.Context) {
+	a.log.Info("create flash", "reqID", c.GetString("reqID"))
+	a.createFlash(c)
+}
+
+func (a *APIServer) handleListFlash(c *gin.Context) {
+	a.log.Info("list flash jobs", "reqID", c.GetString("reqID"))
+	a.listFlash(c)
+}
+
+func (a *APIServer) handleGetFlash(c *gin.Context) {
+	name := c.Param("name")
+	a.log.Info("get flash", "flash", name, "reqID", c.GetString("reqID"))
+	a.getFlash(c, name)
+}
+
+func (a *APIServer) handleFlashLogs(c *gin.Context) {
+	name := c.Param("name")
+	a.log.Info("flash logs requested", "flash", name, "reqID", c.GetString("reqID"))
+	a.streamFlashLogs(c, name)
+}
+
+func (a *APIServer) createFlash(c *gin.Context) {
+	var req FlashRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON request"})
+		return
+	}
+
+	// Validate required fields
+	if req.ImageRef == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "imageRef is required"})
+		return
+	}
+	if req.ClientConfig == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "clientConfig is required"})
+		return
+	}
+
+	// Auto-generate name if not provided
+	if req.Name == "" {
+		req.Name = fmt.Sprintf("flash-%s", time.Now().Format("20060102-150405"))
+	}
+
+	// Validate name
+	if err := validateBuildName(req.Name); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	k8sClient, err := getClientFromRequest(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
+		return
+	}
+
+	restCfg, err := getRESTConfigFromRequest(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	clientset, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx := c.Request.Context()
+	namespace := resolveNamespace()
+	requestedBy := resolveRequester(c)
+
+	// Get exporter selector from OperatorConfig if target is specified
+	exporterSelector := req.ExporterSelector
+	flashCmd := req.FlashCmd
+	if req.Target != "" && exporterSelector == "" {
+		operatorConfig := &automotivev1alpha1.OperatorConfig{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: "config", Namespace: namespace}, operatorConfig); err == nil {
+			if operatorConfig.Spec.Jumpstarter != nil {
+				if mapping, ok := operatorConfig.Spec.Jumpstarter.TargetMappings[req.Target]; ok {
+					exporterSelector = mapping.Selector
+					if flashCmd == "" {
+						flashCmd = mapping.FlashCmd
+					}
+				}
+			}
+		}
+	}
+
+	if exporterSelector == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "exporterSelector or valid target is required"})
+		return
+	}
+
+	// Replace placeholders in flash command
+	if flashCmd != "" {
+		flashCmd = strings.ReplaceAll(flashCmd, "{image_uri}", req.ImageRef)
+		flashCmd = strings.ReplaceAll(flashCmd, "{artifact_url}", req.ImageRef)
+	}
+
+	// Decode client config to verify it's valid base64
+	clientConfigBytes, err := base64.StdEncoding.DecodeString(req.ClientConfig)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "clientConfig must be base64 encoded"})
+		return
+	}
+
+	// Create secret for client config
+	secretName := fmt.Sprintf("%s-jumpstarter-client", req.Name)
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by":                  "build-api",
+				"app.kubernetes.io/part-of":                     "automotive-dev",
+				flashTaskRunLabel:                               req.Name,
+				"automotive.sdv.cloud.redhat.com/resource-type": "jumpstarter-client",
+			},
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"client.yaml": clientConfigBytes,
+		},
+	}
+
+	createdSecret, err := clientset.CoreV1().Secrets(namespace).Create(ctx, secret, metav1.CreateOptions{})
+	if err != nil {
+		if k8serrors.IsAlreadyExists(err) {
+			c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("flash %s already exists", req.Name)})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to create secret: %v", err)})
+		return
+	}
+
+	// Get the flash task spec
+	flashTask := tasks.GenerateFlashTask(namespace)
+
+	// Lease duration
+	leaseDuration := req.LeaseDuration
+	if leaseDuration == "" {
+		leaseDuration = "03:00:00" // Default 3 hours
+	}
+
+	// Create the flash TaskRun
+	taskRun := &tektonv1.TaskRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      req.Name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "build-api",
+				"app.kubernetes.io/part-of":    "automotive-dev",
+				"app.kubernetes.io/name":       "flash-taskrun",
+				flashTaskRunLabel:              req.Name,
+			},
+			Annotations: map[string]string{
+				"automotive.sdv.cloud.redhat.com/requested-by": requestedBy,
+				"automotive.sdv.cloud.redhat.com/image-ref":    req.ImageRef,
+			},
+		},
+		Spec: tektonv1.TaskRunSpec{
+			TaskSpec: &flashTask.Spec,
+			Params: []tektonv1.Param{
+				{Name: "image-ref", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: req.ImageRef}},
+				{Name: "exporter-selector", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: exporterSelector}},
+				{Name: "flash-cmd", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: flashCmd}},
+				{Name: "lease-duration", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: leaseDuration}},
+			},
+			Workspaces: []tektonv1.WorkspaceBinding{
+				{
+					Name: "jumpstarter-client",
+					Secret: &corev1.SecretVolumeSource{
+						SecretName: secretName,
+					},
+				},
+			},
+		},
+	}
+
+	if err := k8sClient.Create(ctx, taskRun); err != nil {
+		// Clean up the secret if TaskRun creation fails
+		_ = clientset.CoreV1().Secrets(namespace).Delete(ctx, secretName, metav1.DeleteOptions{})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to create flash TaskRun: %v", err)})
+		return
+	}
+
+	// Set owner reference on secret for automatic cleanup
+	createdSecret.OwnerReferences = []metav1.OwnerReference{
+		{
+			APIVersion: "tekton.dev/v1",
+			Kind:       "TaskRun",
+			Name:       taskRun.Name,
+			UID:        taskRun.UID,
+		},
+	}
+	if _, err := clientset.CoreV1().Secrets(namespace).Update(ctx, createdSecret, metav1.UpdateOptions{}); err != nil {
+		log.Printf("WARNING: failed to set owner reference on secret %s: %v", secretName, err)
+	}
+
+	writeJSON(c, http.StatusAccepted, FlashResponse{
+		Name:        req.Name,
+		Phase:       phasePending,
+		Message:     "Flash TaskRun created",
+		RequestedBy: requestedBy,
+		TaskRunName: taskRun.Name,
+	})
+}
+
+func (a *APIServer) listFlash(c *gin.Context) {
+	namespace := resolveNamespace()
+
+	k8sClient, err := getClientFromRequest(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	// List TaskRuns with flash label
+	taskRunList := &tektonv1.TaskRunList{}
+	if err := k8sClient.List(ctx, taskRunList, client.InNamespace(namespace), client.HasLabels{flashTaskRunLabel}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to list flash TaskRuns: %v", err)})
+		return
+	}
+
+	resp := make([]FlashListItem, 0, len(taskRunList.Items))
+	for _, tr := range taskRunList.Items {
+		phase, message := getTaskRunStatus(&tr)
+		var compStr string
+		if tr.Status.CompletionTime != nil {
+			compStr = tr.Status.CompletionTime.Format(time.RFC3339)
+		}
+		resp = append(resp, FlashListItem{
+			Name:           tr.Name,
+			Phase:          phase,
+			Message:        message,
+			RequestedBy:    tr.Annotations["automotive.sdv.cloud.redhat.com/requested-by"],
+			CreatedAt:      tr.CreationTimestamp.Format(time.RFC3339),
+			CompletionTime: compStr,
+		})
+	}
+	writeJSON(c, http.StatusOK, resp)
+}
+
+func (a *APIServer) getFlash(c *gin.Context, name string) {
+	namespace := resolveNamespace()
+
+	k8sClient, err := getClientFromRequest(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
+		return
+	}
+
+	ctx := c.Request.Context()
+	taskRun := &tektonv1.TaskRun{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, taskRun); err != nil {
+		if k8serrors.IsNotFound(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "flash TaskRun not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to get flash TaskRun: %v", err)})
+		return
+	}
+
+	// Verify it's a flash TaskRun
+	if taskRun.Labels[flashTaskRunLabel] == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "flash TaskRun not found"})
+		return
+	}
+
+	phase, message := getTaskRunStatus(taskRun)
+	var startStr, compStr string
+	if taskRun.Status.StartTime != nil {
+		startStr = taskRun.Status.StartTime.Format(time.RFC3339)
+	}
+	if taskRun.Status.CompletionTime != nil {
+		compStr = taskRun.Status.CompletionTime.Format(time.RFC3339)
+	}
+
+	writeJSON(c, http.StatusOK, FlashResponse{
+		Name:           taskRun.Name,
+		Phase:          phase,
+		Message:        message,
+		RequestedBy:    taskRun.Annotations["automotive.sdv.cloud.redhat.com/requested-by"],
+		StartTime:      startStr,
+		CompletionTime: compStr,
+		TaskRunName:    taskRun.Name,
+	})
+}
+
+func getTaskRunStatus(tr *tektonv1.TaskRun) (phase, message string) {
+	// Check if completed
+	if tr.Status.CompletionTime != nil {
+		// Check conditions for success/failure
+		for _, cond := range tr.Status.Conditions {
+			if cond.Type == "Succeeded" {
+				if cond.Status == corev1.ConditionTrue {
+					return phaseCompleted, "Flash completed successfully"
+				}
+				return phaseFailed, cond.Message
+			}
+		}
+		return phaseFailed, "Flash failed"
+	}
+
+	// Check if running
+	if tr.Status.StartTime != nil {
+		return phaseRunning, "Flash in progress"
+	}
+
+	return phasePending, "Waiting to start"
+}
+
+func (a *APIServer) streamFlashLogs(c *gin.Context, name string) {
+	namespace := resolveNamespace()
+
+	k8sClient, err := getClientFromRequest(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
+		return
+	}
+
+	restCfg, err := getRESTConfigFromRequest(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	clientset, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	// Verify the TaskRun exists and is a flash TaskRun
+	taskRun := &tektonv1.TaskRun{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, taskRun); err != nil {
+		if k8serrors.IsNotFound(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "flash TaskRun not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to get flash TaskRun: %v", err)})
+		return
+	}
+	if taskRun.Labels[flashTaskRunLabel] == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "flash TaskRun not found"})
+		return
+	}
+
+	sinceTime := parseSinceTime(c.Query("since"))
+	streamDuration := time.Duration(a.limits.MaxLogStreamDurationMinutes) * time.Minute
+	streamCtx, cancel := context.WithTimeout(ctx, streamDuration)
+	defer cancel()
+
+	// Get the pod name from TaskRun status
+	podName := taskRun.Status.PodName
+	if podName == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "flash pod not ready"})
+		return
+	}
+
+	setupLogStreamHeaders(c)
+
+	// TaskRun pods use step containers with naming convention "step-<step-name>"
+	containerName := "step-flash"
+
+	// Stream logs
+	req := clientset.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{
+		Container: containerName,
+		Follow:    true,
+		SinceTime: sinceTime,
+	})
+	stream, err := req.Stream(streamCtx)
+	if err != nil {
+		_, _ = fmt.Fprintf(c.Writer, "\n[Error streaming logs: %v]\n", err)
+		c.Writer.Flush()
+		return
+	}
+	defer func() {
+		if err := stream.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close stream: %v\n", err)
+		}
+	}()
+
+	_, _ = c.Writer.Write([]byte("\n===== Flash TaskRun Logs =====\n\n"))
+	c.Writer.Flush()
+
+	scanner := bufio.NewScanner(stream)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
+	for scanner.Scan() {
+		select {
+		case <-streamCtx.Done():
+			return
+		default:
+		}
+		line := scanner.Bytes()
+		if _, writeErr := c.Writer.Write(line); writeErr != nil {
+			return
+		}
+		if _, writeErr := c.Writer.Write([]byte("\n")); writeErr != nil {
+			return
+		}
+		c.Writer.Flush()
+	}
+
+	if err := scanner.Err(); err != nil && err != io.EOF {
+		var errMsg []byte
+		errMsg = fmt.Appendf(errMsg, "\n[Stream error: %v]\n", err)
+		_, _ = c.Writer.Write(errMsg)
+		c.Writer.Flush()
+	}
+
+	_, _ = c.Writer.Write([]byte("\n[Log streaming completed]\n"))
+	c.Writer.Flush()
 }

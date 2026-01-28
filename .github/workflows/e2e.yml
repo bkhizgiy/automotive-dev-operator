@@ -61,6 +61,8 @@ jobs:
           kind create cluster --name automotive-dev-e2e --wait 5m
           kubectl cluster-info
           kubectl get nodes
+          # Label node for OperatorConfig nodeSelector
+          kubectl label nodes --all aib=true
 
       - name: Install Tekton Pipelines
         run: |

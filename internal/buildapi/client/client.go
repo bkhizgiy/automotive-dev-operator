@@ -53,6 +53,8 @@ func WithHTTPClient(h *http.Client) Option { return func(c *Client) { c.httpClie
 func WithAuthToken(t string) Option { return func(c *Client) { c.authToken = t } }
 
 // CreateBuild submits a new build request to the API server.
+//
+//nolint:dupl // Build and Flash methods are intentionally similar but work with different types
 func (c *Client) CreateBuild(ctx context.Context, req buildapi.BuildRequest) (*buildapi.BuildResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -156,6 +158,103 @@ func (c *Client) resolve(p string) string {
 	p = strings.TrimPrefix(p, "/")
 	u.Path = path.Join(basePath, p)
 	return u.String()
+}
+
+// CreateFlash submits a new flash request to the API server.
+//
+//nolint:dupl // Build and Flash methods are intentionally similar but work with different types
+func (c *Client) CreateFlash(ctx context.Context, req buildapi.FlashRequest) (*buildapi.FlashResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	endpoint := c.resolve("/v1/flash")
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if c.authToken != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
+		}
+	}()
+	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("create flash failed: %s: %s", resp.Status, string(b))
+	}
+	var out buildapi.FlashResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetFlash retrieves the status of a specific flash job by name.
+func (c *Client) GetFlash(ctx context.Context, name string) (*buildapi.FlashResponse, error) {
+	endpoint := c.resolve(path.Join("/v1/flash", url.PathEscape(name)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
+		}
+	}()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("get flash failed: %s: %s", resp.Status, string(b))
+	}
+	var out buildapi.FlashResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListFlash retrieves a list of all flash jobs from the API server.
+func (c *Client) ListFlash(ctx context.Context) ([]buildapi.FlashListItem, error) {
+	endpoint := c.resolve("/v1/flash")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
+		}
+	}()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("list flash failed: %s: %s", resp.Status, string(b))
+	}
+	var out []buildapi.FlashListItem
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // Upload represents a file to upload to the build API.

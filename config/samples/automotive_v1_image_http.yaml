@@ -43,7 +43,7 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: image-registry-sample-3
 spec:
-  distro: "cs9"
+  distro: "autosd"
   target: "edge-commit"
   architecture: "x86_64"
   exportFormat: "image"

@@ -81,7 +81,7 @@ Development-focused command for non-bootc builds:
 aib-dev build [OPTIONS] <manifest.aib.yml> <output-file>
 
 # Examples
-aib-dev build --distro cs9 --format qcow2 manifest.aib.yml disk.qcow2
+aib-dev build --distro autosd --format qcow2 manifest.aib.yml disk.qcow2
 aib-dev build --distro autosd --format raw --mode package manifest.aib.yml disk.raw
 ```
 

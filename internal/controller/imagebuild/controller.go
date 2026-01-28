@@ -76,7 +76,12 @@ func (r *ImageBuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	case "Building":
 		return r.handleBuildingState(ctx, imageBuild)
 	case "Pushing":
+		// Legacy phase - push is now part of the pipeline
 		return r.handlePushingState(ctx, imageBuild)
+	case "Flashing":
+		// Legacy phase - flash is now part of the pipeline
+		// Handle gracefully for any in-progress builds from before this change
+		return r.handleFlashingState(ctx, imageBuild)
 	case phaseCompleted:
 		return r.handleCompletedState(ctx, imageBuild)
 	case phaseFailed:
@@ -242,33 +247,19 @@ func (r *ImageBuildReconciler) checkBuildProgress(
 		fresh.Status.AIBImageUsed = aibImageUsed
 		fresh.Status.BuilderImageUsed = builderImageUsed
 
-		// Check if push is configured
-		if imageBuild.Spec.HasDiskExport() {
-			// Extract artifact filename from build results
-			artifactFilename := extractArtifactFilename(pipelineRun)
-			// Start push task
-			if err := r.createPushTaskRun(ctx, imageBuild, artifactFilename); err != nil {
-				log.Error(err, "Failed to create push TaskRun")
-				fresh.Status.Phase = phaseFailed
-				fresh.Status.Message = fmt.Sprintf("Failed to start push: %v", err)
-				if patchErr := r.Status().Patch(ctx, fresh, patch); patchErr != nil {
-					log.Error(patchErr, "Failed to patch status after push TaskRun creation failure")
-					return ctrl.Result{}, patchErr
-				}
-				return ctrl.Result{}, nil
-			}
-
-			fresh.Status.Phase = "Pushing"
-			fresh.Status.Message = "Pushing artifact to registry"
-			if err := r.Status().Patch(ctx, fresh, patch); err != nil {
-				log.Error(err, "Failed to patch status to Pushing")
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{RequeueAfter: time.Second * 10}, nil
+		// Extract lease ID if flash was enabled
+		if fresh.Spec.IsFlashEnabled() {
+			fresh.Status.LeaseID = extractLeaseID(pipelineRun)
 		}
 
+		// Pipeline includes push-disk-artifact and flash-image tasks (when enabled)
+		// Pipeline completion means everything succeeded
 		fresh.Status.Phase = phaseCompleted
-		fresh.Status.Message = "Build completed successfully"
+		if fresh.Spec.IsFlashEnabled() {
+			fresh.Status.Message = "Build and flash completed successfully"
+		} else {
+			fresh.Status.Message = "Build completed successfully"
+		}
 		if fresh.Status.CompletionTime == nil {
 			now := metav1.Now()
 			fresh.Status.CompletionTime = &now
@@ -299,26 +290,8 @@ func (r *ImageBuildReconciler) startNewBuild(
 	ctx context.Context,
 	imageBuild *automotivev1alpha1.ImageBuild,
 ) (ctrl.Result, error) {
-	pvcName, err := r.getOrCreateWorkspacePVC(ctx, imageBuild)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to get or create workspace PVC: %w", err)
-	}
-
-	if imageBuild.Status.PVCName != pvcName {
-		fresh := &automotivev1alpha1.ImageBuild{}
-		nsName := types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}
-		if err := r.Get(ctx, nsName, fresh); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to get fresh ImageBuild: %w", err)
-		}
-
-		fresh.Status.PVCName = pvcName
-		if err := r.Status().Update(ctx, fresh); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to update ImageBuild status with PVC name: %w", err)
-		}
-
-		imageBuild.Status.PVCName = pvcName
-	}
-
+	// PVC is now created via VolumeClaimTemplate in createBuildTaskRun
+	// to ensure proper zone affinity with WaitForFirstConsumer
 	if err := r.createBuildTaskRun(ctx, imageBuild); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to create build task run: %w", err)
 	}
@@ -326,6 +299,7 @@ func (r *ImageBuildReconciler) startNewBuild(
 	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 }
 
+//nolint:gocyclo // Complex PipelineRun builder with many optional fields based on build configuration
 func (r *ImageBuildReconciler) createBuildTaskRun(
 	ctx context.Context,
 	imageBuild *automotivev1alpha1.ImageBuild,
@@ -351,29 +325,10 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 			RuntimeClassName: operatorConfig.Spec.OSBuilds.RuntimeClassName,
 		}
 	}
-	_ = buildConfig // buildConfig used for PVC sizing if needed
+	_ = buildConfig // buildConfig used for RuntimeClassName if needed
 
-	if imageBuild.Status.PVCName == "" {
-		workspacePVCName, err := r.getOrCreateWorkspacePVC(ctx, imageBuild)
-		if err != nil {
-			return err
-		}
-
-		fresh := &automotivev1alpha1.ImageBuild{}
-		nsName := types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}
-		if err := r.Get(ctx, nsName, fresh); err != nil {
-			return fmt.Errorf("failed to get fresh ImageBuild: %w", err)
-		}
-
-		fresh.Status.PVCName = workspacePVCName
-		if err := r.Status().Update(ctx, fresh); err != nil {
-			return fmt.Errorf("failed to update ImageBuild status with PVC name: %w", err)
-		}
-
-		imageBuild.Status.PVCName = workspacePVCName
-	}
-
-	workspacePVCName := imageBuild.Status.PVCName
+	// PVC is created via VolumeClaimTemplate in the PipelineRun workspace binding
+	// to ensure proper zone affinity with WaitForFirstConsumer storage class
 
 	params := []tektonv1.Param{
 		{
@@ -497,11 +452,72 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 		})
 	}
 
+	// Add flash params if flash is enabled
+	var flashExporterSelector, flashCmd string
+	if imageBuild.Spec.IsFlashEnabled() {
+		target := imageBuild.Spec.GetTarget()
+		if operatorConfig.Spec.Jumpstarter != nil {
+			if mapping, ok := operatorConfig.Spec.Jumpstarter.TargetMappings[target]; ok {
+				flashExporterSelector = mapping.Selector
+				flashCmd = mapping.FlashCmd
+			}
+		}
+		if flashExporterSelector == "" {
+			return fmt.Errorf("flash enabled but no Jumpstarter target mapping found for target %q; "+
+				"configure OperatorConfig.spec.jumpstarter.targetMappings[%q] with selector and flashCmd", target, target)
+		}
+		params = append(params,
+			tektonv1.Param{
+				Name:  "flash-enabled",
+				Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: "true"},
+			},
+			tektonv1.Param{
+				Name:  "flash-image-ref",
+				Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: imageBuild.Spec.GetExportOCI()},
+			},
+			tektonv1.Param{
+				Name:  "flash-exporter-selector",
+				Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: flashExporterSelector},
+			},
+			tektonv1.Param{
+				Name:  "flash-cmd",
+				Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: flashCmd},
+			},
+			tektonv1.Param{
+				Name:  "flash-lease-duration",
+				Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: imageBuild.Spec.GetFlashLeaseDuration()},
+			},
+			tektonv1.Param{
+				Name:  "jumpstarter-image",
+				Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: operatorConfig.Spec.Jumpstarter.GetJumpstarterImage()},
+			},
+		)
+	}
+
+	// Use VolumeClaimTemplate instead of pre-created PVC to ensure the volume
+	// is provisioned in the correct zone based on pod scheduling constraints
+	storageSize := resource.MustParse("8Gi")
+	if operatorConfig.Spec.OSBuilds != nil && operatorConfig.Spec.OSBuilds.PVCSize != "" {
+		storageSize = resource.MustParse(operatorConfig.Spec.OSBuilds.PVCSize)
+	}
+	var storageClassName *string
+	if imageBuild.Spec.StorageClass != "" {
+		storageClassName = &imageBuild.Spec.StorageClass
+	}
+
 	pipelineWorkspaces := []tektonv1.WorkspaceBinding{
 		{
 			Name: "shared-workspace",
-			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-				ClaimName: workspacePVCName,
+			VolumeClaimTemplate: &corev1.PersistentVolumeClaim{
+				Spec: corev1.PersistentVolumeClaimSpec{
+					AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					StorageClassName: storageClassName,
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceStorage: storageSize,
+						},
+					},
+				},
 			},
 		},
 		{
@@ -519,6 +535,15 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 			Name: "registry-auth",
 			Secret: &corev1.SecretVolumeSource{
 				SecretName: imageBuild.Spec.SecretRef,
+			},
+		})
+	}
+
+	if imageBuild.Spec.IsFlashEnabled() {
+		pipelineWorkspaces = append(pipelineWorkspaces, tektonv1.WorkspaceBinding{
+			Name: "jumpstarter-client",
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: imageBuild.Spec.GetFlashClientConfigSecretRef(),
 			},
 		})
 	}
@@ -809,6 +834,17 @@ func (r *ImageBuildReconciler) handlePushingState(
 	patch := client.MergeFrom(fresh.DeepCopy())
 
 	if isTaskRunSuccessful(taskRun) {
+		// Check if flash is enabled
+		if fresh.Spec.IsFlashEnabled() {
+			fresh.Status.Phase = "Flashing"
+			fresh.Status.Message = "Flashing image to device"
+			if err := r.Status().Patch(ctx, fresh, patch); err != nil {
+				log.Error(err, "Failed to patch status to Flashing")
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{Requeue: true}, nil
+		}
+
 		fresh.Status.Phase = phaseCompleted
 		fresh.Status.Message = "Build and push completed successfully"
 	} else {
@@ -829,6 +865,200 @@ func (r *ImageBuildReconciler) handlePushingState(
 	return ctrl.Result{}, nil
 }
 
+func (r *ImageBuildReconciler) handleFlashingState(
+	ctx context.Context,
+	imageBuild *automotivev1alpha1.ImageBuild,
+) (ctrl.Result, error) {
+	nsName := types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}
+	log := r.Log.WithValues("imagebuild", nsName)
+
+	if imageBuild.Status.FlashTaskRunName == "" {
+		// No flash TaskRun yet, create one
+		if err := r.createFlashTaskRun(ctx, imageBuild); err != nil {
+			log.Error(err, "Failed to create flash TaskRun")
+			msg := fmt.Sprintf("Failed to create flash TaskRun: %v", err)
+			if statusErr := r.updateStatus(ctx, imageBuild, phaseFailed, msg); statusErr != nil {
+				log.Error(statusErr, "Failed to update status after flash TaskRun creation failure")
+				return ctrl.Result{}, statusErr
+			}
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{RequeueAfter: time.Second * 10}, nil
+	}
+
+	// Check flash TaskRun status
+	taskRun := &tektonv1.TaskRun{}
+	err := r.Get(ctx, types.NamespacedName{
+		Name:      imageBuild.Status.FlashTaskRunName,
+		Namespace: imageBuild.Namespace,
+	}, taskRun)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// TaskRun was deleted, try to recreate
+			imageBuild.Status.FlashTaskRunName = ""
+			if statusErr := r.Status().Update(ctx, imageBuild); statusErr != nil {
+				log.Error(statusErr, "Failed to clear FlashTaskRunName in status")
+				return ctrl.Result{}, statusErr
+			}
+			return ctrl.Result{Requeue: true}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	if !isTaskRunCompleted(taskRun) {
+		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+	}
+
+	// Flash completed - cleanup and update status
+	r.cleanupTransientSecrets(ctx, imageBuild, log)
+
+	fresh := &automotivev1alpha1.ImageBuild{}
+	if err := r.Get(ctx, types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}, fresh); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	patch := client.MergeFrom(fresh.DeepCopy())
+
+	if isTaskRunSuccessful(taskRun) {
+		fresh.Status.Phase = phaseCompleted
+		fresh.Status.Message = "Build, push, and flash completed successfully"
+	} else {
+		fresh.Status.Phase = phaseFailed
+		fresh.Status.Message = "Flash to device failed"
+	}
+
+	if fresh.Status.CompletionTime == nil {
+		now := metav1.Now()
+		fresh.Status.CompletionTime = &now
+	}
+
+	if err := r.Status().Patch(ctx, fresh, patch); err != nil {
+		log.Error(err, "Failed to patch status after flash completion")
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, nil
+}
+
+func (r *ImageBuildReconciler) createFlashTaskRun(
+	ctx context.Context,
+	imageBuild *automotivev1alpha1.ImageBuild,
+) error {
+	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
+	log.Info("Creating flash TaskRun for ImageBuild")
+
+	if !imageBuild.Spec.IsFlashEnabled() {
+		return fmt.Errorf("flash is not enabled")
+	}
+
+	// Get exporter selector from OperatorConfig based on target
+	operatorConfig := &automotivev1alpha1.OperatorConfig{}
+	err := r.Get(ctx, types.NamespacedName{Name: "config", Namespace: OperatorNamespace}, operatorConfig)
+	if err != nil {
+		return fmt.Errorf("failed to get OperatorConfig: %w", err)
+	}
+
+	target := imageBuild.Spec.GetTarget()
+	var exporterSelector, flashCmd string
+	if operatorConfig.Spec.Jumpstarter != nil {
+		if mapping, ok := operatorConfig.Spec.Jumpstarter.TargetMappings[target]; ok {
+			exporterSelector = mapping.Selector
+			flashCmd = mapping.FlashCmd
+		}
+	}
+
+	if exporterSelector == "" {
+		return fmt.Errorf("no Jumpstarter exporter mapping found for target %q in OperatorConfig", target)
+	}
+
+	// Get the image reference to flash (from export.disk.oci)
+	imageRef := imageBuild.Spec.GetExportOCI()
+	if imageRef == "" {
+		return fmt.Errorf("no disk export OCI URL configured for flash")
+	}
+
+	// Note: Flash command placeholders are handled in the flash script itself
+
+	leaseDuration := imageBuild.Spec.GetFlashLeaseDuration()
+	clientConfigSecretRef := imageBuild.Spec.GetFlashClientConfigSecretRef()
+	if clientConfigSecretRef == "" {
+		return fmt.Errorf("flash client config secret reference is required but not set")
+	}
+
+	flashTask := tasks.GenerateFlashTask(OperatorNamespace)
+
+	params := []tektonv1.Param{
+		{
+			Name:  "image-ref",
+			Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: imageRef},
+		},
+		{
+			Name:  "exporter-selector",
+			Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: exporterSelector},
+		},
+		{
+			Name:  "flash-cmd",
+			Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: flashCmd},
+		},
+		{
+			Name:  "lease-duration",
+			Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: leaseDuration},
+		},
+	}
+
+	workspaces := []tektonv1.WorkspaceBinding{
+		{
+			Name: "jumpstarter-client",
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: clientConfigSecretRef,
+			},
+		},
+	}
+
+	taskRun := &tektonv1.TaskRun{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: fmt.Sprintf("%s-flash-", imageBuild.Name),
+			Namespace:    imageBuild.Namespace,
+			Labels: map[string]string{
+				tektonv1.ManagedByLabelKey:                        "automotive-dev-operator",
+				"automotive.sdv.cloud.redhat.com/imagebuild-name": imageBuild.Name,
+				"automotive.sdv.cloud.redhat.com/task-type":       "flash",
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: imageBuild.APIVersion,
+					Kind:       imageBuild.Kind,
+					Name:       imageBuild.Name,
+					UID:        imageBuild.UID,
+					Controller: ptr.To(true),
+				},
+			},
+		},
+		Spec: tektonv1.TaskRunSpec{
+			TaskSpec:   &flashTask.Spec,
+			Params:     params,
+			Workspaces: workspaces,
+		},
+	}
+
+	if err := r.Create(ctx, taskRun); err != nil {
+		return fmt.Errorf("failed to create flash TaskRun: %w", err)
+	}
+
+	fresh := &automotivev1alpha1.ImageBuild{}
+	if err := r.Get(ctx, types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}, fresh); err != nil {
+		return fmt.Errorf("failed to get fresh ImageBuild: %w", err)
+	}
+
+	fresh.Status.FlashTaskRunName = taskRun.Name
+	if err := r.Status().Update(ctx, fresh); err != nil {
+		return fmt.Errorf("failed to update ImageBuild with flash TaskRun name: %w", err)
+	}
+
+	log.Info("Successfully created flash TaskRun", "name", taskRun.Name)
+	return nil
+}
+
 // cleanupTransientSecrets deletes any transient secrets created for this build
 // Uses retry logic to handle transient API errors
 func (r *ImageBuildReconciler) cleanupTransientSecrets(
@@ -843,6 +1073,10 @@ func (r *ImageBuildReconciler) cleanupTransientSecrets(
 	// Cleanup push secret (PushSecretRef)
 	if imageBuild.Spec.PushSecretRef != "" {
 		r.deleteSecretWithRetry(ctx, imageBuild.Namespace, imageBuild.Spec.PushSecretRef, "push auth", log)
+	}
+	// Cleanup flash client config secret
+	if flashSecretRef := imageBuild.Spec.GetFlashClientConfigSecretRef(); flashSecretRef != "" {
+		r.deleteSecretWithRetry(ctx, imageBuild.Namespace, flashSecretRef, "flash client config", log)
 	}
 }
 
@@ -940,6 +1174,16 @@ func extractProvenance(pipelineRun *tektonv1.PipelineRun, aibImage string) (aibI
 func extractArtifactFilename(pipelineRun *tektonv1.PipelineRun) string {
 	for _, result := range pipelineRun.Status.Results {
 		if result.Name == "artifact-filename" {
+			return result.Value.StringVal
+		}
+	}
+	return ""
+}
+
+// extractLeaseID extracts the Jumpstarter lease ID from PipelineRun results
+func extractLeaseID(pipelineRun *tektonv1.PipelineRun) string {
+	for _, result := range pipelineRun.Status.Results {
+		if result.Name == "lease-id" {
 			return result.Value.StringVal
 		}
 	}

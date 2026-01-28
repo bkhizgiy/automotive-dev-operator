@@ -49,6 +49,23 @@ type ImageBuildSpec struct {
 
 	// Export contains configuration for exporting build artifacts
 	Export *ExportSpec `json:"export,omitempty"`
+
+	// Flash contains configuration for flashing the built image to hardware via Jumpstarter
+	Flash *FlashSpec `json:"flash,omitempty"`
+}
+
+// FlashSpec defines configuration for flashing images to hardware via Jumpstarter
+// The exporter selector and flash command are derived from OperatorConfig's JumpstarterTargetMappings
+// based on the AIB target field
+type FlashSpec struct {
+	// ClientConfigSecretRef is the name of the secret containing the Jumpstarter client config
+	// The secret should have a key "client.yaml" with the config contents
+	// If set, flash is enabled automatically
+	ClientConfigSecretRef string `json:"clientConfigSecretRef,omitempty"`
+
+	// LeaseDuration is the duration for the device lease in HH:MM:SS format
+	// +kubebuilder:default="03:00:00"
+	LeaseDuration string `json:"leaseDuration,omitempty"`
 }
 
 // AIBSpec defines the automotive-image-builder configuration
@@ -125,7 +142,7 @@ type ImageBuildStatus struct {
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// Phase represents the current phase of the build (Building, Completed, Failed)
-	// +kubebuilder:validation:Enum=Pending;Uploading;Building;Pushing;Completed;Failed
+	// +kubebuilder:validation:Enum=Pending;Uploading;Building;Pushing;Flashing;Completed;Failed
 	Phase string `json:"phase,omitempty"`
 
 	// StartTime is when the build started
@@ -146,6 +163,9 @@ type ImageBuildStatus struct {
 	// PushTaskRunName is the name of the TaskRun for pushing artifacts to registry
 	PushTaskRunName string `json:"pushTaskRunName,omitempty"`
 
+	// FlashTaskRunName is the name of the TaskRun for flashing to hardware
+	FlashTaskRunName string `json:"flashTaskRunName,omitempty"`
+
 	// Conditions represent the latest available observations of the ImageBuild's state
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
@@ -160,6 +180,10 @@ type ImageBuildStatus struct {
 	// This is particularly useful for bootc builds where the builder may be auto-generated
 	// +optional
 	BuilderImageUsed string `json:"builderImageUsed,omitempty"`
+
+	// LeaseID is the Jumpstarter lease ID acquired during flash
+	// +optional
+	LeaseID string `json:"leaseId,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -332,4 +356,25 @@ func (s *ImageBuildSpec) GetLegacyExportURL() string {
 	// For legacy builds, we need the user to migrate to the new structure
 	// Return empty string to force an error that guides them to update
 	return ""
+}
+
+// IsFlashEnabled returns true if flash is configured
+func (s *ImageBuildSpec) IsFlashEnabled() bool {
+	return s.Flash != nil && s.Flash.ClientConfigSecretRef != ""
+}
+
+// GetFlashClientConfigSecretRef returns the flash client config secret reference
+func (s *ImageBuildSpec) GetFlashClientConfigSecretRef() string {
+	if s.Flash != nil {
+		return s.Flash.ClientConfigSecretRef
+	}
+	return ""
+}
+
+// GetFlashLeaseDuration returns the flash lease duration, or default
+func (s *ImageBuildSpec) GetFlashLeaseDuration() string {
+	if s.Flash != nil && s.Flash.LeaseDuration != "" {
+		return s.Flash.LeaseDuration
+	}
+	return "03:00:00"
 }

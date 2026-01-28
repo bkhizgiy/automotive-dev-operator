@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,8 +33,9 @@ import (
 )
 
 const (
-	archAMD64 = "amd64"
-	archARM64 = "arm64"
+	archAMD64   = "amd64"
+	archARM64   = "arm64"
+	phaseFailed = "Failed"
 )
 
 // getDefaultArch returns the current system architecture in caib format
@@ -76,6 +78,13 @@ var (
 	builderImage   string
 
 	containerRef string
+
+	// Flash options
+	flashAfterBuild   bool
+	jumpstarterClient string
+	flashName         string
+	exporterSelector  string
+	leaseDuration     string
 )
 
 // createBuildAPIClient creates a build API client with authentication token from flags or kubeconfig
@@ -254,6 +263,25 @@ Examples:
 		Hidden:     true,
 	}
 
+	// Flash command - flash a disk image to hardware via Jumpstarter
+	flashCmd := &cobra.Command{
+		Use:   "flash <oci-registry-reference>",
+		Short: "Flash a disk image to hardware via Jumpstarter",
+		Long: `Flash a disk image from an OCI registry to a hardware device using Jumpstarter.
+
+This command connects to a Jumpstarter exporter to flash the specified disk image
+onto physical hardware. Requires a Jumpstarter client configuration file.
+
+Examples:
+  # Flash using target platform lookup
+  caib flash quay.io/org/disk:v1 --client ~/.jumpstarter/client.yaml --target j784s4evm
+
+  # Flash with explicit exporter selector
+  caib flash quay.io/org/disk:v1 --client ~/.jumpstarter/client.yaml --exporter "board-type=j784s4evm"`,
+		Args: cobra.ExactArgs(1),
+		Run:  runFlash,
+	}
+
 	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List existing ImageBuilds",
@@ -287,6 +315,10 @@ Examples:
 	buildCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", false, "wait for build to complete")
 	buildCmd.Flags().BoolVarP(&followLogs, "follow", "f", true, "follow build logs")
 	// Note: --push is optional when --disk is used (disk image becomes the output)
+	// Jumpstarter flash options
+	buildCmd.Flags().BoolVar(&flashAfterBuild, "flash", false, "flash the image to device after build completes")
+	buildCmd.Flags().StringVar(&jumpstarterClient, "client", "", "path to Jumpstarter client config file (required for --flash)")
+	buildCmd.Flags().StringVar(&leaseDuration, "lease", "03:00:00", "device lease duration for flash (HH:MM:SS)")
 
 	listCmd.Flags().StringVar(
 		&serverURL, "server", os.Getenv("CAIB_SERVER"), "REST API server base URL (e.g. https://api.example)",
@@ -318,6 +350,10 @@ Examples:
 	diskCmd.Flags().IntVar(&timeout, "timeout", 60, "timeout in minutes")
 	diskCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", false, "wait for build to complete")
 	diskCmd.Flags().BoolVarP(&followLogs, "follow", "f", true, "follow build logs")
+	// Jumpstarter flash options
+	diskCmd.Flags().BoolVar(&flashAfterBuild, "flash", false, "flash the image to device after build completes")
+	diskCmd.Flags().StringVar(&jumpstarterClient, "client", "", "path to Jumpstarter client config file (required for --flash)")
+	diskCmd.Flags().StringVar(&leaseDuration, "lease", "03:00:00", "device lease duration for flash (HH:MM:SS)")
 
 	// build-dev command flags (traditional ostree/package builds)
 	buildDevCmd.Flags().StringVar(&serverURL, "server", os.Getenv("CAIB_SERVER"), "REST API server base URL")
@@ -341,9 +377,25 @@ Examples:
 	buildDevCmd.Flags().IntVar(&timeout, "timeout", 60, "timeout in minutes")
 	buildDevCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", false, "wait for build to complete")
 	buildDevCmd.Flags().BoolVarP(&followLogs, "follow", "f", true, "follow build logs")
+	// Jumpstarter flash options
+	buildDevCmd.Flags().BoolVar(&flashAfterBuild, "flash", false, "flash the image to device after build completes")
+	buildDevCmd.Flags().StringVar(&jumpstarterClient, "client", "", "path to Jumpstarter client config file (required for --flash)")
+	buildDevCmd.Flags().StringVar(&leaseDuration, "lease", "03:00:00", "device lease duration for flash (HH:MM:SS)")
+
+	// flash command flags
+	flashCmd.Flags().StringVar(&serverURL, "server", os.Getenv("CAIB_SERVER"), "REST API server base URL")
+	flashCmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication")
+	flashCmd.Flags().StringVar(&jumpstarterClient, "client", "", "path to Jumpstarter client config file (required)")
+	flashCmd.Flags().StringVarP(&flashName, "name", "n", "", "name for the flash job (auto-generated if omitted)")
+	flashCmd.Flags().StringVarP(&target, "target", "t", "", "target platform for exporter lookup")
+	flashCmd.Flags().StringVar(&exporterSelector, "exporter", "", "direct exporter selector (alternative to --target)")
+	flashCmd.Flags().StringVar(&leaseDuration, "lease", "03:00:00", "device lease duration (HH:MM:SS)")
+	flashCmd.Flags().BoolVarP(&followLogs, "follow", "f", true, "follow flash logs")
+	flashCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", true, "wait for flash to complete")
+	_ = flashCmd.MarkFlagRequired("client")
 
 	// Add all commands
-	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, catalog.NewCatalogCmd())
+	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, flashCmd, catalog.NewCatalogCmd())
 	// Add deprecated aliases for backwards compatibility
 	rootCmd.AddCommand(buildBootcAliasCmd, buildLegacyAliasCmd, buildTraditionalAliasCmd)
 
@@ -427,6 +479,24 @@ func runBuild(_ *cobra.Command, args []string) {
 		BuilderImage:           builderImage,
 	}
 
+	// Add flash configuration if enabled
+	if flashAfterBuild {
+		// Flash requires a disk image pushed to a registry
+		if exportOCI == "" {
+			handleError(fmt.Errorf("cannot enable --flash without exporting a disk image (--push-disk)"))
+		}
+		if jumpstarterClient == "" {
+			handleError(fmt.Errorf("--flash requires --client to specify Jumpstarter client config file"))
+		}
+		clientConfigBytes, err := os.ReadFile(jumpstarterClient)
+		if err != nil {
+			handleError(fmt.Errorf("failed to read Jumpstarter client config: %w", err))
+		}
+		req.FlashEnabled = true
+		req.FlashClientConfig = base64.StdEncoding.EncodeToString(clientConfigBytes)
+		req.FlashLeaseDuration = leaseDuration
+	}
+
 	if effectiveRegistryURL != "" && registryUsername != "" && registryPassword != "" {
 		req.RegistryCredentials = &buildapitypes.RegistryCredentials{
 			Enabled:     true,
@@ -452,7 +522,7 @@ func runBuild(_ *cobra.Command, args []string) {
 		handleFileUploads(ctx, api, resp.Name, localRefs)
 	}
 
-	if waitForBuild || followLogs || outputDir != "" {
+	if waitForBuild || followLogs || outputDir != "" || flashAfterBuild {
 		waitForBuildCompletion(ctx, api, resp.Name)
 	}
 
@@ -465,6 +535,10 @@ func runBuild(_ *cobra.Command, args []string) {
 	}
 
 	downloadOCIArtifactIfRequested(outputDir, exportOCI, registryUsername, registryPassword)
+
+	// Note: When flashAfterBuild is enabled, flash config is sent with the build request
+	// and the controller handles flashing after push. The waitForBuildCompletion above
+	// will wait until the full pipeline (including flash) completes.
 }
 
 func runDisk(_ *cobra.Command, args []string) {
@@ -519,6 +593,24 @@ func runDisk(_ *cobra.Command, args []string) {
 		ExportOCI:              exportOCI,
 	}
 
+	// Add flash configuration if enabled
+	if flashAfterBuild {
+		// Flash requires a disk image pushed to a registry
+		if exportOCI == "" {
+			handleError(fmt.Errorf("cannot enable --flash without exporting a disk image (--push)"))
+		}
+		if jumpstarterClient == "" {
+			handleError(fmt.Errorf("--flash requires --client to specify Jumpstarter client config file"))
+		}
+		clientConfigBytes, err := os.ReadFile(jumpstarterClient)
+		if err != nil {
+			handleError(fmt.Errorf("failed to read Jumpstarter client config: %w", err))
+		}
+		req.FlashEnabled = true
+		req.FlashClientConfig = base64.StdEncoding.EncodeToString(clientConfigBytes)
+		req.FlashLeaseDuration = leaseDuration
+	}
+
 	if effectiveRegistryURL != "" && registryUsername != "" && registryPassword != "" {
 		req.RegistryCredentials = &buildapitypes.RegistryCredentials{
 			Enabled:     true,
@@ -535,16 +627,20 @@ func runDisk(_ *cobra.Command, args []string) {
 	}
 	fmt.Printf("Build %s accepted: %s - %s\n", resp.Name, resp.Phase, resp.Message)
 
-	if waitForBuild || followLogs || outputDir != "" {
+	if waitForBuild || followLogs || outputDir != "" || flashAfterBuild {
 		waitForBuildCompletion(ctx, api, resp.Name)
 	}
 
 	// Show push location after successful build completion
 	if exportOCI != "" {
-		fmt.Printf("✓ Disk image pushed to: %s\n", exportOCI)
+		fmt.Printf("Disk image pushed to: %s\n", exportOCI)
 	}
 
 	downloadOCIArtifactIfRequested(outputDir, exportOCI, registryUsername, registryPassword)
+
+	// Note: When flashAfterBuild is enabled, flash config is sent with the build request
+	// and the controller handles flashing after push. The waitForBuildCompletion above
+	// will wait until the full pipeline (including flash) completes.
 }
 
 func pullOCIArtifact(ociRef, destPath, username, password string) error {
@@ -784,6 +880,24 @@ func runBuildDev(_ *cobra.Command, args []string) {
 		ExportOCI:              exportOCI,
 	}
 
+	// Add flash configuration if enabled
+	if flashAfterBuild {
+		// Flash requires a disk image pushed to a registry
+		if exportOCI == "" {
+			handleError(fmt.Errorf("cannot enable --flash without exporting a disk image (--push)"))
+		}
+		if jumpstarterClient == "" {
+			handleError(fmt.Errorf("--flash requires --client to specify Jumpstarter client config file"))
+		}
+		clientConfigBytes, err := os.ReadFile(jumpstarterClient)
+		if err != nil {
+			handleError(fmt.Errorf("failed to read Jumpstarter client config: %w", err))
+		}
+		req.FlashEnabled = true
+		req.FlashClientConfig = base64.StdEncoding.EncodeToString(clientConfigBytes)
+		req.FlashLeaseDuration = leaseDuration
+	}
+
 	if effectiveRegistryURL != "" && registryUsername != "" && registryPassword != "" {
 		req.RegistryCredentials = &buildapitypes.RegistryCredentials{
 			Enabled:     true,
@@ -809,10 +923,14 @@ func runBuildDev(_ *cobra.Command, args []string) {
 		handleFileUploads(ctx, api, resp.Name, localRefs)
 	}
 
-	if waitForBuild || followLogs || outputDir != "" {
+	if waitForBuild || followLogs || outputDir != "" || flashAfterBuild {
 		waitForBuildCompletion(ctx, api, resp.Name)
 	}
 	downloadOCIArtifactIfRequested(outputDir, exportOCI, registryUsername, registryPassword)
+
+	// Note: When flashAfterBuild is enabled, flash config is sent with the build request
+	// and the controller handles flashing after push. The waitForBuildCompletion above
+	// will wait until the full pipeline (including flash) completes.
 }
 
 func handleFileUploads(
@@ -841,7 +959,7 @@ func handleFileUploads(
 			if st.Phase == "Uploading" {
 				break
 			}
-			if st.Phase == "Failed" {
+			if st.Phase == phaseFailed {
 				handleError(fmt.Errorf("build failed while waiting for upload server: %s", st.Message))
 			}
 		}
@@ -875,6 +993,7 @@ func handleFileUploads(
 	fmt.Println("Local files uploaded. Build will proceed.")
 }
 
+//nolint:gocyclo // Complex state machine for build progress tracking with log streaming
 func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, name string) {
 	fmt.Println("Waiting for build to complete...")
 	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Minute)
@@ -920,20 +1039,66 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 
 			// Handle terminal build states
 			if st.Phase == "Completed" {
-				fmt.Println("Build completed successfully!")
-				if st.Jumpstarter != nil && st.Jumpstarter.Available {
-					fmt.Println("\nJumpstarter is available for device flashing.")
-					if st.Jumpstarter.ExporterSelector != "" {
-						fmt.Printf("  Exporter selector: %s\n", st.Jumpstarter.ExporterSelector)
+				flashWasExecuted := strings.Contains(st.Message, "flash")
+				if flashWasExecuted {
+					fmt.Println("\n" + strings.Repeat("=", 50))
+					fmt.Println("Build and flash completed successfully!")
+					fmt.Println(strings.Repeat("=", 50))
+					fmt.Println("\nThe device has been flashed and a lease has been acquired.")
+					// Get lease ID from API response (preferred) or fall back to log parsing
+					leaseID := ""
+					if st.Jumpstarter != nil && st.Jumpstarter.LeaseID != "" {
+						leaseID = st.Jumpstarter.LeaseID
+					} else if streamState.leaseID != "" {
+						leaseID = streamState.leaseID
 					}
-					if st.Jumpstarter.FlashCmd != "" {
-						fmt.Printf("  Flash command: %s\n", st.Jumpstarter.FlashCmd)
+					if leaseID != "" {
+						fmt.Printf("\nLease ID: %s\n", leaseID)
+						fmt.Println("\nTo access the device:")
+						fmt.Printf("  jmp shell --lease %s\n", leaseID)
+						fmt.Println("\nTo release the lease when done:")
+						fmt.Printf("  jmp delete leases %s\n", leaseID)
+					} else {
+						fmt.Println("Check the logs above for lease details, or use:")
+						fmt.Println("  jmp list leases")
+						fmt.Println("\nTo access the device:")
+						fmt.Println("  jmp shell --lease <lease-id>")
+						fmt.Println("\nTo release the lease when done:")
+						fmt.Println("  jmp delete leases <lease-id>")
+					}
+				} else {
+					fmt.Println("Build completed successfully!")
+					if flashAfterBuild {
+						fmt.Println("\nWarning: --flash was requested but flash was not executed.")
+						fmt.Println("This may be because no Jumpstarter target mapping exists for this target.")
+						fmt.Println("Check OperatorConfig for JumpstarterTargetMappings configuration.")
+					}
+					if st.Jumpstarter != nil && st.Jumpstarter.Available {
+						fmt.Println("\nJumpstarter is available")
+						if st.Jumpstarter.ExporterSelector != "" {
+							fmt.Println("matching exporter(s) found")
+							fmt.Printf("  Exporter selector: %s\n", st.Jumpstarter.ExporterSelector)
+						}
+						if st.Jumpstarter.FlashCmd != "" {
+							fmt.Printf("  Flash command: %s\n", st.Jumpstarter.FlashCmd)
+						}
 					}
 				}
 				return
 			}
-			if st.Phase == "Failed" {
-				handleError(fmt.Errorf("build failed: %s", st.Message))
+			if st.Phase == phaseFailed {
+				// Provide phase-specific error messages
+				errPrefix := "build"
+				if strings.Contains(strings.ToLower(st.Message), "flash") {
+					errPrefix = "flash"
+				} else if strings.Contains(strings.ToLower(st.Message), "push") {
+					errPrefix = "push"
+				} else if lastPhase == "Flashing" {
+					errPrefix = "flash"
+				} else if lastPhase == "Pushing" {
+					errPrefix = "push"
+				}
+				handleError(fmt.Errorf("%s failed: %s", errPrefix, st.Message))
 			}
 
 			// Attempt log streaming for active builds
@@ -978,7 +1143,8 @@ type logStreamState struct {
 	retryCount   int
 	warningShown bool
 	startTime    time.Time
-	completed    bool // Set when stream ends normally, prevents reconnection
+	completed    bool   // Set when stream ends normally, prevents reconnection
+	leaseID      string // Captured lease ID from flash logs
 }
 
 const maxLogRetries = 24 // ~2 minutes at 5s intervals
@@ -993,7 +1159,7 @@ func (s *logStreamState) reset() {
 }
 
 func isBuildActive(phase string) bool {
-	return phase == "Building" || phase == "Running" || phase == "Uploading"
+	return phase == "Building" || phase == "Running" || phase == "Uploading" || phase == "Flashing"
 }
 
 // tryLogStreaming attempts to stream logs and returns error if it fails
@@ -1043,7 +1209,29 @@ func streamLogsToStdout(body io.Reader, state *logStreamState) error {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024) // Handle long lines
 	for scanner.Scan() {
-		fmt.Println(scanner.Text())
+		line := scanner.Text()
+		fmt.Println(line)
+
+		// Capture lease ID from flash logs
+		// Format: "jmp shell --lease <lease-id>" or "Lease acquired: <lease-id>"
+		// Extract only the first token after the marker to avoid trailing flags/text
+		if strings.Contains(line, "jmp shell --lease ") {
+			parts := strings.Split(line, "jmp shell --lease ")
+			if len(parts) > 1 {
+				tokens := strings.Fields(parts[1])
+				if len(tokens) > 0 {
+					state.leaseID = tokens[0]
+				}
+			}
+		} else if strings.Contains(line, "Lease acquired: ") {
+			parts := strings.Split(line, "Lease acquired: ")
+			if len(parts) > 1 {
+				tokens := strings.Fields(parts[1])
+				if len(tokens) > 0 {
+					state.leaseID = tokens[0]
+				}
+			}
+		}
 	}
 	state.active = false
 
@@ -1334,4 +1522,177 @@ func loadTokenFromKubeconfig() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no bearer token found in kubeconfig")
+}
+
+// parseLeaseDuration converts HH:MM:SS format to time.Duration
+func parseLeaseDuration(duration string) time.Duration {
+	parts := strings.Split(duration, ":")
+	if len(parts) != 3 {
+		return time.Hour // Default 1 hour
+	}
+	var hours, mins, secs int
+	_, _ = fmt.Sscanf(parts[0], "%d", &hours)
+	_, _ = fmt.Sscanf(parts[1], "%d", &mins)
+	_, _ = fmt.Sscanf(parts[2], "%d", &secs)
+	return time.Duration(hours)*time.Hour + time.Duration(mins)*time.Minute + time.Duration(secs)*time.Second
+}
+
+// runFlash handles the standalone 'flash' command
+func runFlash(_ *cobra.Command, args []string) {
+	ctx := context.Background()
+	imageRef := args[0]
+
+	if serverURL == "" {
+		handleError(fmt.Errorf("--server is required (or set CAIB_SERVER env)"))
+	}
+
+	if jumpstarterClient == "" {
+		handleError(fmt.Errorf("--client is required"))
+	}
+
+	// Validate that either target or exporter is specified
+	if target == "" && exporterSelector == "" {
+		handleError(fmt.Errorf("either --target or --exporter is required"))
+	}
+
+	api, err := createBuildAPIClient(serverURL, &authToken)
+	if err != nil {
+		handleError(err)
+	}
+
+	// Read and encode client config
+	clientConfigBytes, err := os.ReadFile(jumpstarterClient)
+	if err != nil {
+		handleError(fmt.Errorf("failed to read client config file: %w", err))
+	}
+	clientConfigB64 := base64.StdEncoding.EncodeToString(clientConfigBytes)
+
+	req := buildapitypes.FlashRequest{
+		Name:             flashName,
+		ImageRef:         imageRef,
+		Target:           target,
+		ExporterSelector: exporterSelector,
+		ClientConfig:     clientConfigB64,
+		LeaseDuration:    leaseDuration,
+	}
+
+	resp, err := api.CreateFlash(ctx, req)
+	if err != nil {
+		handleError(err)
+	}
+	fmt.Printf("Flash job %s accepted: %s - %s\n", resp.Name, resp.Phase, resp.Message)
+
+	if waitForBuild || followLogs {
+		waitForFlashCompletion(ctx, api, resp.Name)
+	}
+}
+
+// waitForFlashCompletion waits for a flash job to complete, optionally streaming logs
+func waitForFlashCompletion(ctx context.Context, api *buildapiclient.Client, name string) {
+	fmt.Println("Waiting for flash to complete...")
+	// Parse lease duration and add buffer for wait timeout
+	timeoutDuration := parseLeaseDuration(leaseDuration) + 10*time.Minute
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeoutDuration)
+	defer cancel()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	var lastPhase, lastMessage string
+	pendingWarningShown := false
+
+	logClient := &http.Client{
+		Timeout: 10 * time.Minute,
+		Transport: &http.Transport{
+			ResponseHeaderTimeout: 30 * time.Second,
+			IdleConnTimeout:       2 * time.Minute,
+		},
+	}
+	streamState := &logStreamState{}
+
+	for {
+		select {
+		case <-timeoutCtx.Done():
+			handleError(fmt.Errorf("timed out waiting for flash"))
+		case <-ticker.C:
+			reqCtx, cancelReq := context.WithTimeout(ctx, 2*time.Minute)
+			st, err := api.GetFlash(reqCtx, name)
+			cancelReq()
+			if err != nil {
+				fmt.Printf("status check failed: %v\n", err)
+				continue
+			}
+
+			// Update status display when not streaming
+			if !streamState.active {
+				if st.Phase != lastPhase || st.Message != lastMessage {
+					fmt.Printf("status: %s - %s\n", st.Phase, st.Message)
+					lastPhase = st.Phase
+					lastMessage = st.Message
+				}
+			}
+
+			// Handle terminal states
+			if st.Phase == "Completed" {
+				fmt.Println("Flash completed successfully!")
+				return
+			}
+			if st.Phase == phaseFailed {
+				handleError(fmt.Errorf("flash failed: %s", st.Message))
+			}
+
+			// Attempt log streaming for active flash jobs
+			if !followLogs || streamState.active || !streamState.canRetry() {
+				continue
+			}
+
+			if st.Phase == "Pending" {
+				streamState.reset()
+				if !pendingWarningShown {
+					fmt.Println("Waiting for flash to start before streaming logs...")
+					pendingWarningShown = true
+				}
+				continue
+			}
+
+			if st.Phase == "Running" {
+				if streamState.retryCount == 0 {
+					fmt.Println("Flash is running. Attempting to stream logs...")
+					pendingWarningShown = false
+				}
+
+				if err := tryFlashLogStreaming(ctx, logClient, name, streamState); err != nil {
+					streamState.retryCount++
+				}
+			}
+		}
+	}
+}
+
+// tryFlashLogStreaming attempts to stream flash logs
+func tryFlashLogStreaming(ctx context.Context, logClient *http.Client, name string, state *logStreamState) error {
+	logURL := strings.TrimRight(serverURL, "/") + "/v1/flash/" + url.PathEscape(name) + "/logs?follow=1"
+	if !state.startTime.IsZero() {
+		logURL += "&since=" + url.QueryEscape(state.startTime.Format(time.RFC3339))
+	}
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, logURL, nil)
+	if authToken := strings.TrimSpace(authToken); authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+authToken)
+	}
+
+	resp, err := logClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("log request failed: %w", err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
+		}
+	}()
+
+	if resp.StatusCode == http.StatusOK {
+		return streamLogsToStdout(resp.Body, state)
+	}
+
+	return handleLogStreamError(resp, state)
 }
