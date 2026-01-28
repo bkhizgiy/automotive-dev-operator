@@ -13,21 +13,10 @@ import (
 
 var _ = Describe("GetOIDCConfigFromAPI", func() {
 	var server *httptest.Server
-	var originalEnv string
-
-	BeforeEach(func() {
-		originalEnv = os.Getenv("CAIB_INSECURE_TLS")
-		_ = os.Unsetenv("CAIB_INSECURE_TLS")
-	})
 
 	AfterEach(func() {
 		if server != nil {
 			server.Close()
-		}
-		if originalEnv != "" {
-			_ = os.Setenv("CAIB_INSECURE_TLS", originalEnv)
-		} else {
-			_ = os.Unsetenv("CAIB_INSECURE_TLS")
 		}
 	})
 

@@ -4,6 +4,7 @@ package operatorconfig
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 	routev1 "github.com/openshift/api/route/v1"
@@ -234,11 +235,9 @@ func (r *OperatorConfigReconciler) deployBuildAPI(ctx context.Context, owner *au
 		return fmt.Errorf("failed to ensure build-api internal JWT secret: %w", err)
 	}
 
-	// Ensure build-api auth configuration
-	if err := r.ensureBuildAPIAuthConfigMap(ctx); err != nil {
-		r.Log.Error(err, "Failed to ensure build-api auth config")
-		return fmt.Errorf("failed to ensure build-api auth config: %w", err)
-	}
+	// Build API now reads authentication configuration directly from OperatorConfig CRD
+	// No need to generate ConfigMap anymore
+	r.Log.Info("Build API will read authentication config directly from OperatorConfig")
 
 	// Update ServiceAccount with build-api OAuth redirect annotation
 	if err := r.updateBuildAPIServiceAccountAnnotation(ctx); err != nil {
@@ -408,21 +407,96 @@ func (r *OperatorConfigReconciler) ensureBuildAPIInternalJWTSecret(ctx context.C
 	return nil
 }
 
-func (r *OperatorConfigReconciler) ensureBuildAPIAuthConfigMap(ctx context.Context) error {
-	configMap := &corev1.ConfigMap{}
-	err := r.Get(ctx, client.ObjectKey{Name: buildAPIAuthConfigMapName, Namespace: operatorNamespace}, configMap)
-	if err == nil {
-		return nil
-	}
-	if !errors.IsNotFound(err) {
-		return fmt.Errorf("failed to get build-api auth configmap %s: %w", buildAPIAuthConfigMapName, err)
+func (r *OperatorConfigReconciler) ensureBuildAPIAuthConfigMap(ctx context.Context, owner *automotivev1alpha1.OperatorConfig) error {
+	// Generate new ConfigMap from current OperatorConfig spec
+	newConfigMap := r.buildBuildAPIAuthConfigMap(owner)
+	newData := newConfigMap.Data["config"]
+
+	// Check if ConfigMap exists and compare data to detect changes
+	existing := &corev1.ConfigMap{}
+	key := client.ObjectKey{Name: buildAPIAuthConfigMapName, Namespace: operatorNamespace}
+	err := r.Get(ctx, key, existing)
+	exists := err == nil
+	configChanged := false
+
+	if exists {
+		// Compare existing data with new data from OperatorConfig spec
+		existingData := existing.Data["config"]
+		configChanged = existingData != newData
+		if configChanged {
+			r.Log.Info("ConfigMap data changed, will update and restart Build API",
+				"existing_length", len(existingData),
+				"new_length", len(newData))
+		}
+	} else {
+		// ConfigMap doesn't exist yet, will be created
+		r.Log.Info("ConfigMap does not exist, will create it")
 	}
 
-	configMap = r.buildBuildAPIAuthConfigMap()
-	if err := r.Create(ctx, configMap); err != nil {
-		return fmt.Errorf("failed to create build-api auth configmap %s: %w", buildAPIAuthConfigMapName, err)
+	// Always update/create the ConfigMap to ensure it matches OperatorConfig spec
+	if err := r.createOrUpdate(ctx, newConfigMap, owner); err != nil {
+		return fmt.Errorf("failed to create/update build-api auth configmap %s: %w", buildAPIAuthConfigMapName, err)
 	}
-	r.Log.Info("Created build-api auth configmap", "name", buildAPIAuthConfigMapName)
+
+	// If ConfigMap was created or data changed, restart Build API to pick up changes
+	// Only restart if this is a real change, not a reconcile triggered by the restart itself
+	if configChanged {
+		if err := r.restartBuildAPIDeployment(ctx); err != nil {
+			r.Log.Error(err, "failed to restart Build API deployment after ConfigMap update")
+			// Don't fail the reconcile, just log the error
+		} else {
+			r.Log.Info("Build API deployment restart triggered (ConfigMap updated)")
+		}
+	} else if !exists {
+		// ConfigMap was just created, but deployment might not exist yet
+		// Don't restart immediately - let the deployment creation handle it
+		r.Log.Info("ConfigMap created, deployment will be created/updated separately")
+	} else {
+		r.Log.Info("ConfigMap unchanged, no restart needed")
+	}
+
+	r.Log.Info("Build-API auth configmap ensured", "name", buildAPIAuthConfigMapName)
+	return nil
+}
+
+func (r *OperatorConfigReconciler) restartBuildAPIDeployment(ctx context.Context) error {
+	deployment := &appsv1.Deployment{}
+	key := client.ObjectKey{Name: "ado-build-api", Namespace: operatorNamespace}
+	if err := r.Get(ctx, key, deployment); err != nil {
+		if errors.IsNotFound(err) {
+			// Deployment doesn't exist yet, no need to restart
+			r.Log.Info("Build API deployment not found, skipping restart")
+			return nil
+		}
+		return fmt.Errorf("failed to get Build API deployment: %w", err)
+	}
+
+	// Check if deployment is already restarting (has recent annotation)
+	if deployment.Spec.Template.Annotations != nil {
+		if lastUpdate, ok := deployment.Spec.Template.Annotations["automotive.sdv.cloud.redhat.com/config-updated"]; ok {
+			// Parse the timestamp
+			if lastUpdateTime, err := time.Parse(time.RFC3339, lastUpdate); err == nil {
+				// If updated within last 30 seconds, skip to avoid restart loop
+				if time.Since(lastUpdateTime) < 30*time.Second {
+					r.Log.Info("Build API deployment recently restarted, skipping to avoid loop",
+						"last_update", lastUpdateTime)
+					return nil
+				}
+			}
+		}
+	}
+
+	// Add/update annotation to trigger rollout restart
+	if deployment.Spec.Template.Annotations == nil {
+		deployment.Spec.Template.Annotations = make(map[string]string)
+	}
+	deployment.Spec.Template.Annotations["automotive.sdv.cloud.redhat.com/config-updated"] = time.Now().Format(time.RFC3339)
+
+	if err := r.Update(ctx, deployment); err != nil {
+		return fmt.Errorf("failed to update Build API deployment: %w", err)
+	}
+
+	r.Log.Info("Triggered Build API deployment restart for config update")
 	return nil
 }
 

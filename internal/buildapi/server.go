@@ -120,46 +120,74 @@ func NewAPIServerWithLimits(addr string, logger logr.Logger, limits APILimits) *
 		a.internalJWT = cfg
 		logger.Info("internal JWT auth enabled", "issuer", cfg.issuer, "audience", cfg.audience)
 	}
-	// Try to load from config file (supports both 'config' and 'authentication.yaml' keys)
-	authConfigPath := os.Getenv("AUTH_CONFIG_PATH")
-	if authConfigPath == "" {
-		authConfigPath = "/etc/build-api/config"
-	}
-	logger.Info("loading authentication config", "path", authConfigPath)
-	// Try 'config' first (Jumpstarter style), then fallback to 'authentication.yaml'
-	cfg, authn, prefix, err := loadAuthenticationConfigurationFromFile(context.Background(), authConfigPath)
-	if err != nil {
-		logger.Info("primary config path failed, trying fallback", "primary_path", authConfigPath, "error", err)
-		// Try fallback path if primary path fails (but only if it's not a directory)
-		fallbackPath := "/etc/build-api/authentication.yaml"
-		if info, statErr := os.Stat(fallbackPath); statErr == nil && !info.IsDir() {
-			if fallbackCfg, fallbackAuthn, fallbackPrefix, fallbackErr := loadAuthenticationConfigurationFromFile(context.Background(), fallbackPath); fallbackErr == nil {
-				cfg = fallbackCfg
-				authn = fallbackAuthn
-				prefix = fallbackPrefix
-				logger.Info("loaded authentication config from fallback path", "path", fallbackPath)
-			} else {
-				logger.Error(err, "failed to load authentication config; external OIDC auth disabled", "primary_path", authConfigPath, "fallback_path", fallbackPath, "fallback_err", fallbackErr)
+
+	// Try to load authentication configuration directly from OperatorConfig CRD
+	namespace := resolveNamespace()
+	logger.Info("attempting to load authentication config from OperatorConfig", "namespace", namespace)
+	k8sClient, err := a.getCatalogClient()
+	if err == nil {
+		cfg, authn, prefix, err := loadAuthenticationConfigurationFromOperatorConfig(context.Background(), k8sClient, namespace)
+		if err == nil && cfg != nil {
+			a.authConfig = cfg
+			a.externalJWT = authn
+			a.internalPrefix = prefix
+			if cfg.ClientID != "" {
+				a.oidcClientID = cfg.ClientID
 			}
+			if len(cfg.JWT) > 0 {
+				logger.Info("loaded authentication config from OperatorConfig", "jwt_count", len(cfg.JWT), "namespace", namespace, "client_id", cfg.ClientID)
+			} else {
+				logger.Info("authentication config loaded from OperatorConfig but no JWT issuers configured", "namespace", namespace)
+			}
+		} else if err != nil {
+			logger.Info("failed to load authentication config from OperatorConfig, trying file fallback", "namespace", namespace, "error", err)
 		} else {
-			logger.Error(err, "failed to load authentication config; external OIDC auth disabled", "primary_path", authConfigPath, "fallback_is_dir", statErr == nil && info.IsDir())
+			logger.Info("no authentication config in OperatorConfig, trying file fallback", "namespace", namespace)
 		}
-	} else if cfg == nil {
-		logger.Info("authentication config file not found or empty", "path", authConfigPath)
 	} else {
-		logger.Info("loaded authentication config", "path", authConfigPath, "jwt_count", len(cfg.JWT))
+		logger.Info("failed to create k8s client for OperatorConfig, trying file fallback", "error", err)
 	}
-	if cfg != nil {
-		a.authConfig = cfg
-		a.externalJWT = authn
-		a.internalPrefix = prefix
-		if cfg.ClientID != "" {
-			a.oidcClientID = cfg.ClientID
+
+	// Fallback to file-based config if OperatorConfig doesn't have auth config or failed to load
+	if a.authConfig == nil {
+		authConfigPath := os.Getenv("AUTH_CONFIG_PATH")
+		if authConfigPath == "" {
+			authConfigPath = "/etc/build-api/config"
 		}
-		if len(cfg.JWT) > 0 {
-			logger.Info("external OIDC auth enabled", "issuers", len(cfg.JWT))
+		logger.Info("loading authentication config from file", "path", authConfigPath)
+		cfg, authn, prefix, err := loadAuthenticationConfigurationFromFile(context.Background(), authConfigPath)
+		if err != nil {
+			logger.Info("primary config path failed, trying fallback", "primary_path", authConfigPath, "error", err)
+			fallbackPath := "/etc/build-api/authentication.yaml"
+			if info, statErr := os.Stat(fallbackPath); statErr == nil && !info.IsDir() {
+				if fallbackCfg, fallbackAuthn, fallbackPrefix, fallbackErr := loadAuthenticationConfigurationFromFile(context.Background(), fallbackPath); fallbackErr == nil {
+					cfg = fallbackCfg
+					authn = fallbackAuthn
+					prefix = fallbackPrefix
+					logger.Info("loaded authentication config from fallback path", "path", fallbackPath)
+				} else {
+					logger.Error(err, "failed to load authentication config; external OIDC auth disabled", "primary_path", authConfigPath, "fallback_path", fallbackPath, "fallback_err", fallbackErr)
+				}
+			} else {
+				logger.Error(err, "failed to load authentication config; external OIDC auth disabled", "primary_path", authConfigPath, "fallback_is_dir", statErr == nil && info.IsDir())
+			}
+		} else if cfg == nil {
+			logger.Info("authentication config file not found or empty", "path", authConfigPath)
 		} else {
-			logger.Info("authentication config loaded but no JWT issuers configured")
+			logger.Info("loaded authentication config from file", "path", authConfigPath, "jwt_count", len(cfg.JWT))
+		}
+		if cfg != nil {
+			a.authConfig = cfg
+			a.externalJWT = authn
+			a.internalPrefix = prefix
+			if cfg.ClientID != "" {
+				a.oidcClientID = cfg.ClientID
+			}
+			if len(cfg.JWT) > 0 {
+				logger.Info("external OIDC auth enabled", "issuers", len(cfg.JWT))
+			} else {
+				logger.Info("authentication config loaded but no JWT issuers configured")
+			}
 		}
 	}
 	a.router = a.createRouter()

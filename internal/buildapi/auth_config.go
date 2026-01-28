@@ -6,13 +6,16 @@ import (
 	"os"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	apiserverv1beta1 "k8s.io/apiserver/pkg/apis/apiserver/v1beta1"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	tokenunion "k8s.io/apiserver/pkg/authentication/token/union"
 	"k8s.io/apiserver/pkg/server/dynamiccertificates"
-	"k8s.io/apiserver/plugin/pkg/authenticator/token/oidc"
+	oidcauth "k8s.io/apiserver/plugin/pkg/authenticator/token/oidc"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
+	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	apiserver "k8s.io/apiserver/pkg/apis/apiserver"
 )
 
@@ -136,9 +139,10 @@ func newJWTAuthenticator(ctx context.Context, config AuthenticationConfiguration
 
 	jwtAuthenticators := make([]authenticator.Token, 0, len(config.JWT))
 	for _, jwtAuthenticator := range config.JWT {
-		var oidcCAContent oidc.CAContentProvider
+		var oidcCAContent oidcauth.CAContentProvider
 		if jwtAuthenticator.Issuer.CertificateAuthority != "" {
 			var oidcCAError error
+			// Try to read CA from file, or use it as inline PEM
 			if _, err := os.Stat(jwtAuthenticator.Issuer.CertificateAuthority); err == nil {
 				oidcCAContent, oidcCAError = dynamiccertificates.NewDynamicCAContentFromFile(
 					"oidc-authenticator",
@@ -161,10 +165,10 @@ func newJWTAuthenticator(ctx context.Context, config AuthenticationConfiguration
 			return nil, err
 		}
 
-		oidcAuth, err := oidc.New(ctx, oidc.Options{
+		oidcAuth, err := oidcauth.New(ctx, oidcauth.Options{
 			JWTAuthenticator:     jwtAuthenticatorUnversioned,
 			CAContentProvider:    oidcCAContent,
-			SupportedSigningAlgs: oidc.AllValidSigningAlgorithms(),
+			SupportedSigningAlgs: oidcauth.AllValidSigningAlgorithms(),
 		})
 		if err != nil {
 			return nil, err
@@ -172,4 +176,41 @@ func newJWTAuthenticator(ctx context.Context, config AuthenticationConfiguration
 		jwtAuthenticators = append(jwtAuthenticators, oidcAuth)
 	}
 	return tokenunion.NewFailOnError(jwtAuthenticators...), nil
+}
+
+// loadAuthenticationConfigurationFromOperatorConfig loads authentication configuration directly from OperatorConfig CRD.
+func loadAuthenticationConfigurationFromOperatorConfig(ctx context.Context, k8sClient client.Client, namespace string) (*AuthenticationConfiguration, authenticator.Token, string, error) {
+	operatorConfig := &automotivev1alpha1.OperatorConfig{}
+	key := types.NamespacedName{Name: "config", Namespace: namespace}
+
+	if err := k8sClient.Get(ctx, key, operatorConfig); err != nil {
+		return nil, nil, "", fmt.Errorf("failed to get OperatorConfig %s/%s: %w", namespace, "config", err)
+	}
+
+	// Check if authentication is configured
+	if operatorConfig.Spec.BuildAPI == nil || operatorConfig.Spec.BuildAPI.Authentication == nil {
+		return nil, nil, "", nil // No authentication configured
+	}
+
+	auth := operatorConfig.Spec.BuildAPI.Authentication
+	config := &AuthenticationConfiguration{
+		ClientID: auth.ClientID,
+		Internal: InternalAuthConfig{
+			Prefix: "internal:",
+		},
+		JWT: auth.JWT,
+	}
+
+	// Set internal prefix if provided
+	if auth.Internal != nil && auth.Internal.Prefix != "" {
+		config.Internal.Prefix = auth.Internal.Prefix
+	}
+
+	// Build authenticator from JWT configuration
+	authn, err := newJWTAuthenticator(ctx, *config)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("failed to create JWT authenticator: %w", err)
+	}
+
+	return config, authn, config.Internal.Prefix, nil
 }
