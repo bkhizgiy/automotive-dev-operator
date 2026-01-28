@@ -234,11 +234,9 @@ func (r *OperatorConfigReconciler) deployBuildAPI(ctx context.Context, owner *au
 		return fmt.Errorf("failed to ensure build-api internal JWT secret: %w", err)
 	}
 
-	// Ensure build-api auth configuration
-	if err := r.ensureBuildAPIAuthConfigMap(ctx); err != nil {
-		r.Log.Error(err, "Failed to ensure build-api auth config")
-		return fmt.Errorf("failed to ensure build-api auth config: %w", err)
-	}
+	// Build API now reads authentication configuration directly from OperatorConfig CRD
+	// No need to generate ConfigMap anymore
+	r.Log.Info("Build API will read authentication config directly from OperatorConfig")
 
 	// Update ServiceAccount with build-api OAuth redirect annotation
 	if err := r.updateBuildAPIServiceAccountAnnotation(ctx); err != nil {
@@ -405,24 +403,6 @@ func (r *OperatorConfigReconciler) ensureBuildAPIInternalJWTSecret(ctx context.C
 		}
 		r.Log.Info("Created internal JWT secret", "name", internalJWTSecretName)
 	}
-	return nil
-}
-
-func (r *OperatorConfigReconciler) ensureBuildAPIAuthConfigMap(ctx context.Context) error {
-	configMap := &corev1.ConfigMap{}
-	err := r.Get(ctx, client.ObjectKey{Name: buildAPIAuthConfigMapName, Namespace: operatorNamespace}, configMap)
-	if err == nil {
-		return nil
-	}
-	if !errors.IsNotFound(err) {
-		return fmt.Errorf("failed to get build-api auth configmap %s: %w", buildAPIAuthConfigMapName, err)
-	}
-
-	configMap = r.buildBuildAPIAuthConfigMap()
-	if err := r.Create(ctx, configMap); err != nil {
-		return fmt.Errorf("failed to create build-api auth configmap %s: %w", buildAPIAuthConfigMapName, err)
-	}
-	r.Log.Info("Created build-api auth configmap", "name", buildAPIAuthConfigMapName)
 	return nil
 }
 

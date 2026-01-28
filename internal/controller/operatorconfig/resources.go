@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -19,8 +18,7 @@ import (
 )
 
 const (
-	defaultOperatorImage      = "quay.io/rh-sdv-cloud/automotive-dev-operator:latest"
-	buildAPIAuthConfigMapName = "ado-build-api-authentication"
+	defaultOperatorImage = "quay.io/rh-sdv-cloud/automotive-dev-operator:latest"
 )
 
 // getOperatorImage returns the operator image from env var or default
@@ -103,13 +101,7 @@ func (r *OperatorConfigReconciler) buildBuildAPIContainers(isOpenShift bool) []c
 					Protocol:      corev1.ProtocolTCP,
 				},
 			},
-			VolumeMounts: []corev1.VolumeMount{
-				{
-					Name:      "build-api-auth-config",
-					MountPath: "/etc/build-api",
-					ReadOnly:  true,
-				},
-			},
+			// No volume mounts needed - Build API reads directly from OperatorConfig CRD
 			SecurityContext: &corev1.SecurityContext{
 				AllowPrivilegeEscalation: boolPtr(false),
 			},
@@ -228,18 +220,7 @@ func (r *OperatorConfigReconciler) buildBuildAPIDeployment(isOpenShift bool) *ap
 						},
 					},
 					Containers: r.buildBuildAPIContainers(isOpenShift),
-					Volumes: []corev1.Volume{
-						{
-							Name: "build-api-auth-config",
-							VolumeSource: corev1.VolumeSource{
-								ConfigMap: &corev1.ConfigMapVolumeSource{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: buildAPIAuthConfigMapName,
-									},
-								},
-							},
-						},
-					},
+					// No volumes needed - Build API reads directly from OperatorConfig CRD
 				},
 			},
 		},
@@ -385,31 +366,6 @@ func (r *OperatorConfigReconciler) buildOAuthSecret(name string) *corev1.Secret 
 			"cookie-secret": []byte(base64.StdEncoding.EncodeToString(cookieSecret)[:32]),
 		},
 	}
-}
-
-func (r *OperatorConfigReconciler) buildBuildAPIAuthConfigMap() *corev1.ConfigMap {
-	return &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      buildAPIAuthConfigMapName,
-			Namespace: operatorNamespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/name":      "automotive-dev-operator",
-				"app.kubernetes.io/component": "build-api",
-				"app.kubernetes.io/part-of":   "automotive-dev-operator",
-			},
-		},
-		Data: map[string]string{
-			"config": strings.TrimSpace(defaultAuthenticationConfig()), // Use 'config' key to match Jumpstarter
-		},
-	}
-}
-
-func defaultAuthenticationConfig() string {
-	return `
-internal:
-  prefix: "internal:"
-jwt: []
-`
 }
 
 func (r *OperatorConfigReconciler) buildInternalJWTSecret(name string) (*corev1.Secret, error) {
