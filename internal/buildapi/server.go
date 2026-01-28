@@ -1761,7 +1761,6 @@ func extractBearerToken(c *gin.Context) string {
 	return strings.TrimSpace(token)
 }
 
-
 func (a *APIServer) resolveRequester(c *gin.Context) string {
 	if v, ok := c.Get("requester"); ok {
 		if username, ok := v.(string); ok && username != "" {

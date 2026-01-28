@@ -35,6 +35,11 @@ func loadInternalJWTConfig() (*internalJWTConfig, error) {
 }
 
 func validateInternalJWT(tokenString string, cfg *internalJWTConfig) (string, bool) {
+	// Defensive nil check (function is currently always called after nil check, but safe to guard)
+	if cfg == nil {
+		return "", false
+	}
+
 	claims := &jwt.RegisteredClaims{}
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (any, error) {
 		if token.Method != jwt.SigningMethodHS256 {
@@ -57,6 +62,11 @@ func validateInternalJWT(tokenString string, cfg *internalJWTConfig) (string, bo
 		return "", false
 	}
 	if claims.NotBefore != nil && now.Before(claims.NotBefore.Time) {
+		return "", false
+	}
+
+	// Reject tokens with empty subject - they don't represent a valid authenticated identity
+	if claims.Subject == "" {
 		return "", false
 	}
 

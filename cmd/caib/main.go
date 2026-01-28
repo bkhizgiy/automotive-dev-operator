@@ -97,16 +97,28 @@ func createBuildAPIClient(serverURL string, authToken *string) (*buildapiclient.
 
 	// If no explicit token, try OIDC if config is available
 	if !explicitToken {
-		if token, didAuth, err := auth.GetTokenWithReauth(ctx, serverURL, ""); err == nil && token != "" {
+		token, didAuth, err := auth.GetTokenWithReauth(ctx, serverURL, "")
+		if err != nil {
+			// OIDC is configured but failed - don't silently fall back to kubeconfig
+			// This indicates a real authentication failure that should be reported
+			// Falling back could authenticate with an unexpected identity
+			fmt.Printf("Error: OIDC authentication failed: %v\n", err)
+			// Only try kubeconfig as last resort, but warn the user
+			fmt.Println("Attempting kubeconfig fallback (this may use a different identity)")
+			if tok, err := loadTokenFromKubeconfig(); err == nil && strings.TrimSpace(tok) != "" {
+				*authToken = tok
+			} else {
+				// No kubeconfig available either - return error
+				return nil, fmt.Errorf("OIDC authentication failed and no kubeconfig token available: %w", err)
+			}
+		} else if token != "" {
+			// OIDC succeeded
 			*authToken = token
 			if didAuth {
 				fmt.Println("OIDC authentication successful")
 			}
-		} else if err != nil {
-			if tok, err := loadTokenFromKubeconfig(); err == nil && strings.TrimSpace(tok) != "" {
-				*authToken = tok
-			}
 		} else {
+			// OIDC not configured (no error, no token) - safe to fall back to kubeconfig
 			if tok, err := loadTokenFromKubeconfig(); err == nil && strings.TrimSpace(tok) != "" {
 				*authToken = tok
 			}

@@ -50,6 +50,10 @@ type OIDCAuth struct {
 
 // NewOIDCAuth creates a new OIDC authenticator instance.
 func NewOIDCAuth(issuerURL, clientID string, scopes []string) *OIDCAuth {
+	if issuerURL == "" || clientID == "" {
+		return nil
+	}
+
 	if len(scopes) == 0 {
 		scopes = []string{"openid", "profile", "email"}
 	}
@@ -120,6 +124,10 @@ func (a *OIDCAuth) IsTokenValid(token string) bool {
 }
 
 func (a *OIDCAuth) authenticate(ctx context.Context) (string, error) {
+	if a.config.IssuerURL == "" {
+		return "", fmt.Errorf("issuer URL is required")
+	}
+
 	// Get OIDC discovery document
 	discoveryURL := strings.TrimSuffix(a.config.IssuerURL, "/") + "/.well-known/openid-configuration"
 	discovery, err := a.getDiscovery(discoveryURL)
@@ -128,8 +136,14 @@ func (a *OIDCAuth) authenticate(ctx context.Context) (string, error) {
 	}
 
 	// Generate state and PKCE code verifier
-	state := generateRandomString(32)
-	codeVerifier := generateRandomString(43)
+	state, err := generateRandomString(32)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate state: %w", err)
+	}
+	codeVerifier, err := generateRandomString(43)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate code verifier: %w", err)
+	}
 	codeChallenge := base64URLEncode(sha256Hash(codeVerifier))
 
 	// Find available port for callback
@@ -218,7 +232,9 @@ func (a *OIDCAuth) authenticate(ctx context.Context) (string, error) {
 	// Wait for callback
 	select {
 	case code := <-codeChan:
-		_ = server.Shutdown(ctx)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = server.Shutdown(shutdownCtx)
+		cancel()
 		// Exchange code for token
 		token, err := a.exchangeCodeForToken(ctx, discovery.TokenEndpoint, code, redirectURI, codeVerifier)
 		if err != nil {
@@ -232,13 +248,19 @@ func (a *OIDCAuth) authenticate(ctx context.Context) (string, error) {
 
 		return token, nil
 	case err := <-errChan:
-		_ = server.Shutdown(ctx)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = server.Shutdown(shutdownCtx)
+		cancel()
 		return "", err
 	case <-ctx.Done():
-		_ = server.Shutdown(ctx)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = server.Shutdown(shutdownCtx)
+		cancel()
 		return "", ctx.Err()
 	case <-time.After(5 * time.Minute):
-		_ = server.Shutdown(ctx)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = server.Shutdown(shutdownCtx)
+		cancel()
 		return "", fmt.Errorf("authentication timeout")
 	}
 }
@@ -263,9 +285,7 @@ func (a *OIDCAuth) exchangeCodeForToken(ctx context.Context, tokenEndpoint, code
 		return "", err
 	}
 	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			// Ignore close errors on response body
-		}
+		_ = resp.Body.Close()
 	}()
 
 	if resp.StatusCode != http.StatusOK {
@@ -305,9 +325,7 @@ func (a *OIDCAuth) getDiscovery(discoveryURL string) (*DiscoveryDocument, error)
 		return nil, err
 	}
 	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			// Ignore close errors on response body
-		}
+		_ = resp.Body.Close()
 	}()
 
 	if resp.StatusCode != http.StatusOK {
@@ -373,12 +391,12 @@ func (a *OIDCAuth) saveTokenCache(token string) error {
 	return os.WriteFile(a.cachePath, data, 0600)
 }
 
-func generateRandomString(length int) string {
+func generateRandomString(length int) (string, error) {
 	b := make([]byte, length)
 	if _, err := rand.Read(b); err != nil {
-		panic(fmt.Sprintf("failed to generate random string: %v", err))
+		return "", fmt.Errorf("failed to generate random string: %w", err)
 	}
-	return base64.URLEncoding.EncodeToString(b)[:length]
+	return base64.URLEncoding.EncodeToString(b)[:length], nil
 }
 
 func base64URLEncode(data []byte) string {

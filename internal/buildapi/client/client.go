@@ -58,9 +58,10 @@ func WithAuthToken(t string) Option { return func(c *Client) { c.authToken = t }
 func WithInsecureTLS() Option {
 	return func(c *Client) {
 		if c.httpClient.Transport == nil {
-			c.httpClient.Transport = &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			}
+			// Clone default transport to preserve proxy, HTTP/2, connection pooling, and timeout settings
+			transport := http.DefaultTransport.(*http.Transport).Clone()
+			transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+			c.httpClient.Transport = transport
 		} else if transport, ok := c.httpClient.Transport.(*http.Transport); ok {
 			if transport.TLSClientConfig == nil {
 				transport.TLSClientConfig = &tls.Config{}
@@ -84,11 +85,12 @@ func WithCACertificate(caCertPath string) Option {
 			return
 		}
 		if c.httpClient.Transport == nil {
-			c.httpClient.Transport = &http.Transport{
-				TLSClientConfig: &tls.Config{
-					RootCAs: caCertPool,
-				},
+			// Clone default transport to preserve proxy, HTTP/2, connection pooling, and timeout settings
+			transport := http.DefaultTransport.(*http.Transport).Clone()
+			transport.TLSClientConfig = &tls.Config{
+				RootCAs: caCertPool,
 			}
+			c.httpClient.Transport = transport
 		} else if transport, ok := c.httpClient.Transport.(*http.Transport); ok {
 			if transport.TLSClientConfig == nil {
 				transport.TLSClientConfig = &tls.Config{}

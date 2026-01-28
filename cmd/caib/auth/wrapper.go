@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	buildapiclient "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi/client"
@@ -22,6 +23,7 @@ func IsAuthError(err error) bool {
 // GetTokenWithReauth gets a token, triggering OIDC re-auth if needed.
 // Returns empty string if no OIDC config is available (auth is optional).
 // The boolean return indicates whether a fresh auth flow was performed.
+// Returns an error if OIDC is configured but config fetch fails (network/server errors).
 func GetTokenWithReauth(ctx context.Context, serverURL string, currentToken string) (string, bool, error) {
 	// Try to get OIDC config from local config first
 	config, err := GetOIDCConfigFromLocalConfig()
@@ -29,8 +31,8 @@ func GetTokenWithReauth(ctx context.Context, serverURL string, currentToken stri
 		// Fallback to Build API
 		config, err = GetOIDCConfigFromAPI(serverURL)
 		if err != nil {
-			// If we can't get config, return empty (auth is optional)
-			return "", false, nil
+			// Error fetching config - this is a real error, not "not configured"
+			return "", false, fmt.Errorf("failed to fetch OIDC configuration: %w", err)
 		}
 	}
 
@@ -40,6 +42,9 @@ func GetTokenWithReauth(ctx context.Context, serverURL string, currentToken stri
 	}
 
 	oidcAuth := NewOIDCAuth(config.IssuerURL, config.ClientID, config.Scopes)
+	if oidcAuth == nil {
+		return "", false, fmt.Errorf("failed to initialize OIDC authenticator")
+	}
 
 	// If we have a current token, check if it's valid
 	if currentToken != "" {
@@ -56,16 +61,30 @@ func GetTokenWithReauth(ctx context.Context, serverURL string, currentToken stri
 	return token, !fromCache, nil
 }
 
-// CreateClientWithReauth creates a client and handles re-authentication on auth errors
+// CreateClientWithReauth creates a client and handles re-authentication on auth errors.
+// If authToken is nil, it will be treated as empty and OIDC will be attempted.
+// OIDC errors are logged but do not prevent client creation (auth is optional).
 func CreateClientWithReauth(ctx context.Context, serverURL string, authToken *string) (*buildapiclient.Client, error) {
+	// Guard against nil pointer
+	tokenValue := ""
+	if authToken != nil {
+		tokenValue = strings.TrimSpace(*authToken)
+	}
+
 	// Try to get token from OIDC if needed
-	if strings.TrimSpace(*authToken) == "" {
+	if tokenValue == "" {
 		// Try OIDC auth
 		token, _, err := GetTokenWithReauth(ctx, serverURL, "")
-		if err == nil && token != "" {
-			*authToken = token
+		if err != nil {
+			// OIDC fetch failed - log but continue (auth is optional, kubeconfig may work)
+			fmt.Printf("Warning: OIDC authentication failed: %v\n", err)
+		} else if token != "" {
+			tokenValue = token
+			if authToken != nil {
+				*authToken = token
+			}
 		}
 	}
 
-	return buildapiclient.New(serverURL, buildapiclient.WithAuthToken(strings.TrimSpace(*authToken)))
+	return buildapiclient.New(serverURL, buildapiclient.WithAuthToken(tokenValue))
 }

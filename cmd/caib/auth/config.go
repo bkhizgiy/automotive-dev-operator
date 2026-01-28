@@ -30,16 +30,19 @@ func GetOIDCConfigFromAPI(serverURL string) (*OIDCConfig, error) {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("failed to fetch OIDC config from API: %w", err)
 	}
 	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			// Ignore close errors on response body
-		}
+		_ = resp.Body.Close()
 	}()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode == http.StatusNotFound {
+		// OIDC not configured - this is expected, return nil config without error
 		return nil, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch OIDC config: HTTP %d", resp.StatusCode)
 	}
 
 	var apiResponse struct {
@@ -59,10 +62,11 @@ func GetOIDCConfigFromAPI(serverURL string) (*OIDCConfig, error) {
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&apiResponse); err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("failed to decode OIDC config response: %w", err)
 	}
 
 	if len(apiResponse.JWT) == 0 {
+		// OIDC not configured - this is expected, return nil config without error
 		return nil, nil
 	}
 
