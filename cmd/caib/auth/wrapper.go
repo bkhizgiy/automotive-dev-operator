@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	buildapiclient "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi/client"
@@ -86,5 +87,14 @@ func CreateClientWithReauth(ctx context.Context, serverURL string, authToken *st
 		}
 	}
 
-	return buildapiclient.New(serverURL, buildapiclient.WithAuthToken(tokenValue))
+	// Configure TLS options
+	var opts []buildapiclient.Option
+	opts = append(opts, buildapiclient.WithAuthToken(tokenValue))
+
+	// Check for insecure TLS flag
+	if strings.EqualFold(os.Getenv("CAIB_INSECURE_TLS"), "true") || os.Getenv("CAIB_INSECURE_TLS") == "1" {
+		opts = append(opts, buildapiclient.WithInsecureTLS())
+	}
+
+	return buildapiclient.New(serverURL, opts...)
 }

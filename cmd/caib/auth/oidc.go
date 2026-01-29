@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -279,7 +280,16 @@ func (a *OIDCAuth) exchangeCodeForToken(ctx context.Context, tokenEndpoint, code
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	transport := &http.Transport{}
+	// Check for insecure TLS flag
+	if strings.EqualFold(os.Getenv("CAIB_INSECURE_TLS"), "true") || os.Getenv("CAIB_INSECURE_TLS") == "1" {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+
+	client := &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: transport,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -319,7 +329,16 @@ type DiscoveryDocument struct {
 }
 
 func (a *OIDCAuth) getDiscovery(discoveryURL string) (*DiscoveryDocument, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
+	transport := &http.Transport{}
+	// Check for insecure TLS flag
+	if strings.EqualFold(os.Getenv("CAIB_INSECURE_TLS"), "true") || os.Getenv("CAIB_INSECURE_TLS") == "1" {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+
+	client := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: transport,
+	}
 	resp, err := client.Get(discoveryURL)
 	if err != nil {
 		return nil, err

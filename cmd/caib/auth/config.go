@@ -2,6 +2,7 @@
 package auth
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,8 +14,16 @@ import (
 
 // GetOIDCConfigFromAPI fetches OIDC configuration from the Build API server.
 func GetOIDCConfigFromAPI(serverURL string) (*OIDCConfig, error) {
+	transport := &http.Transport{}
+
+	// Check for insecure TLS flag
+	if strings.EqualFold(os.Getenv("CAIB_INSECURE_TLS"), "true") || os.Getenv("CAIB_INSECURE_TLS") == "1" {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+
 	client := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout:   30 * time.Second,
+		Transport: transport,
 	}
 
 	configURL := strings.TrimSuffix(serverURL, "/") + "/v1/auth/config"
