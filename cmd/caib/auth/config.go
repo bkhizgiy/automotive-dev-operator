@@ -2,7 +2,6 @@
 package auth
 
 import (
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -15,11 +14,6 @@ import (
 // GetOIDCConfigFromAPI fetches OIDC configuration from the Build API server.
 func GetOIDCConfigFromAPI(serverURL string) (*OIDCConfig, error) {
 	transport := &http.Transport{}
-
-	// Check for insecure TLS flag
-	if strings.EqualFold(os.Getenv("CAIB_INSECURE_TLS"), "true") || os.Getenv("CAIB_INSECURE_TLS") == "1" {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-	}
 
 	client := &http.Client{
 		Timeout:   30 * time.Second,
@@ -81,8 +75,13 @@ func GetOIDCConfigFromAPI(serverURL string) (*OIDCConfig, error) {
 		return nil, fmt.Errorf("OIDC client ID is required but not provided by the server")
 	}
 
+	issuerURL := jwtConfig.Issuer.URL
+	if issuerURL == "" {
+		return nil, fmt.Errorf("OIDC issuer URL is required but not provided by the server")
+	}
+
 	return &OIDCConfig{
-		IssuerURL: jwtConfig.Issuer.URL,
+		IssuerURL: issuerURL,
 		ClientID:  clientID,
 		Scopes:    []string{"openid", "profile", "email"},
 	}, nil

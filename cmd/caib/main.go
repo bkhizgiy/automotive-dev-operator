@@ -143,16 +143,13 @@ func createBuildAPIClient(serverURL string, authToken *string) (*buildapiclient.
 		opts = append(opts, buildapiclient.WithCACertificate(caCertFile))
 	} else if caCertFile := os.Getenv("REQUESTS_CA_BUNDLE"); caCertFile != "" {
 		opts = append(opts, buildapiclient.WithCACertificate(caCertFile))
-	} else {
-		if strings.EqualFold(os.Getenv("CAIB_INSECURE_TLS"), "true") || os.Getenv("CAIB_INSECURE_TLS") == "1" {
-			opts = append(opts, buildapiclient.WithInsecureTLS())
-		}
 	}
 
 	return buildapiclient.New(serverURL, opts...)
 }
 
-// executeWithReauth executes an API call and automatically retries with re-authentication on auth errors
+// executeWithReauth executes an API call and automatically retries with re-authentication on auth errors.
+// On 401: first retries with OIDC re-auth; if that still returns 401, falls back to kubeconfig token and retries once.
 func executeWithReauth(serverURL string, authToken *string, fn func(*buildapiclient.Client) error) error {
 	ctx := context.Background()
 
@@ -170,23 +167,54 @@ func executeWithReauth(serverURL string, authToken *string, fn func(*buildapicli
 		return err
 	}
 
-	// Auth error - try to re-authenticate
-	fmt.Println("Token is expired, triggering re-authentication")
+	// Auth error (401) - try re-authentication; token may be rejected, not necessarily expired
+	fmt.Println("Authentication failed (401), re-authenticating...")
 
 	newToken, _, err := auth.GetTokenWithReauth(ctx, serverURL, *authToken)
 	if err != nil {
 		return fmt.Errorf("re-authentication failed: %w", err)
 	}
 
-	// Update token and retry
 	*authToken = newToken
+	// If re-auth returned no token (API says OIDC not configured), try kubeconfig before retrying
+	if strings.TrimSpace(*authToken) == "" {
+		if tok, kerr := loadTokenFromKubeconfig(); kerr == nil && strings.TrimSpace(tok) != "" {
+			*authToken = tok
+			client, err = createBuildAPIClient(serverURL, authToken)
+			if err != nil {
+				return err
+			}
+			fmt.Println("Using kubeconfig token, retrying...")
+			return fn(client)
+		}
+	}
+
 	client, err = createBuildAPIClient(serverURL, authToken)
 	if err != nil {
 		return err
 	}
 
-	fmt.Println("Re-authentication successful, retrying...")
-	return fn(client)
+	fmt.Println("Retrying request...")
+	err = fn(client)
+	if err == nil {
+		return nil
+	}
+
+	// Still 401 after OIDC re-auth (e.g. server OIDC broken, or wrong client/audience) - try kubeconfig fallback
+	if !auth.IsAuthError(err) {
+		return err
+	}
+	if tok, kerr := loadTokenFromKubeconfig(); kerr == nil && strings.TrimSpace(tok) != "" {
+		*authToken = tok
+		client, err = createBuildAPIClient(serverURL, authToken)
+		if err != nil {
+			return err
+		}
+		fmt.Println("Attempting kubeconfig fallback...")
+		return fn(client)
+	}
+
+	return err
 }
 
 // extractRegistryCredentials extracts registry URL and returns registry URL and credentials from env vars

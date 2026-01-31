@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -148,7 +147,7 @@ func (a *OIDCAuth) authenticate(ctx context.Context) (string, error) {
 	codeChallenge := base64URLEncode(sha256Hash(codeVerifier))
 
 	// Find available port for callback
-	listener, err := net.Listen("tcp", ":0")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", fmt.Errorf("failed to find available port: %w", err)
 	}
@@ -179,7 +178,7 @@ func (a *OIDCAuth) authenticate(ctx context.Context) (string, error) {
 	errChan := make(chan error, 1)
 
 	server := &http.Server{
-		Addr: fmt.Sprintf(":%d", port),
+		Addr: fmt.Sprintf("127.0.0.1:%d", port),
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/callback" {
 				http.NotFound(w, r)
@@ -281,10 +280,7 @@ func (a *OIDCAuth) exchangeCodeForToken(ctx context.Context, tokenEndpoint, code
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	transport := &http.Transport{}
-	// Check for insecure TLS flag
-	if strings.EqualFold(os.Getenv("CAIB_INSECURE_TLS"), "true") || os.Getenv("CAIB_INSECURE_TLS") == "1" {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-	}
+	// Use default TLS settings
 
 	client := &http.Client{
 		Timeout:   30 * time.Second,
@@ -330,10 +326,7 @@ type DiscoveryDocument struct {
 
 func (a *OIDCAuth) getDiscovery(discoveryURL string) (*DiscoveryDocument, error) {
 	transport := &http.Transport{}
-	// Check for insecure TLS flag
-	if strings.EqualFold(os.Getenv("CAIB_INSECURE_TLS"), "true") || os.Getenv("CAIB_INSECURE_TLS") == "1" {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-	}
+	// Use default TLS settings
 
 	client := &http.Client{
 		Timeout:   10 * time.Second,

@@ -15,6 +15,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -32,7 +33,6 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/remotecommand"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/yaml"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi/catalog"
@@ -82,16 +82,18 @@ func DefaultAPILimits() APILimits {
 
 // APIServer provides the REST API for build operations.
 type APIServer struct {
-	server         *http.Server
-	router         *gin.Engine
-	addr           string
-	log            logr.Logger
-	limits         APILimits
-	internalJWT    *internalJWTConfig
-	externalJWT    authenticator.Token
-	internalPrefix string
-	authConfig     *AuthenticationConfiguration // Store raw config for API exposure
-	oidcClientID   string
+	server              *http.Server
+	router              *gin.Engine
+	addr                string
+	log                 logr.Logger
+	limits              APILimits
+	internalJWT         *internalJWTConfig
+	externalJWT         authenticator.Token
+	internalPrefix      string
+	authConfig          *AuthenticationConfiguration // Store raw config for API exposure
+	oidcClientID        string
+	authConfigMu        sync.RWMutex // Protects externalJWT, authConfig, internalPrefix, oidcClientID
+	lastAuthConfigCheck time.Time    // Last time we checked OperatorConfig
 }
 
 //go:embed openapi.yaml
@@ -126,8 +128,15 @@ func NewAPIServerWithLimits(addr string, logger logr.Logger, limits APILimits) *
 	logger.Info("attempting to load authentication config from OperatorConfig", "namespace", namespace)
 	k8sClient, err := a.getCatalogClient()
 	if err == nil {
-		cfg, authn, prefix, err := loadAuthenticationConfigurationFromOperatorConfig(context.Background(), k8sClient, namespace)
-		if err == nil && cfg != nil {
+		// Use a timeout to avoid blocking server startup indefinitely
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		cfg, authn, prefix, err := loadAuthenticationConfigurationFromOperatorConfig(ctx, k8sClient, namespace)
+		if err != nil {
+			// If OperatorConfig doesn't exist or can't be read, log and continue without OIDC
+			// This allows kubeconfig fallback to work
+			logger.Info("failed to load authentication config from OperatorConfig, will use kubeconfig fallback", "namespace", namespace, "error", err)
+		} else if cfg != nil {
 			a.authConfig = cfg
 			a.externalJWT = authn
 			a.internalPrefix = prefix
@@ -135,60 +144,21 @@ func NewAPIServerWithLimits(addr string, logger logr.Logger, limits APILimits) *
 				a.oidcClientID = cfg.ClientID
 			}
 			if len(cfg.JWT) > 0 {
-				logger.Info("loaded authentication config from OperatorConfig", "jwt_count", len(cfg.JWT), "namespace", namespace, "client_id", cfg.ClientID)
+				if authn != nil {
+					logger.Info("loaded authentication config from OperatorConfig", "jwt_count", len(cfg.JWT), "namespace", namespace, "client_id", cfg.ClientID)
+				} else {
+					logger.Info("OIDC configured in OperatorConfig but initialization failed, externalJWT set to nil to enable kubeconfig fallback", "jwt_count", len(cfg.JWT), "namespace", namespace)
+					// Ensure externalJWT is nil so clients don't try to use OIDC tokens
+					a.externalJWT = nil
+				}
 			} else {
 				logger.Info("authentication config loaded from OperatorConfig but no JWT issuers configured", "namespace", namespace)
 			}
-		} else if err != nil {
-			logger.Info("failed to load authentication config from OperatorConfig, trying file fallback", "namespace", namespace, "error", err)
 		} else {
-			logger.Info("no authentication config in OperatorConfig, trying file fallback", "namespace", namespace)
+			logger.Info("no authentication config in OperatorConfig, will use kubeconfig fallback", "namespace", namespace)
 		}
 	} else {
-		logger.Info("failed to create k8s client for OperatorConfig, trying file fallback", "error", err)
-	}
-
-	// Fallback to file-based config if OperatorConfig doesn't have auth config or failed to load
-	if a.authConfig == nil {
-		authConfigPath := os.Getenv("AUTH_CONFIG_PATH")
-		if authConfigPath == "" {
-			authConfigPath = "/etc/build-api/config"
-		}
-		logger.Info("loading authentication config from file", "path", authConfigPath)
-		cfg, authn, prefix, err := loadAuthenticationConfigurationFromFile(context.Background(), authConfigPath)
-		if err != nil {
-			logger.Info("primary config path failed, trying fallback", "primary_path", authConfigPath, "error", err)
-			fallbackPath := "/etc/build-api/authentication.yaml"
-			if info, statErr := os.Stat(fallbackPath); statErr == nil && !info.IsDir() {
-				if fallbackCfg, fallbackAuthn, fallbackPrefix, fallbackErr := loadAuthenticationConfigurationFromFile(context.Background(), fallbackPath); fallbackErr == nil {
-					cfg = fallbackCfg
-					authn = fallbackAuthn
-					prefix = fallbackPrefix
-					logger.Info("loaded authentication config from fallback path", "path", fallbackPath)
-				} else {
-					logger.Error(err, "failed to load authentication config; external OIDC auth disabled", "primary_path", authConfigPath, "fallback_path", fallbackPath, "fallback_err", fallbackErr)
-				}
-			} else {
-				logger.Error(err, "failed to load authentication config; external OIDC auth disabled", "primary_path", authConfigPath, "fallback_is_dir", statErr == nil && info.IsDir())
-			}
-		} else if cfg == nil {
-			logger.Info("authentication config file not found or empty", "path", authConfigPath)
-		} else {
-			logger.Info("loaded authentication config from file", "path", authConfigPath, "jwt_count", len(cfg.JWT))
-		}
-		if cfg != nil {
-			a.authConfig = cfg
-			a.externalJWT = authn
-			a.internalPrefix = prefix
-			if cfg.ClientID != "" {
-				a.oidcClientID = cfg.ClientID
-			}
-			if len(cfg.JWT) > 0 {
-				logger.Info("external OIDC auth enabled", "issuers", len(cfg.JWT))
-			} else {
-				logger.Info("authentication config loaded but no JWT issuers configured")
-			}
-		}
+		logger.Info("failed to create k8s client for OperatorConfig, will use kubeconfig fallback", "error", err)
 	}
 	a.router = a.createRouter()
 	a.server = &http.Server{Addr: addr, Handler: a.router}
@@ -1709,6 +1679,29 @@ func getRESTConfigFromRequest(_ *gin.Context) (*rest.Config, error) {
 	return cfgCopy, nil
 }
 
+// getKubernetesClient creates a controller-runtime client for accessing Kubernetes resources
+func getKubernetesClient() (client.Client, error) {
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		kubeconfig := os.Getenv("KUBECONFIG")
+		cfg, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build kube config: %w", err)
+		}
+	}
+
+	scheme := runtime.NewScheme()
+	if err := automotivev1alpha1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("failed to add scheme: %w", err)
+	}
+
+	k8sClient, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create k8s client: %w", err)
+	}
+	return k8sClient, nil
+}
+
 func getClientFromRequest(c *gin.Context) (client.Client, error) {
 	cfg, err := getRESTConfigFromRequest(c)
 	if err != nil {
@@ -1733,60 +1726,156 @@ func getClientFromRequest(c *gin.Context) (client.Client, error) {
 	return k8sClient, nil
 }
 
+// refreshAuthConfigIfNeeded periodically checks and refreshes authentication configuration from OperatorConfig
+func (a *APIServer) refreshAuthConfigIfNeeded() {
+	a.authConfigMu.Lock()
+	defer a.authConfigMu.Unlock()
+
+	// Check if it's time to refresh (every 60 seconds)
+	if time.Since(a.lastAuthConfigCheck) < 60*time.Second {
+		return
+	}
+	a.lastAuthConfigCheck = time.Now()
+
+	namespace := resolveNamespace()
+	k8sClient, err := getKubernetesClient()
+	if err != nil {
+		a.log.Error(err, "failed to get k8s client for auth config refresh", "namespace", namespace)
+		return
+	}
+
+	// Use a separate context with timeout to avoid canceling OIDC initialization
+	refreshCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	cfg, authn, prefix, err := loadAuthenticationConfigurationFromOperatorConfig(refreshCtx, k8sClient, namespace)
+	if err != nil {
+		// If refresh fails, log but don't clear existing config - allow kubeconfig fallback
+		a.log.Error(err, "failed to load authentication config from OperatorConfig during refresh, keeping existing config", "namespace", namespace)
+		return
+	}
+
+	if cfg == nil {
+		// Only clear if explicitly nil (no auth config)
+		a.authConfig = nil
+		a.externalJWT = nil
+		a.internalPrefix = ""
+		return
+	}
+
+	// Update config fields
+	a.authConfig = cfg
+	a.internalPrefix = prefix
+	if cfg.ClientID != "" {
+		a.oidcClientID = cfg.ClientID
+	}
+
+	// Update authenticator - if we got a new one, use it; otherwise clear it to force kubeconfig fallback
+	if authn != nil {
+		a.externalJWT = authn
+	} else {
+		// authn is nil - this can happen if:
+		// 1. No JWT issuers configured (len(config.JWT) == 0)
+		// 2. OIDC initialization failed (network/TLS issues)
+		if len(cfg.JWT) == 0 {
+			a.externalJWT = nil
+		} else {
+			// OIDC is configured but initialization failed - clear authenticator to force kubeconfig fallback
+			// This prevents clients from trying to use OIDC tokens that won't work
+			a.externalJWT = nil
+		}
+	}
+}
+
 func (a *APIServer) authenticateRequest(c *gin.Context) (string, string, bool) {
+	// Refresh auth config if needed (checks OperatorConfig periodically)
+	a.refreshAuthConfigIfNeeded()
+
 	token := extractBearerToken(c)
 	if token == "" {
 		return "", "", false
 	}
 
-	if a.internalJWT != nil {
-		if subject, ok := validateInternalJWT(token, a.internalJWT); ok {
+	// Try internal JWT first
+	a.authConfigMu.RLock()
+	internalJWT := a.internalJWT
+	internalPrefix := a.internalPrefix
+	a.authConfigMu.RUnlock()
+
+	if internalJWT != nil {
+		if subject, ok := validateInternalJWT(token, internalJWT); ok {
 			username := subject
-			if a.internalPrefix != "" {
-				username = a.internalPrefix + username
+			if internalPrefix != "" {
+				username = internalPrefix + username
 			}
+			a.log.Info("Internal JWT authentication successful", "username", username)
 			return username, "internal", true
 		}
 	}
 
-	if a.externalJWT != nil {
-		if username, ok := a.authenticateExternalJWT(c, token); ok {
+	// Try external JWT (OIDC)
+	a.authConfigMu.RLock()
+	externalJWT := a.externalJWT
+	a.authConfigMu.RUnlock()
+
+	if externalJWT != nil {
+		if username, ok := a.authenticateExternalJWT(c, token, externalJWT); ok {
 			// Store OIDC token in secret after successful authentication
 			if a.internalJWT != nil {
 				if err := a.ensureClientTokenSecret(c, username, token); err != nil {
 					a.log.Error(err, "failed to ensure client token secret", "username", username)
 				}
 			}
+			a.log.Info("External JWT authentication successful", "username", username)
 			return username, "external", true
 		}
 	}
 
+	// Fallback to kubeconfig TokenReview authentication
 	cfg, err := getRESTConfigFromRequest(c)
 	if err != nil {
+		a.log.Error(err, "Failed to get REST config for TokenReview fallback")
 		return "", "", false
 	}
 
 	clientset, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
+		a.log.Error(err, "Failed to create Kubernetes client for TokenReview")
 		return "", "", false
 	}
 
 	tr := &authnv1.TokenReview{Spec: authnv1.TokenReviewSpec{Token: token}}
 	res, err := clientset.AuthenticationV1().TokenReviews().Create(c.Request.Context(), tr, metav1.CreateOptions{})
-	if err == nil && res.Status.Authenticated {
-		return res.Status.User.Username, "k8s", true
+	if err != nil {
+		a.log.Error(err, "TokenReview API call failed")
+		return "", "", false
+	}
+	if res.Status.Authenticated {
+		username := res.Status.User.Username
+		if username == "" {
+			return "", "", false
+		}
+		return username, "k8s", true
+	}
+	// Log detailed error information
+	if res.Status.Error != "" {
+		a.log.Info("TokenReview authentication failed", "error", res.Status.Error)
 	}
 	return "", "", false
 }
 
-// extractBearerToken extracts the bearer token from the request
+// extractBearerToken extracts the bearer token from the request.
 func extractBearerToken(c *gin.Context) string {
 	authHeader := c.Request.Header.Get("Authorization")
 	token, _ := strings.CutPrefix(authHeader, "Bearer ")
-	if token == "" {
-		token = c.Request.Header.Get("X-Forwarded-Access-Token")
+	if token != "" {
+		return strings.TrimSpace(token)
 	}
-	return strings.TrimSpace(token)
+	token = c.Request.Header.Get("X-Forwarded-Access-Token")
+	if token != "" {
+		return strings.TrimSpace(token)
+	}
+	return ""
 }
 
 func (a *APIServer) resolveRequester(c *gin.Context) string {
@@ -1800,6 +1889,9 @@ func (a *APIServer) resolveRequester(c *gin.Context) string {
 
 // handleGetAuthConfig returns OIDC configuration for clients (no auth required)
 func (a *APIServer) handleGetAuthConfig(c *gin.Context) {
+	// Refresh auth config if needed
+	a.refreshAuthConfigIfNeeded()
+
 	type OIDCConfigResponse struct {
 		ClientID string `json:"clientId,omitempty"`
 		JWT      []struct {
@@ -1816,29 +1908,41 @@ func (a *APIServer) handleGetAuthConfig(c *gin.Context) {
 		} `json:"jwt"`
 	}
 
+	// Read auth config with mutex
+	a.authConfigMu.RLock()
+	clientID := a.oidcClientID
+	authConfig := a.authConfig
+	a.authConfigMu.RUnlock()
+
 	response := OIDCConfigResponse{
-		ClientID: a.oidcClientID,
+		ClientID: clientID,
 	}
 
 	// Validate clientId matches at least one audience if both are set
-	if a.oidcClientID != "" && a.authConfig != nil {
+	if clientID != "" && authConfig != nil {
 		clientIDInAudience := false
-		for _, jwtConfig := range a.authConfig.JWT {
+		for _, jwtConfig := range authConfig.JWT {
 			for _, audience := range jwtConfig.Issuer.Audiences {
-				if audience == a.oidcClientID {
+				if audience == clientID {
 					clientIDInAudience = true
 					break
 				}
 			}
 		}
-		if !clientIDInAudience && len(a.authConfig.JWT) > 0 {
-			a.log.Info("OIDC clientId does not match any JWT audience", "clientId", a.oidcClientID)
+		if !clientIDInAudience && len(authConfig.JWT) > 0 {
+			a.log.Info("OIDC clientId does not match any JWT audience", "clientId", clientID)
 		}
 	}
 
-	// Try to get from parsed config first
-	if a.authConfig != nil && len(a.authConfig.JWT) > 0 {
-		for _, jwtConfig := range a.authConfig.JWT {
+	// Only return OIDC config if externalJWT is actually working (not nil)
+	// If externalJWT is nil, OIDC isn't working and clients should use kubeconfig
+	a.authConfigMu.RLock()
+	externalJWTWorking := a.externalJWT != nil
+	a.authConfigMu.RUnlock()
+
+	// Try to get from parsed config first, but only if OIDC is actually working
+	if authConfig != nil && len(authConfig.JWT) > 0 && externalJWTWorking {
+		for _, jwtConfig := range authConfig.JWT {
 			prefix := ""
 			if jwtConfig.ClaimMappings.Username.Prefix != nil {
 				prefix = *jwtConfig.ClaimMappings.Username.Prefix
@@ -1877,71 +1981,6 @@ func (a *APIServer) handleGetAuthConfig(c *gin.Context) {
 					},
 				},
 			})
-		}
-	} else {
-		// Fallback: Try to read and parse ConfigMap directly if parsed config is empty
-		// This handles the case where YAML structure doesn't match Kubernetes types exactly
-		configPath := os.Getenv("AUTH_CONFIG_PATH")
-		if configPath == "" {
-			configPath = "/etc/build-api/config"
-		}
-		if content, err := os.ReadFile(configPath); err == nil {
-			// Try to parse as simple YAML to extract issuer URLs
-			var rawConfig struct {
-				Authentication struct {
-					JWT []struct {
-						Issuer struct {
-							URL       string   `yaml:"url" json:"url"`
-							Audiences []string `yaml:"audiences" json:"audiences"`
-						} `yaml:"issuer" json:"issuer"`
-						ClaimMappings struct {
-							Username struct {
-								Claim  string `yaml:"claim" json:"claim"`
-								Prefix string `yaml:"prefix" json:"prefix"`
-							} `yaml:"username" json:"username"`
-						} `yaml:"claimMappings" json:"claimMappings"`
-					} `yaml:"jwt" json:"jwt"`
-				} `yaml:"authentication" json:"authentication"`
-			}
-			if err := yaml.Unmarshal(content, &rawConfig); err == nil && len(rawConfig.Authentication.JWT) > 0 {
-				// Successfully parsed with simple struct
-				for _, jwt := range rawConfig.Authentication.JWT {
-					response.JWT = append(response.JWT, struct {
-						Issuer struct {
-							URL       string   `json:"url"`
-							Audiences []string `json:"audiences,omitempty"`
-						} `json:"issuer"`
-						ClaimMappings struct {
-							Username struct {
-								Claim  string `json:"claim"`
-								Prefix string `json:"prefix,omitempty"`
-							} `json:"username"`
-						} `json:"claimMappings"`
-					}{
-						Issuer: struct {
-							URL       string   `json:"url"`
-							Audiences []string `json:"audiences,omitempty"`
-						}{
-							URL:       jwt.Issuer.URL,
-							Audiences: jwt.Issuer.Audiences,
-						},
-						ClaimMappings: struct {
-							Username struct {
-								Claim  string `json:"claim"`
-								Prefix string `json:"prefix,omitempty"`
-							} `json:"username"`
-						}{
-							Username: struct {
-								Claim  string `json:"claim"`
-								Prefix string `json:"prefix,omitempty"`
-							}{
-								Claim:  jwt.ClaimMappings.Username.Claim,
-								Prefix: jwt.ClaimMappings.Username.Prefix,
-							},
-						},
-					})
-				}
-			}
 		}
 	}
 

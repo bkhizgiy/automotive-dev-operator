@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	buildapiclient "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi/client"
@@ -26,19 +25,15 @@ func IsAuthError(err error) bool {
 // The boolean return indicates whether a fresh auth flow was performed.
 // Returns an error if OIDC is configured but config fetch fails (network/server errors).
 func GetTokenWithReauth(ctx context.Context, serverURL string, currentToken string) (string, bool, error) {
-	// Try to get OIDC config from local config first
-	config, err := GetOIDCConfigFromLocalConfig()
+	// Prefer API config over local: server is source of truth (OperatorConfig).
+	// When server has OIDC disabled or init failed, API returns empty JWT and we should not use local OIDC.
+	config, err := GetOIDCConfigFromAPI(serverURL)
 	if err != nil {
-		// Fallback to Build API
-		config, err = GetOIDCConfigFromAPI(serverURL)
-		if err != nil {
-			// Error fetching config - this is a real error, not "not configured"
-			return "", false, fmt.Errorf("failed to fetch OIDC configuration: %w", err)
-		}
+		// Error fetching config - this is a real error, not "not configured"
+		return "", false, fmt.Errorf("failed to fetch OIDC configuration: %w", err)
 	}
-
-	// If no config available, return empty (auth is optional)
 	if config == nil {
+		// API says no OIDC - do not use local config; caller will use kubeconfig
 		return "", false, nil
 	}
 
@@ -90,11 +85,6 @@ func CreateClientWithReauth(ctx context.Context, serverURL string, authToken *st
 	// Configure TLS options
 	var opts []buildapiclient.Option
 	opts = append(opts, buildapiclient.WithAuthToken(tokenValue))
-
-	// Check for insecure TLS flag
-	if strings.EqualFold(os.Getenv("CAIB_INSECURE_TLS"), "true") || os.Getenv("CAIB_INSECURE_TLS") == "1" {
-		opts = append(opts, buildapiclient.WithInsecureTLS())
-	}
 
 	return buildapiclient.New(serverURL, opts...)
 }

@@ -31,6 +31,49 @@ func getOperatorImage() string {
 
 // buildBuildAPIContainers builds the container list for build-API deployment, conditionally including oauth-proxy
 func (r *OperatorConfigReconciler) buildBuildAPIContainers(isOpenShift bool) []corev1.Container {
+	buildAPIEnv := []corev1.EnvVar{
+		{
+			Name: "BUILD_API_NAMESPACE",
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: "metadata.namespace",
+				},
+			},
+		},
+		{
+			Name: "INTERNAL_JWT_ISSUER",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: internalJWTSecretName,
+					},
+					Key: "issuer",
+				},
+			},
+		},
+		{
+			Name: "INTERNAL_JWT_AUDIENCE",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: internalJWTSecretName,
+					},
+					Key: "audience",
+				},
+			},
+		},
+		{
+			Name: "INTERNAL_JWT_KEY",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: internalJWTSecretName,
+					},
+					Key: "signing-key",
+				},
+			},
+		},
+	}
 	containers := []corev1.Container{
 		{
 			Name:            "build-api",
@@ -47,53 +90,7 @@ func (r *OperatorConfigReconciler) buildBuildAPIContainers(isOpenShift bool) []c
 					corev1.ResourceMemory: resource.MustParse("512Mi"),
 				},
 			},
-			Env: []corev1.EnvVar{
-				{
-					Name: "BUILD_API_NAMESPACE",
-					ValueFrom: &corev1.EnvVarSource{
-						FieldRef: &corev1.ObjectFieldSelector{
-							FieldPath: "metadata.namespace",
-						},
-					},
-				},
-				{
-					Name:  "AUTH_CONFIG_PATH",
-					Value: "/etc/build-api/config",
-				},
-				{
-					Name: "INTERNAL_JWT_ISSUER",
-					ValueFrom: &corev1.EnvVarSource{
-						SecretKeyRef: &corev1.SecretKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: internalJWTSecretName,
-							},
-							Key: "issuer",
-						},
-					},
-				},
-				{
-					Name: "INTERNAL_JWT_AUDIENCE",
-					ValueFrom: &corev1.EnvVarSource{
-						SecretKeyRef: &corev1.SecretKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: internalJWTSecretName,
-							},
-							Key: "audience",
-						},
-					},
-				},
-				{
-					Name: "INTERNAL_JWT_KEY",
-					ValueFrom: &corev1.EnvVarSource{
-						SecretKeyRef: &corev1.SecretKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: internalJWTSecretName,
-							},
-							Key: "signing-key",
-						},
-					},
-				},
-			},
+			Env: buildAPIEnv,
 			Ports: []corev1.ContainerPort{
 				{
 					Name:          "http",
@@ -123,6 +120,7 @@ func (r *OperatorConfigReconciler) buildBuildAPIContainers(isOpenShift bool) []c
 				"--cookie-secret=$(COOKIE_SECRET)",
 				"--cookie-secure=false",
 				"--pass-access-token=true",
+				"--pass-user-bearer-token=true",
 				"--pass-user-headers=true",
 				"--request-logging=true",
 				"--skip-auth-regex=^/healthz",

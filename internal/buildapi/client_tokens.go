@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apiserver/pkg/authentication/authenticator"
 )
 
 const (
@@ -20,9 +21,13 @@ const (
 	clientTokenExpiry = 30 * 24 * time.Hour
 )
 
-func (a *APIServer) authenticateExternalJWT(c *gin.Context, token string) (string, bool) {
-	resp, ok, err := a.externalJWT.AuthenticateToken(c.Request.Context(), token)
-	if err != nil || !ok || resp == nil || resp.User == nil {
+func (a *APIServer) authenticateExternalJWT(c *gin.Context, token string, authn authenticator.Token) (string, bool) {
+	resp, ok, err := authn.AuthenticateToken(c.Request.Context(), token)
+	if err != nil {
+		a.log.Error(err, "OIDC token validation failed")
+		return "", false
+	}
+	if !ok || resp == nil || resp.User == nil {
 		return "", false
 	}
 	username := strings.TrimSpace(resp.User.GetName())
@@ -91,6 +96,10 @@ func (a *APIServer) ensureClientTokenSecret(c *gin.Context, username string, oid
 }
 
 func (a *APIServer) signClientToken(username string) (string, time.Time, error) {
+	if a.internalJWT == nil {
+		return "", time.Time{}, fmt.Errorf("internal JWT is not configured")
+	}
+
 	expiresAt := time.Now().Add(clientTokenExpiry)
 	audience := a.internalJWT.audience
 	if audience == "" {
