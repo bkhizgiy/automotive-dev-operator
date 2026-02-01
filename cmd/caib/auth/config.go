@@ -2,6 +2,8 @@
 package auth
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,8 +15,13 @@ import (
 
 // GetOIDCConfigFromAPI fetches OIDC configuration from the Build API server.
 func GetOIDCConfigFromAPI(serverURL string) (*OIDCConfig, error) {
-	transport := &http.Transport{}
-
+	pool, err := x509.SystemCertPool()
+	if err != nil {
+		pool = x509.NewCertPool()
+	}
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: pool},
+	}
 	client := &http.Client{
 		Timeout:   30 * time.Second,
 		Transport: transport,

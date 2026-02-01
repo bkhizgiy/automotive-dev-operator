@@ -146,16 +146,12 @@ func (a *OIDCAuth) authenticate(ctx context.Context) (string, error) {
 	}
 	codeChallenge := base64URLEncode(sha256Hash(codeVerifier))
 
-	// Find available port for callback
+	// Bind callback server to a port and keep the listener so no other process can claim it
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", fmt.Errorf("failed to find available port: %w", err)
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
-	if err := listener.Close(); err != nil {
-		return "", fmt.Errorf("failed to close listener: %w", err)
-	}
-
 	redirectURI := fmt.Sprintf("http://localhost:%d/callback", port)
 
 	// Build authorization URL
@@ -178,7 +174,6 @@ func (a *OIDCAuth) authenticate(ctx context.Context) (string, error) {
 	errChan := make(chan error, 1)
 
 	server := &http.Server{
-		Addr: fmt.Sprintf("127.0.0.1:%d", port),
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/callback" {
 				http.NotFound(w, r)
@@ -217,7 +212,7 @@ func (a *OIDCAuth) authenticate(ctx context.Context) (string, error) {
 	}
 
 	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			errChan <- fmt.Errorf("callback server error: %w", err)
 		}
 	}()
@@ -314,7 +309,9 @@ func (a *OIDCAuth) exchangeCodeForToken(ctx context.Context, tokenEndpoint, code
 	if token == "" {
 		token = tokenResp.AccessToken
 	}
-
+	if token == "" {
+		return "", fmt.Errorf("token endpoint returned neither id_token nor access_token")
+	}
 	return token, nil
 }
 
@@ -362,7 +359,10 @@ func (a *OIDCAuth) loadTokenCache() error {
 	if err := json.Unmarshal(data, &cache); err != nil {
 		return err
 	}
-
+	// Reject cache if issuer changed (e.g. different OIDC provider) so we fetch a new token
+	if cache.Issuer != a.config.IssuerURL {
+		return fmt.Errorf("cached token issuer %q does not match current config %q", cache.Issuer, a.config.IssuerURL)
+	}
 	a.tokenCache = &cache
 	return nil
 }
@@ -427,13 +427,13 @@ func openBrowser(url string) error {
 	switch runtime.GOOS {
 	case "windows":
 		cmd = "cmd"
-		args = []string{"/c", "start"}
+		args = []string{"/c", "start", "", url}
 	case "darwin":
 		cmd = "open"
+		args = []string{url}
 	default:
 		cmd = "xdg-open"
+		args = []string{url}
 	}
-
-	args = append(args, url)
 	return exec.Command(cmd, args...).Start()
 }

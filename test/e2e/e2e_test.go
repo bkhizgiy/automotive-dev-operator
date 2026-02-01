@@ -34,6 +34,14 @@ import (
 
 const namespace = "automotive-dev-operator-system"
 
+// hasOpenShiftRouteCRD returns true when the OpenShift Route CRD exists (OpenShift cluster).
+// On Kind there is no Route CRD, so OIDC suite can skip before creating any resources.
+func hasOpenShiftRouteCRD() bool {
+	cmd := exec.Command("kubectl", "get", "crd", "routes.route.openshift.io")
+	_, err := utils.Run(cmd)
+	return err == nil
+}
+
 // getBuildAPIURL returns the Build API URL when an OpenShift Route exists, or "" otherwise.
 // OIDC e2e tests that need to call the API run only on OpenShift (when Route exists).
 func getBuildAPIURL() string {
@@ -48,6 +56,17 @@ func getBuildAPIURL() string {
 
 var _ = Describe("controller", Ordered, func() {
 	BeforeAll(func() {
+		By("waiting for namespace to not exist (in case previous suite left it terminating)")
+		waitForNamespaceGone := func() error {
+			cmd := exec.Command("kubectl", "get", "ns", namespace)
+			_, err := utils.Run(cmd)
+			if err != nil {
+				return nil // namespace gone, we can create it
+			}
+			return fmt.Errorf("namespace still exists or terminating")
+		}
+		Eventually(waitForNamespaceGone, 3*time.Minute, 5*time.Second).Should(Succeed())
+
 		By("creating manager namespace")
 		cmd := exec.Command("kubectl", "create", "ns", namespace)
 		_, _ = utils.Run(cmd)
@@ -347,9 +366,16 @@ func containsMiddle(s, substr string) bool {
 }
 
 var _ = Describe("OIDC Authentication", Ordered, func() {
+	var oidcSuiteCreatedNamespace bool
+
 	BeforeAll(func() {
 		var err error
 		var projectimage = "example.com/automotive-dev-operator:v0.0.1"
+
+		if !hasOpenShiftRouteCRD() {
+			Skip("OIDC e2e requires OpenShift (Route CRD); skipping on kind")
+		}
+		oidcSuiteCreatedNamespace = true
 
 		By("creating manager namespace")
 		cmd := exec.Command("kubectl", "create", "ns", namespace)
@@ -427,18 +453,46 @@ var _ = Describe("OIDC Authentication", Ordered, func() {
 		}
 		Eventually(verifyBuildAPIDeployment, 3*time.Minute, 5*time.Second).Should(Succeed())
 
-		// OIDC HTTP tests require an OpenShift Route; on kind there is no Route so we skip the suite
 		if getBuildAPIURL() == "" {
 			Skip("OIDC e2e requires OpenShift Route (ado-build-api); skipping on kind")
 		}
 	})
 
 	AfterAll(func() {
-		By("removing manager namespace")
-		cmd := exec.Command("kubectl", "delete", "ns", namespace, "--timeout=60s")
+		if !oidcSuiteCreatedNamespace {
+			return
+		}
+		By("deleting OperatorConfig so namespace can terminate cleanly")
+		cmd := exec.Command("kubectl", "delete", "operatorconfig", "--all", "-n", namespace, "--timeout=30s")
 		_, _ = utils.Run(cmd)
-		// Give namespace time to terminate before next suite (no hard fail if slow)
-		time.Sleep(30 * time.Second)
+
+		By("waiting for OperatorConfig to be fully removed (finalizer cleared)")
+		waitForOperatorConfigGone := func() error {
+			cmd := exec.Command("kubectl", "get", "operatorconfig", "-n", namespace, "-o", "name")
+			output, err := utils.Run(cmd)
+			if err != nil {
+				return nil
+			}
+			if strings.TrimSpace(string(output)) == "" {
+				return nil
+			}
+			return fmt.Errorf("operatorconfig still present")
+		}
+		Eventually(waitForOperatorConfigGone, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("removing manager namespace")
+		cmd = exec.Command("kubectl", "delete", "ns", namespace, "--timeout=120s")
+		_, _ = utils.Run(cmd)
+		By("waiting for namespace deletion to complete before next suite")
+		waitForNamespaceGone := func() error {
+			cmd := exec.Command("kubectl", "get", "ns", namespace)
+			_, err := utils.Run(cmd)
+			if err != nil {
+				return nil // namespace gone
+			}
+			return fmt.Errorf("namespace still exists or terminating")
+		}
+		Eventually(waitForNamespaceGone, 5*time.Minute, 10*time.Second).Should(Succeed())
 	})
 
 	Context("Build API OIDC Configuration", func() {

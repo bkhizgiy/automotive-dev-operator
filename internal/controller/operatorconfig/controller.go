@@ -4,6 +4,7 @@ package operatorconfig
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 	routev1 "github.com/openshift/api/route/v1"
@@ -386,6 +387,8 @@ func (r *OperatorConfigReconciler) cleanupBuildAPI(ctx context.Context) error {
 	return nil
 }
 
+const internalJWTExpiryThreshold = 30 * 24 * time.Hour // Regenerate when within 30 days of expiry
+
 func (r *OperatorConfigReconciler) ensureBuildAPIInternalJWTSecret(ctx context.Context, _ *automotivev1alpha1.OperatorConfig) error {
 	secret := &corev1.Secret{}
 	err := r.Get(ctx, client.ObjectKey{Name: internalJWTSecretName, Namespace: operatorNamespace}, secret)
@@ -402,7 +405,44 @@ func (r *OperatorConfigReconciler) ensureBuildAPIInternalJWTSecret(ctx context.C
 			return fmt.Errorf("failed to create internal JWT secret %s: %w", internalJWTSecretName, err)
 		}
 		r.Log.Info("Created internal JWT secret", "name", internalJWTSecretName)
+		return nil
 	}
+	// Secret exists: check expiry and regenerate if expired or within threshold
+	expiresAtBytes, ok := secret.Data["expires-at"]
+	if !ok {
+		// No expires-at (old secret format), regenerate
+		r.Log.Info("Internal JWT secret missing expires-at, regenerating", "name", internalJWTSecretName)
+		return r.regenerateInternalJWTSecret(ctx)
+	}
+	expiresAt, err := time.Parse(time.RFC3339, string(expiresAtBytes))
+	if err != nil {
+		r.Log.Info("Internal JWT secret has invalid expires-at, regenerating", "name", internalJWTSecretName, "error", err)
+		return r.regenerateInternalJWTSecret(ctx)
+	}
+	if time.Until(expiresAt) < internalJWTExpiryThreshold {
+		r.Log.Info("Internal JWT secret expired or expiring soon, regenerating", "name", internalJWTSecretName, "expiresAt", expiresAt)
+		return r.regenerateInternalJWTSecret(ctx)
+	}
+	return nil
+}
+
+func (r *OperatorConfigReconciler) regenerateInternalJWTSecret(ctx context.Context) error {
+	secret, err := r.buildInternalJWTSecret(internalJWTSecretName)
+	if err != nil {
+		return fmt.Errorf("failed to build internal JWT secret: %w", err)
+	}
+	existing := &corev1.Secret{}
+	if err := r.Get(ctx, client.ObjectKey{Name: internalJWTSecretName, Namespace: operatorNamespace}, existing); err != nil {
+		if !errors.IsNotFound(err) {
+			return err
+		}
+		return r.Create(ctx, secret)
+	}
+	secret.SetResourceVersion(existing.GetResourceVersion())
+	if err := r.Update(ctx, secret); err != nil {
+		return fmt.Errorf("failed to update internal JWT secret %s: %w", internalJWTSecretName, err)
+	}
+	r.Log.Info("Regenerated internal JWT secret", "name", internalJWTSecretName)
 	return nil
 }
 
