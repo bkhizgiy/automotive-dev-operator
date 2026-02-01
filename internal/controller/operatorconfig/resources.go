@@ -125,6 +125,7 @@ func (r *OperatorConfigReconciler) buildBuildAPIContainers(isOpenShift bool) []c
 				"--request-logging=true",
 				"--skip-auth-regex=^/healthz",
 				"--skip-auth-regex=^/v1/",
+				"--skip-auth-regex=/v1/",
 				"--email-domain=*",
 				"--skip-provider-button=true",
 				"--upstream-timeout=0",

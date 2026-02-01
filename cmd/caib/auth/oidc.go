@@ -304,10 +304,10 @@ func (a *OIDCAuth) exchangeCodeForToken(ctx context.Context, tokenEndpoint, code
 		return "", err
 	}
 
-	// Prefer id_token, fallback to access_token
-	token := tokenResp.IDToken
+	// Prefer access_token, fallback to id_token
+	token := tokenResp.AccessToken
 	if token == "" {
-		token = tokenResp.AccessToken
+		token = tokenResp.IDToken
 	}
 	if token == "" {
 		return "", fmt.Errorf("token endpoint returned neither id_token nor access_token")

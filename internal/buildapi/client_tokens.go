@@ -34,7 +34,6 @@ func (a *APIServer) authenticateExternalJWT(c *gin.Context, token string, authn 
 	if username == "" {
 		return "", false
 	}
-	// Note: OIDC token storage is handled in server.go after this returns
 	return username, true
 }
 

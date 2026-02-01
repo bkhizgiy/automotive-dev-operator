@@ -32,7 +32,9 @@ type InternalAuthConfig struct {
 }
 
 func newJWTAuthenticator(ctx context.Context, config AuthenticationConfiguration) (authenticator.Token, error) {
+	logger := log.FromContext(ctx)
 	if len(config.JWT) == 0 {
+		logger.Info("No JWT issuers configured")
 		return nil, nil
 	}
 
@@ -42,8 +44,11 @@ func newJWTAuthenticator(ctx context.Context, config AuthenticationConfiguration
 
 	jwtAuthenticators := make([]authenticator.Token, 0, len(config.JWT))
 	for _, jwtAuthenticator := range config.JWT {
+		issuerURL := jwtAuthenticator.Issuer.URL
+		hasCustomCA := jwtAuthenticator.Issuer.CertificateAuthority != ""
+
 		var oidcCAContent oidcauth.CAContentProvider
-		if jwtAuthenticator.Issuer.CertificateAuthority != "" {
+		if hasCustomCA {
 			var oidcCAError error
 			// Try to read CA from file, or use it as inline PEM
 			if _, err := os.Stat(jwtAuthenticator.Issuer.CertificateAuthority); err == nil {
@@ -59,12 +64,14 @@ func newJWTAuthenticator(ctx context.Context, config AuthenticationConfiguration
 				)
 			}
 			if oidcCAError != nil {
+				logger.Error(oidcCAError, "Failed to load CA certificate", "issuer", issuerURL)
 				return nil, oidcCAError
 			}
 		}
 
 		var jwtAuthenticatorUnversioned apiserver.JWTAuthenticator
 		if err := scheme.Convert(&jwtAuthenticator, &jwtAuthenticatorUnversioned, nil); err != nil {
+			logger.Error(err, "Failed to convert JWT authenticator config", "issuer", issuerURL)
 			return nil, err
 		}
 
@@ -74,10 +81,12 @@ func newJWTAuthenticator(ctx context.Context, config AuthenticationConfiguration
 			SupportedSigningAlgs: oidcauth.AllValidSigningAlgorithms(),
 		})
 		if err != nil {
+			logger.Error(err, "Failed to create OIDC authenticator", "issuer", issuerURL)
 			return nil, err
 		}
 		jwtAuthenticators = append(jwtAuthenticators, oidcAuth)
 	}
+	logger.Info("JWT authenticators configured", "count", len(jwtAuthenticators))
 	return tokenunion.NewFailOnError(jwtAuthenticators...), nil
 }
 
@@ -99,12 +108,29 @@ func loadAuthenticationConfigurationFromOperatorConfig(ctx context.Context, k8sC
 	}
 
 	auth := operatorConfig.Spec.BuildAPI.Authentication
+
+	// Deep copy JWT config to avoid modifying the original CRD data
+	// and ensure Prefix pointers are properly set (k8s OIDC authenticator requires non-nil Prefix when Claim is set)
+	jwtCopy := make([]apiserverv1beta1.JWTAuthenticator, len(auth.JWT))
+	for i, jwt := range auth.JWT {
+		jwtCopy[i] = jwt
+		// Ensure Prefix is not nil when Claim is set (k8s OIDC requirement)
+		if jwt.ClaimMappings.Username.Claim != "" && jwt.ClaimMappings.Username.Prefix == nil {
+			emptyPrefix := ""
+			jwtCopy[i].ClaimMappings.Username.Prefix = &emptyPrefix
+		}
+		if jwt.ClaimMappings.Groups.Claim != "" && jwt.ClaimMappings.Groups.Prefix == nil {
+			emptyPrefix := ""
+			jwtCopy[i].ClaimMappings.Groups.Prefix = &emptyPrefix
+		}
+	}
+
 	config := &AuthenticationConfiguration{
 		ClientID: auth.ClientID,
 		Internal: InternalAuthConfig{
 			Prefix: "internal:",
 		},
-		JWT: auth.JWT,
+		JWT: jwtCopy,
 	}
 
 	// Set internal prefix if provided

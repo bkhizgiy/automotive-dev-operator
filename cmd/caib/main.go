@@ -118,7 +118,7 @@ func createBuildAPIClient(serverURL string, authToken *string) (*buildapiclient.
 				fmt.Println("OIDC authentication successful")
 			}
 		} else {
-			// OIDC not configured (no error, no token) - safe to fall back to kubeconfig
+			// OIDC not configured in OperatorConfig
 			if tok, err := loadTokenFromKubeconfig(); err == nil && strings.TrimSpace(tok) != "" {
 				*authToken = tok
 			}
@@ -149,7 +149,6 @@ func createBuildAPIClient(serverURL string, authToken *string) (*buildapiclient.
 }
 
 // executeWithReauth executes an API call and automatically retries with re-authentication on auth errors.
-// On 401: first retries with OIDC re-auth; if that still returns 401, falls back to kubeconfig token and retries once.
 func executeWithReauth(serverURL string, authToken *string, fn func(*buildapiclient.Client) error) error {
 	ctx := context.Background()
 

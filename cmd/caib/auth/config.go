@@ -41,8 +41,10 @@ func GetOIDCConfigFromAPI(serverURL string) (*OIDCConfig, error) {
 		_ = resp.Body.Close()
 	}()
 
-	if resp.StatusCode == http.StatusNotFound {
-		// OIDC not configured - this is expected, return nil config without error
+	switch resp.StatusCode {
+	case http.StatusNotFound:
+		return nil, nil
+	case http.StatusForbidden, http.StatusUnauthorized:
 		return nil, nil
 	}
 

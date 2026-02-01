@@ -128,10 +128,10 @@ func NewAPIServerWithLimits(addr string, logger logr.Logger, limits APILimits) *
 	logger.Info("attempting to load authentication config from OperatorConfig", "namespace", namespace)
 	k8sClient, err := a.getCatalogClient()
 	if err == nil {
-		// Use a timeout to avoid blocking server startup indefinitely
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		cfg, authn, prefix, err := loadAuthenticationConfigurationFromOperatorConfig(ctx, k8sClient, namespace)
+		// IMPORTANT: Use context.Background() without cancel - the OIDC authenticator does lazy
+		// initialization in the background and needs the context to remain valid after this function returns.
+		// Using a cancellable context would kill the background JWKS fetch.
+		cfg, authn, prefix, err := loadAuthenticationConfigurationFromOperatorConfig(context.Background(), k8sClient, namespace)
 		if err != nil {
 			// If OperatorConfig doesn't exist or can't be read, log and continue without OIDC
 			// This allows kubeconfig fallback to work
@@ -1744,11 +1744,7 @@ func (a *APIServer) refreshAuthConfigIfNeeded() {
 		return
 	}
 
-	// Use a separate context with timeout to avoid canceling OIDC initialization
-	refreshCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	cfg, authn, prefix, err := loadAuthenticationConfigurationFromOperatorConfig(refreshCtx, k8sClient, namespace)
+	cfg, authn, prefix, err := loadAuthenticationConfigurationFromOperatorConfig(context.Background(), k8sClient, namespace)
 	if err != nil {
 		// If refresh fails, log but don't clear existing config - allow kubeconfig fallback
 		a.log.Error(err, "failed to load authentication config from OperatorConfig during refresh, keeping existing config", "namespace", namespace)
@@ -1808,7 +1804,6 @@ func (a *APIServer) authenticateRequest(c *gin.Context) (string, string, bool) {
 			if internalPrefix != "" {
 				username = internalPrefix + username
 			}
-			a.log.Info("Internal JWT authentication successful", "username", username)
 			return username, "internal", true
 		}
 	}
@@ -1826,7 +1821,6 @@ func (a *APIServer) authenticateRequest(c *gin.Context) (string, string, bool) {
 					a.log.Error(err, "failed to ensure client token secret", "username", username)
 				}
 			}
-			a.log.Info("External JWT authentication successful", "username", username)
 			return username, "external", true
 		}
 	}
@@ -1984,7 +1978,11 @@ func (a *APIServer) handleGetAuthConfig(c *gin.Context) {
 		}
 	}
 
-	// If no config, return empty
+	// OIDC not configured or not working, return 404 so clients use kubeconfig without trying OIDC
+	if len(response.JWT) == 0 {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
 	c.JSON(http.StatusOK, response)
 }
 
