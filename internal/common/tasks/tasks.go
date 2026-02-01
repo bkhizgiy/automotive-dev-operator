@@ -52,6 +52,11 @@ func GeneratePushArtifactRegistryTask(namespace string) *tektonv1.Task {
 					Description: "Build target",
 				},
 				{
+					Name:        "arch",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Target architecture",
+				},
+				{
 					Name:        "export-format",
 					Type:        tektonv1.ParamTypeString,
 					Description: "Export format for the build",
@@ -869,6 +874,13 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 							Value: tektonv1.ParamValue{
 								Type:      tektonv1.ParamTypeString,
 								StringVal: "$(params.target)",
+							},
+						},
+						{
+							Name: "arch",
+							Value: tektonv1.ParamValue{
+								Type:      tektonv1.ParamTypeString,
+								StringVal: "$(params.arch)",
 							},
 						},
 						{

@@ -672,6 +672,13 @@ func (r *ImageBuildReconciler) createPushTaskRun(ctx context.Context, imageBuild
 
 	params := []tektonv1.Param{
 		{
+			Name: "arch",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: imageBuild.Spec.Architecture,
+			},
+		},
+		{
 			Name: "distro",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,

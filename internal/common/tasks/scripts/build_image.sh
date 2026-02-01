@@ -555,8 +555,14 @@ elif [ -d "$(workspaces.shared-workspace.path)/${exportFile}" ]; then
       [ -e "$item" ] || continue
       base=$(basename "$item")
       if [ -f "$item" ]; then
-        echo "Creating $parts_dir/${base}${EXT_FILE}"
+        # Record uncompressed size before compression (for OCI layer annotations)
+        uncompressed_size=$(stat -c%s "$item" 2>/dev/null || stat -f%z "$item" 2>/dev/null || echo "")
+        echo "Creating $parts_dir/${base}${EXT_FILE} (uncompressed: ${uncompressed_size:-unknown} bytes)"
         compress_file "$item" "$parts_dir/${base}${EXT_FILE}" || echo "Failed to create $parts_dir/${base}${EXT_FILE}"
+        # Store uncompressed size in sidecar file for push_artifact.sh
+        if [ -n "$uncompressed_size" ]; then
+          echo "$uncompressed_size" > "$parts_dir/${base}${EXT_FILE}.size"
+        fi
       elif [ -d "$item" ]; then
         echo "Creating $parts_dir/${base}${EXT_DIR}"
         tar_dir "${exportFile}/$base" "$parts_dir/${base}${EXT_DIR}" || echo "Failed to create $parts_dir/${base}${EXT_DIR}"
