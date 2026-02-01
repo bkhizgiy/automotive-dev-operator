@@ -4,6 +4,7 @@ package operatorconfig
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 	routev1 "github.com/openshift/api/route/v1"
@@ -23,10 +24,11 @@ import (
 )
 
 const (
-	operatorNamespace = "automotive-dev-operator-system"
-	finalizerName     = "operatorconfig.automotive.sdv.cloud.redhat.com/finalizer"
-	buildAPIName      = "ado-build-api"
-	phaseFailed       = "Failed"
+	operatorNamespace     = "automotive-dev-operator-system"
+	finalizerName         = "operatorconfig.automotive.sdv.cloud.redhat.com/finalizer"
+	buildAPIName          = "ado-build-api"
+	phaseFailed           = "Failed"
+	internalJWTSecretName = "ado-build-api-internal-jwt"
 )
 
 // isNoMatchError checks if error is "no matches for kind" error (CRD doesn't exist)
@@ -227,6 +229,16 @@ func (r *OperatorConfigReconciler) deployBuildAPI(ctx context.Context, owner *au
 		return fmt.Errorf("failed to ensure build-api OAuth secret: %w", err)
 	}
 
+	// Ensure internal JWT secret for build-api
+	if err := r.ensureBuildAPIInternalJWTSecret(ctx, owner); err != nil {
+		r.Log.Error(err, "Failed to ensure build-api internal JWT secret")
+		return fmt.Errorf("failed to ensure build-api internal JWT secret: %w", err)
+	}
+
+	// Build API now reads authentication configuration directly from OperatorConfig CRD
+	// No need to generate ConfigMap anymore
+	r.Log.Info("Build API will read authentication config directly from OperatorConfig")
+
 	// Update ServiceAccount with build-api OAuth redirect annotation
 	if err := r.updateBuildAPIServiceAccountAnnotation(ctx); err != nil {
 		r.Log.Error(err, "Failed to update ServiceAccount build-api OAuth annotation")
@@ -364,6 +376,73 @@ func (r *OperatorConfigReconciler) cleanupBuildAPI(ctx context.Context) error {
 		return fmt.Errorf("failed to delete build-api OAuth secret: %w", err)
 	}
 
+	// Delete build-api internal JWT secret
+	jwtSecret := &corev1.Secret{}
+	jwtSecret.Name = internalJWTSecretName
+	jwtSecret.Namespace = operatorNamespace
+	if err := r.Delete(ctx, jwtSecret); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete build-api internal JWT secret: %w", err)
+	}
+
+	return nil
+}
+
+const internalJWTExpiryThreshold = 30 * 24 * time.Hour // Regenerate when within 30 days of expiry
+
+func (r *OperatorConfigReconciler) ensureBuildAPIInternalJWTSecret(ctx context.Context, _ *automotivev1alpha1.OperatorConfig) error {
+	secret := &corev1.Secret{}
+	err := r.Get(ctx, client.ObjectKey{Name: internalJWTSecretName, Namespace: operatorNamespace}, secret)
+	if err != nil {
+		if !errors.IsNotFound(err) {
+			return fmt.Errorf("failed to get internal JWT secret %s: %w", internalJWTSecretName, err)
+		}
+		// Secret doesn't exist, create it
+		secret, err = r.buildInternalJWTSecret(internalJWTSecretName)
+		if err != nil {
+			return fmt.Errorf("failed to build internal JWT secret: %w", err)
+		}
+		if err := r.Create(ctx, secret); err != nil {
+			return fmt.Errorf("failed to create internal JWT secret %s: %w", internalJWTSecretName, err)
+		}
+		r.Log.Info("Created internal JWT secret", "name", internalJWTSecretName)
+		return nil
+	}
+	// Secret exists: check expiry and regenerate if expired or within threshold
+	expiresAtBytes, ok := secret.Data["expires-at"]
+	if !ok {
+		// No expires-at (old secret format), regenerate
+		r.Log.Info("Internal JWT secret missing expires-at, regenerating", "name", internalJWTSecretName)
+		return r.regenerateInternalJWTSecret(ctx)
+	}
+	expiresAt, err := time.Parse(time.RFC3339, string(expiresAtBytes))
+	if err != nil {
+		r.Log.Info("Internal JWT secret has invalid expires-at, regenerating", "name", internalJWTSecretName, "error", err)
+		return r.regenerateInternalJWTSecret(ctx)
+	}
+	if time.Until(expiresAt) < internalJWTExpiryThreshold {
+		r.Log.Info("Internal JWT secret expired or expiring soon, regenerating", "name", internalJWTSecretName, "expiresAt", expiresAt)
+		return r.regenerateInternalJWTSecret(ctx)
+	}
+	return nil
+}
+
+func (r *OperatorConfigReconciler) regenerateInternalJWTSecret(ctx context.Context) error {
+	secret, err := r.buildInternalJWTSecret(internalJWTSecretName)
+	if err != nil {
+		return fmt.Errorf("failed to build internal JWT secret: %w", err)
+	}
+	existing := &corev1.Secret{}
+	if err := r.Get(ctx, client.ObjectKey{Name: internalJWTSecretName, Namespace: operatorNamespace}, existing); err != nil {
+		if !errors.IsNotFound(err) {
+			return err
+		}
+		return r.Create(ctx, secret)
+	}
+	secret.SetResourceVersion(existing.GetResourceVersion())
+	if err := r.Update(ctx, secret); err != nil {
+		return fmt.Errorf("failed to update internal JWT secret %s: %w", internalJWTSecretName, err)
+	}
+	r.Log.Info("Regenerated internal JWT secret", "name", internalJWTSecretName)
 	return nil
 }
 

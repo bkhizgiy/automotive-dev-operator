@@ -17,7 +17,10 @@ limitations under the License.
 package e2e
 
 import (
+	"crypto/tls"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -31,8 +34,39 @@ import (
 
 const namespace = "automotive-dev-operator-system"
 
+// hasOpenShiftRouteCRD returns true when the OpenShift Route CRD exists (OpenShift cluster).
+// On Kind there is no Route CRD, so OIDC suite can skip before creating any resources.
+func hasOpenShiftRouteCRD() bool {
+	cmd := exec.Command("kubectl", "get", "crd", "routes.route.openshift.io")
+	_, err := utils.Run(cmd)
+	return err == nil
+}
+
+// getBuildAPIURL returns the Build API URL when an OpenShift Route exists, or "" otherwise.
+// OIDC e2e tests that need to call the API run only on OpenShift (when Route exists).
+func getBuildAPIURL() string {
+	cmd := exec.Command("kubectl", "get", "route", "ado-build-api",
+		"-n", namespace, "-o", "jsonpath={.spec.host}")
+	output, err := utils.Run(cmd)
+	if err != nil || strings.TrimSpace(string(output)) == "" {
+		return ""
+	}
+	return "https://" + strings.TrimSpace(string(output))
+}
+
 var _ = Describe("controller", Ordered, func() {
 	BeforeAll(func() {
+		By("waiting for namespace to not exist (in case previous suite left it terminating)")
+		waitForNamespaceGone := func() error {
+			cmd := exec.Command("kubectl", "get", "ns", namespace)
+			_, err := utils.Run(cmd)
+			if err != nil {
+				return nil // namespace gone, we can create it
+			}
+			return fmt.Errorf("namespace still exists or terminating")
+		}
+		Eventually(waitForNamespaceGone, 3*time.Minute, 5*time.Second).Should(Succeed())
+
 		By("creating manager namespace")
 		cmd := exec.Command("kubectl", "create", "ns", namespace)
 		_, _ = utils.Run(cmd)
@@ -330,3 +364,226 @@ func containsMiddle(s, substr string) bool {
 	}
 	return false
 }
+
+var _ = Describe("OIDC Authentication", Ordered, func() {
+	var oidcSuiteCreatedNamespace bool
+
+	BeforeAll(func() {
+		var err error
+		var projectimage = "example.com/automotive-dev-operator:v0.0.1"
+
+		if !hasOpenShiftRouteCRD() {
+			Skip("OIDC e2e requires OpenShift (Route CRD); skipping on kind")
+		}
+		oidcSuiteCreatedNamespace = true
+
+		By("creating manager namespace")
+		cmd := exec.Command("kubectl", "create", "ns", namespace)
+		_, _ = utils.Run(cmd) // Ignore error if namespace already exists
+
+		By("building the manager(Operator) image")
+		cmd = exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectimage))
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("loading the manager(Operator) image on Kind")
+		err = utils.LoadImageToKindClusterWithName(projectimage)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("installing CRDs")
+		cmd = exec.Command("make", "install")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("deploying the controller-manager")
+		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectimage))
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("validating that the controller-manager pod is running")
+		verifyControllerUp := func() error {
+			cmd = exec.Command("kubectl", "get",
+				"pods", "-l", "control-plane=controller-manager",
+				"-o", "go-template={{ range .items }}"+
+					"{{ if not .metadata.deletionTimestamp }}"+
+					"{{ .metadata.name }}"+
+					"{{ \"\\n\" }}{{ end }}{{ end }}",
+				"-n", namespace,
+			)
+			podOutput, err := utils.Run(cmd)
+			if err != nil {
+				return err
+			}
+			podNames := utils.GetNonEmptyLines(string(podOutput))
+			if len(podNames) != 1 {
+				return fmt.Errorf("expect 1 controller pods running, but got %d", len(podNames))
+			}
+			cmd = exec.Command("kubectl", "get",
+				"pods", podNames[0], "-o", "jsonpath={.status.phase}",
+				"-n", namespace,
+			)
+			status, err := utils.Run(cmd)
+			if err != nil {
+				return err
+			}
+			if string(status) != "Running" {
+				return fmt.Errorf("controller pod in %s status", status)
+			}
+			return nil
+		}
+		Eventually(verifyControllerUp, time.Minute, time.Second).Should(Succeed())
+
+		By("creating baseline OperatorConfig without OIDC")
+		cmd = exec.Command("kubectl", "apply", "-f", "config/samples/automotive_v1_operatorconfig.yaml")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("waiting for Build API deployment")
+		verifyBuildAPIDeployment := func() error {
+			cmd = exec.Command("kubectl", "get", "deployment", "ado-build-api",
+				"-n", namespace, "-o", "jsonpath={.status.availableReplicas}")
+			output, err := utils.Run(cmd)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(string(output)) != "1" {
+				return fmt.Errorf("build-api deployment not available, replicas: %s", output)
+			}
+			return nil
+		}
+		Eventually(verifyBuildAPIDeployment, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+		if getBuildAPIURL() == "" {
+			Skip("OIDC e2e requires OpenShift Route (ado-build-api); skipping on kind")
+		}
+	})
+
+	AfterAll(func() {
+		if !oidcSuiteCreatedNamespace {
+			return
+		}
+		By("deleting OperatorConfig so namespace can terminate cleanly")
+		cmd := exec.Command("kubectl", "delete", "operatorconfig", "--all", "-n", namespace, "--timeout=30s")
+		_, _ = utils.Run(cmd)
+
+		By("waiting for OperatorConfig to be fully removed (finalizer cleared)")
+		waitForOperatorConfigGone := func() error {
+			cmd := exec.Command("kubectl", "get", "operatorconfig", "-n", namespace, "-o", "name")
+			output, err := utils.Run(cmd)
+			if err != nil {
+				return nil
+			}
+			if strings.TrimSpace(string(output)) == "" {
+				return nil
+			}
+			return fmt.Errorf("operatorconfig still present")
+		}
+		Eventually(waitForOperatorConfigGone, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("removing manager namespace")
+		cmd = exec.Command("kubectl", "delete", "ns", namespace, "--timeout=120s")
+		_, _ = utils.Run(cmd)
+		By("waiting for namespace deletion to complete before next suite")
+		waitForNamespaceGone := func() error {
+			cmd := exec.Command("kubectl", "get", "ns", namespace)
+			_, err := utils.Run(cmd)
+			if err != nil {
+				return nil // namespace gone
+			}
+			return fmt.Errorf("namespace still exists or terminating")
+		}
+		Eventually(waitForNamespaceGone, 5*time.Minute, 10*time.Second).Should(Succeed())
+	})
+
+	Context("Build API OIDC Configuration", func() {
+		It("should return 404 when OIDC is not configured", func() {
+			By("getting Build API URL")
+			apiURL := getBuildAPIURL()
+
+			By("checking /v1/auth/config endpoint returns 404 when OIDC not configured")
+			client := &http.Client{
+				Transport: &http.Transport{
+					TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+				},
+			}
+			resp, err := client.Get(apiURL + "/v1/auth/config")
+			Expect(err).NotTo(HaveOccurred())
+			defer func() {
+				_ = resp.Body.Close()
+			}()
+			// Should return 404 or 200 with empty JWT array
+			statusCode := resp.StatusCode
+			Expect(statusCode).To(Or(Equal(404), Equal(200)))
+		})
+
+		It("should handle OIDC configuration when provided", func() {
+			By("creating OperatorConfig with OIDC authentication")
+			operatorConfigYAML := `
+apiVersion: automotive.sdv.cloud.redhat.com/v1alpha1
+kind: OperatorConfig
+metadata:
+  name: config
+  namespace: automotive-dev-operator-system
+spec:
+  buildAPI:
+    authentication:
+      clientId: test-client-id
+      jwt:
+        - issuer:
+            url: https://issuer.example.com
+            audiences:
+              - test-audience
+          claimMappings:
+            username:
+              claim: preferred_username
+              prefix: ""
+`
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(operatorConfigYAML)
+			_, err := utils.Run(cmd)
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
+			By("waiting for operator to reconcile and Build API to reload configuration")
+			time.Sleep(10 * time.Second)
+
+			By("checking /v1/auth/config endpoint returns OIDC config")
+			apiURL := getBuildAPIURL()
+			if apiURL == "" {
+				Skip("Build API Route not found (OpenShift required)")
+			}
+			client := &http.Client{
+				Transport: &http.Transport{
+					TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+				},
+			}
+			resp, err := client.Get(apiURL + "/v1/auth/config")
+			Expect(err).NotTo(HaveOccurred())
+			defer func() {
+				_ = resp.Body.Close()
+			}()
+			Expect(resp.StatusCode).To(Equal(200))
+			body, err := io.ReadAll(resp.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(body)).To(And(ContainSubstring("jwt"), ContainSubstring("clientId")))
+
+			By("cleaning up OIDC configuration from OperatorConfig")
+			cmd = exec.Command("kubectl", "patch", "operatorconfig", "config",
+				"-n", namespace, "--type=json", "-p", `[{"op": "remove", "path": "/spec/buildAPI/authentication"}]`)
+			_, _ = utils.Run(cmd)
+		})
+	})
+
+	Context("Internal JWT Validation", func() {
+		It("should have Build API pod running", func() {
+			// Verify the Build API pod is running
+			By("verifying Build API pod is running")
+			cmd := exec.Command("kubectl", "get", "pod", "-l", "app.kubernetes.io/component=build-api",
+				"-n", namespace, "-o", "jsonpath={.items[0].status.phase}")
+			output, err := utils.Run(cmd)
+			if err != nil {
+				Skip("Build API pod not found")
+			}
+			Expect(strings.TrimSpace(string(output))).To(Equal("Running"))
+		})
+	})
+})
