@@ -433,6 +433,10 @@ spec:
                     description: Image is the container image for Jumpstarter CLI
                       operations
                     type: string
+                  namespace:
+                    description: Namespace is the OpenShift namespace where Jumpstarter
+                      is installed
+                    type: string
                   targetMappings:
                     additionalProperties:
                       description: JumpstarterTargetMapping defines the Jumpstarter

@@ -65,6 +65,10 @@ type JumpstarterConfig struct {
 	// +optional
 	Image string `json:"image,omitempty"`
 
+	// Namespace is the OpenShift namespace where Jumpstarter is installed
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
 	// TargetMappings maps build targets to Jumpstarter exporter configurations
 	// +optional
 	TargetMappings map[string]JumpstarterTargetMapping `json:"targetMappings,omitempty"`
