@@ -76,11 +76,8 @@ validate_bundle() {
     operator-sdk bundle validate ./bundle
 
     # OperatorHub-specific validation
-    if operator-sdk bundle validate ./bundle --select-optional name=operatorhub 2>&1; then
-        log_success "Bundle validation passed"
-    else
-        log_warn "Some OperatorHub validations failed. Review warnings above."
-    fi
+    operator-sdk bundle validate ./bundle --select-optional suite=operatorframework
+    log_success "Bundle validation passed"
 }
 
 prepare_community_operators() {

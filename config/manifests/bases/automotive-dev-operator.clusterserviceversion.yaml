@@ -71,13 +71,16 @@ metadata:
             "osBuilds": {
               "enabled": true,
               "pvcSize": "8Gi"
+            },
+            "buildAPI": {
+              "enabled": true
             }
           }
         }
       ]
     capabilities: Basic Install
     categories: Developer Tools
-    containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
+    containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator:VERSION
     operatorframework.io/suggested-namespace: automotive-dev-operator-system
     repository: https://github.com/centos-automotive-suite/automotive-dev-operator
     support: Red Hat
