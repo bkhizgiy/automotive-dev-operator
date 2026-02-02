@@ -80,6 +80,7 @@ metadata:
       ]
     capabilities: Basic Install
     categories: Developer Tools
+    com.redhat.openshift.versions: v4.18-v4.20
     containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator:VERSION
     operatorframework.io/suggested-namespace: automotive-dev-operator-system
     repository: https://github.com/centos-automotive-suite/automotive-dev-operator
