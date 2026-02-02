@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	apiserverv1beta1 "k8s.io/apiserver/pkg/apis/apiserver/v1beta1"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/client-go/kubernetes"
 	kscheme "k8s.io/client-go/kubernetes/scheme"
@@ -1727,6 +1728,7 @@ func getClientFromRequest(c *gin.Context) (client.Client, error) {
 }
 
 // refreshAuthConfigIfNeeded periodically checks and refreshes authentication configuration from OperatorConfig
+// IMPORTANT: This function only recreates the OIDC authenticator if the config actually changed.
 func (a *APIServer) refreshAuthConfigIfNeeded() {
 	a.authConfigMu.Lock()
 	defer a.authConfigMu.Unlock()
@@ -1744,40 +1746,79 @@ func (a *APIServer) refreshAuthConfigIfNeeded() {
 		return
 	}
 
-	cfg, authn, prefix, err := loadAuthenticationConfigurationFromOperatorConfig(context.Background(), k8sClient, namespace)
-	if err != nil {
-		// If refresh fails, log but don't clear existing config - allow kubeconfig fallback
-		a.log.Error(err, "failed to load authentication config from OperatorConfig during refresh, keeping existing config", "namespace", namespace)
+	// Get the OperatorConfig to check if it changed
+	operatorConfig := &automotivev1alpha1.OperatorConfig{}
+	key := types.NamespacedName{Name: "config", Namespace: namespace}
+	if err := k8sClient.Get(context.Background(), key, operatorConfig); err != nil {
+		a.log.Error(err, "failed to get OperatorConfig during refresh", "namespace", namespace)
 		return
 	}
 
-	if cfg == nil {
-		// Only clear if explicitly nil (no auth config)
+	// Build new config from OperatorConfig (without creating authenticator yet)
+	var newConfig *AuthenticationConfiguration
+	if operatorConfig.Spec.BuildAPI != nil && operatorConfig.Spec.BuildAPI.Authentication != nil {
+		auth := operatorConfig.Spec.BuildAPI.Authentication
+		// Deep copy JWT config with Prefix handling
+		jwtCopy := make([]apiserverv1beta1.JWTAuthenticator, len(auth.JWT))
+		for i, jwt := range auth.JWT {
+			jwtCopy[i] = jwt
+			if jwt.ClaimMappings.Username.Claim != "" && jwt.ClaimMappings.Username.Prefix == nil {
+				emptyPrefix := ""
+				jwtCopy[i].ClaimMappings.Username.Prefix = &emptyPrefix
+			}
+			if jwt.ClaimMappings.Groups.Claim != "" && jwt.ClaimMappings.Groups.Prefix == nil {
+				emptyPrefix := ""
+				jwtCopy[i].ClaimMappings.Groups.Prefix = &emptyPrefix
+			}
+		}
+		newConfig = &AuthenticationConfiguration{
+			ClientID: auth.ClientID,
+			Internal: InternalAuthConfig{Prefix: "internal:"},
+			JWT:      jwtCopy,
+		}
+		if auth.Internal != nil && auth.Internal.Prefix != "" {
+			newConfig.Internal.Prefix = auth.Internal.Prefix
+		}
+	}
+
+	// Compare with existing config, only recreate authenticator if config changed
+	if authConfigsEqual(a.authConfig, newConfig) {
+		// Config unchanged, keep existing authenticator (which is already initialized)
+		return
+	}
+
+	// Config changed - need to recreate authenticator
+	a.log.Info("auth config changed, recreating OIDC authenticator")
+
+	if newConfig == nil {
+		// No auth config, clear everything
 		a.authConfig = nil
 		a.externalJWT = nil
 		a.internalPrefix = ""
 		return
 	}
 
-	// Update config fields
-	a.authConfig = cfg
-	a.internalPrefix = prefix
-	if cfg.ClientID != "" {
-		a.oidcClientID = cfg.ClientID
+	// Create new authenticator
+	authn, err := newJWTAuthenticator(context.Background(), *newConfig)
+	if err != nil {
+		a.log.Error(err, "failed to create JWT authenticator during refresh, keeping existing config")
+		return
 	}
 
-	// Update authenticator - if we got a new one, use it; otherwise clear it to force kubeconfig fallback
+	// Update config fields
+	a.authConfig = newConfig
+	a.internalPrefix = newConfig.Internal.Prefix
+	if newConfig.ClientID != "" {
+		a.oidcClientID = newConfig.ClientID
+	}
+
+	// Update authenticator
 	if authn != nil {
 		a.externalJWT = authn
 	} else {
-		// authn is nil - this can happen if:
-		// 1. No JWT issuers configured (len(config.JWT) == 0)
-		// 2. OIDC initialization failed (network/TLS issues)
-		if len(cfg.JWT) == 0 {
+		if len(newConfig.JWT) == 0 {
 			a.externalJWT = nil
 		} else {
-			// OIDC is configured but initialization failed - clear authenticator to force kubeconfig fallback
-			// This prevents clients from trying to use OIDC tokens that won't work
 			a.externalJWT = nil
 		}
 	}
