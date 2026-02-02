@@ -106,7 +106,9 @@ metadata:
     categories: Developer Tools
     com.redhat.openshift.versions: v4.18-v4.20
     containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator:0.1.0
-    createdAt: "2026-02-02T16:32:54Z"
+    createdAt: "2026-02-02T16:58:49Z"
+    description: The CentOS Automotive Suite Operator enables building automotive
+      OS images on OpenShift clusters.
     operatorframework.io/suggested-namespace: automotive-dev-operator-system
     operators.operatorframework.io/builder: operator-sdk-v1.42.0
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4

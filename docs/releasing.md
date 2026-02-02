@@ -183,7 +183,9 @@ Before submitting, validate locally:
 make bundle-validate-operatorhub VERSION=0.1.0
 
 # Check bundle structure
-operator-sdk bundle validate ./bundle --select-optional suite=operatorframework
+operator-sdk bundle validate ./bundle --select-optional name=operatorhubv2
+operator-sdk bundle validate ./bundle --select-optional name=capabilities
+operator-sdk bundle validate ./bundle --select-optional name=categories
 ```
 
 ## GitHub Actions Workflow

@@ -76,7 +76,9 @@ validate_bundle() {
     operator-sdk bundle validate ./bundle
 
     # OperatorHub-specific validation
-    operator-sdk bundle validate ./bundle --select-optional suite=operatorframework
+    operator-sdk bundle validate ./bundle --select-optional name=operatorhubv2
+    operator-sdk bundle validate ./bundle --select-optional name=capabilities
+    operator-sdk bundle validate ./bundle --select-optional name=categories
     log_success "Bundle validation passed"
 }
 
