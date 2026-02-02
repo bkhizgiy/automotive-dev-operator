@@ -104,14 +104,15 @@ metadata:
       ]
     capabilities: Basic Install
     categories: Developer Tools
-    containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
-    createdAt: "2026-02-02T08:34:29Z"
+    com.redhat.openshift.versions: v4.18-v4.20
+    containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator:0.1.0
+    createdAt: "2026-02-02T16:32:54Z"
     operatorframework.io/suggested-namespace: automotive-dev-operator-system
     operators.operatorframework.io/builder: operator-sdk-v1.42.0
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
     repository: https://github.com/centos-automotive-suite/automotive-dev-operator
     support: Red Hat
-  name: automotive-dev-operator.v0.0.1
+  name: automotive-dev-operator.v0.1.0
   namespace: placeholder
 spec:
   apiservicedefinitions: {}
@@ -363,7 +364,7 @@ spec:
                     fieldRef:
                       fieldPath: metadata.namespace
                 - name: OPERATOR_IMAGE
-                  value: controller:latest
+                  value: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
                 image: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
                 livenessProbe:
                   httpGet:
@@ -478,4 +479,4 @@ spec:
   provider:
     name: Red Hat
     url: https://github.com/centos-automotive-suite
-  version: 0.0.1
+  version: 0.1.0
