@@ -831,27 +831,38 @@ func pullOCIArtifact(ociRef, destPath, username, password string) error {
 
 	fmt.Printf("\nExtracting artifact to %s\n", destPath)
 
-	// Extract the artifact blob to the destination file
+	// Extract the artifact blob(s) to the destination
 	if err := extractOCIArtifactBlob(tempDir, destPath); err != nil {
 		return fmt.Errorf("extract artifact: %w", err)
 	}
 
-	// Check if file is compressed and add appropriate extension if needed
-	finalPath := destPath
-	compression := detectFileCompression(destPath)
-	if compression != "" && !hasCompressionExtension(destPath) {
-		ext := compressionExtension(compression)
-		if ext != "" {
-			newPath := destPath + ext
-			fmt.Printf("Adding compression extension: %s -> %s\n", filepath.Base(destPath), filepath.Base(newPath))
-			if err := os.Rename(destPath, newPath); err != nil {
-				return fmt.Errorf("rename file with compression extension: %w", err)
-			}
-			finalPath = newPath
-		}
+	// Check if destPath is a directory (multi-layer) or file (single-layer)
+	info, err := os.Stat(destPath)
+	if err != nil {
+		return fmt.Errorf("stat destination: %w", err)
 	}
 
-	fmt.Printf("Downloaded to %s\n", finalPath)
+	if info.IsDir() {
+		// Multi-layer: files already extracted with correct names
+		fmt.Printf("Downloaded multi-layer artifact to %s/\n", destPath)
+	} else {
+		// Single-layer: check if file is compressed and add appropriate extension if needed
+		finalPath := destPath
+		compression := detectFileCompression(destPath)
+		if compression != "" && !hasCompressionExtension(destPath) {
+			ext := compressionExtension(compression)
+			if ext != "" {
+				newPath := destPath + ext
+				fmt.Printf("Adding compression extension: %s -> %s\n", filepath.Base(destPath), filepath.Base(newPath))
+				if err := os.Rename(destPath, newPath); err != nil {
+					return fmt.Errorf("rename file with compression extension: %w", err)
+				}
+				finalPath = newPath
+			}
+		}
+		fmt.Printf("Downloaded to %s\n", finalPath)
+	}
+
 	return nil
 }
 
@@ -885,8 +896,10 @@ func extractOCIArtifactBlob(ociLayoutPath, destPath string) error {
 	}
 
 	var manifest struct {
-		Layers []struct {
-			Digest string `json:"digest"`
+		Annotations map[string]string `json:"annotations"`
+		Layers      []struct {
+			Digest      string            `json:"digest"`
+			Annotations map[string]string `json:"annotations"`
 		} `json:"layers"`
 	}
 	if err := json.Unmarshal(manifestData, &manifest); err != nil {
@@ -897,14 +910,125 @@ func extractOCIArtifactBlob(ociLayoutPath, destPath string) error {
 		return fmt.Errorf("no layers found in manifest")
 	}
 
-	// Extract the first layer (should contain the disk image)
+	// Check if this is a multi-layer artifact
+	isMultiLayer := manifest.Annotations["automotive.sdv.cloud.redhat.com/multi-layer"] == "true"
+
+	if isMultiLayer {
+		// Multi-layer: extract all layers to destPath directory
+		fmt.Printf("Multi-layer artifact detected (%d layers)\n", len(manifest.Layers))
+
+		// Create destination directory
+		if err := os.MkdirAll(destPath, 0755); err != nil {
+			return fmt.Errorf("create destination directory: %w", err)
+		}
+
+		// Track sanitized filenames to prevent silent overwrites
+		seenFilenames := make(map[string]struct {
+			layerIndex int
+			digest     string
+			title      string
+		})
+
+		for i, layer := range manifest.Layers {
+			layerDigest := strings.TrimPrefix(layer.Digest, "sha256:")
+			layerPath := filepath.Join(ociLayoutPath, "blobs", "sha256", layerDigest)
+
+			// Get filename from annotation, fallback to layer index
+			originalTitle := layer.Annotations["org.opencontainers.image.title"]
+
+			// Sanitize filename to prevent path traversal attacks
+			filename := sanitizeFilename(originalTitle, i)
+
+			// Check for duplicate sanitized filenames
+			if prev, exists := seenFilenames[filename]; exists {
+				return fmt.Errorf("duplicate sanitized filename '%s' for layer %d (digest: %s, title: %s) conflicts with layer %d (digest: %s, title: %s)",
+					filename, i, layer.Digest, originalTitle, prev.layerIndex, prev.digest, prev.title)
+			}
+
+			// Record this filename as seen
+			seenFilenames[filename] = struct {
+				layerIndex int
+				digest     string
+				title      string
+			}{
+				layerIndex: i,
+				digest:     layer.Digest,
+				title:      originalTitle,
+			}
+
+			destFile := filepath.Join(destPath, filename)
+			fmt.Printf("  Extracting layer %d: %s\n", i+1, filename)
+
+			if err := copyFile(layerPath, destFile); err != nil {
+				return fmt.Errorf("extract layer %s: %w", filename, err)
+			}
+		}
+
+		fmt.Printf("Extracted %d files to %s\n", len(manifest.Layers), destPath)
+		return nil
+	}
+
+	// Single-layer: extract to destPath file (original behavior)
 	layerDigest := strings.TrimPrefix(manifest.Layers[0].Digest, "sha256:")
 	layerPath := filepath.Join(ociLayoutPath, "blobs", "sha256", layerDigest)
 
-	// Copy the layer blob to destination
-	src, err := os.Open(layerPath)
+	return copyFile(layerPath, destPath)
+}
+
+// sanitizeFilename validates and sanitizes a filename from OCI layer annotations.
+// Returns a safe filename, falling back to "layer-N.bin" if the input is invalid.
+// This prevents path traversal attacks by rejecting:
+// - Empty filenames
+// - Absolute paths
+// - Paths containing ".." components
+// - Paths containing null bytes
+// - Filenames that differ from their base name (contain path separators)
+func sanitizeFilename(filename string, layerIndex int) string {
+	fallback := fmt.Sprintf("layer-%d.bin", layerIndex)
+
+	// Reject empty filenames
+	if filename == "" {
+		return fallback
+	}
+
+	// Reject filenames containing null bytes
+	if strings.ContainsRune(filename, 0) {
+		fmt.Fprintf(os.Stderr, "Warning: layer %d filename contains null bytes, using fallback\n", layerIndex)
+		return fallback
+	}
+
+	// Reject absolute paths
+	if filepath.IsAbs(filename) {
+		fmt.Fprintf(os.Stderr, "Warning: layer %d filename is absolute path, using fallback\n", layerIndex)
+		return fallback
+	}
+
+	// Reject paths containing ".."
+	if strings.Contains(filename, "..") {
+		fmt.Fprintf(os.Stderr, "Warning: layer %d filename contains '..', using fallback\n", layerIndex)
+		return fallback
+	}
+
+	// Extract base name and reject if it differs (contains path separators)
+	base := filepath.Base(filename)
+	if base != filename {
+		fmt.Fprintf(os.Stderr, "Warning: layer %d filename contains path separators, using basename: %s\n", layerIndex, base)
+		filename = base
+	}
+
+	// Final safety check: base should not be empty, ".", or ".."
+	if filename == "" || filename == "." || filename == ".." {
+		return fallback
+	}
+
+	return filename
+}
+
+// copyFile copies a file from src to dst
+func copyFile(srcPath, dstPath string) error {
+	src, err := os.Open(srcPath)
 	if err != nil {
-		return fmt.Errorf("open layer blob: %w", err)
+		return fmt.Errorf("open source: %w", err)
 	}
 	defer func() {
 		if err := src.Close(); err != nil {
@@ -912,9 +1036,9 @@ func extractOCIArtifactBlob(ociLayoutPath, destPath string) error {
 		}
 	}()
 
-	dst, err := os.Create(destPath)
+	dst, err := os.Create(dstPath)
 	if err != nil {
-		return fmt.Errorf("create destination file: %w", err)
+		return fmt.Errorf("create destination: %w", err)
 	}
 	defer func() {
 		if err := dst.Close(); err != nil {
@@ -923,7 +1047,7 @@ func extractOCIArtifactBlob(ociLayoutPath, destPath string) error {
 	}()
 
 	if _, err := io.Copy(dst, src); err != nil {
-		return fmt.Errorf("copy layer blob: %w", err)
+		return fmt.Errorf("copy data: %w", err)
 	}
 
 	return nil
