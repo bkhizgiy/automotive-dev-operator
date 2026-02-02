@@ -192,7 +192,7 @@ jobs:
             - name: Build CLI for ARM64
               run: |
                   mkdir -p ./bin
-                  make build-caib VERSION=${{ github.ref_name }}
+                  CGO_ENABLED=0 make build-caib VERSION=${{ github.ref_name }}
                   cp bin/caib ${AIB_CLI_BINARY}-${{ github.ref_name }}-arm64
 
             - name: Upload ARM64 artifact
@@ -218,7 +218,7 @@ jobs:
             - name: Build CLI for AMD64
               run: |
                   mkdir -p ./bin
-                  GOARCH=amd64 make build-caib VERSION=${{ github.ref_name }}
+                  CGO_ENABLED=0 GOARCH=amd64 make build-caib VERSION=${{ github.ref_name }}
                   cp bin/caib ${AIB_CLI_BINARY}-${{ github.ref_name }}-amd64
 
             - name: Upload AMD64 artifact
