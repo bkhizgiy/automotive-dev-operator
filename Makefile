@@ -360,7 +360,9 @@ prepare-release: ## Prepare a release (usage: make prepare-release VERSION=0.1.0
 .PHONY: bundle-validate-operatorhub
 bundle-validate-operatorhub: operator-sdk ## Validate bundle for OperatorHub submission
 	$(OPERATOR_SDK) bundle validate ./bundle
-	$(OPERATOR_SDK) bundle validate ./bundle --select-optional suite=operatorframework
+	$(OPERATOR_SDK) bundle validate ./bundle --select-optional name=operatorhubv2
+	$(OPERATOR_SDK) bundle validate ./bundle --select-optional name=capabilities
+	$(OPERATOR_SDK) bundle validate ./bundle --select-optional name=categories
 
 .PHONY: community-operators-bundle
 community-operators-bundle: bundle ## Prepare bundle for community-operators-prod submission

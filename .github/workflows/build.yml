@@ -176,7 +176,9 @@ jobs:
             - name: Validate bundle
               run: |
                   operator-sdk bundle validate ./bundle
-                  operator-sdk bundle validate ./bundle --select-optional suite=operatorframework
+                  operator-sdk bundle validate ./bundle --select-optional name=operatorhubv2
+                  operator-sdk bundle validate ./bundle --select-optional name=capabilities
+                  operator-sdk bundle validate ./bundle --select-optional name=categories
 
     build-caib-arm64:
         runs-on: ubuntu-24.04-arm
