@@ -494,19 +494,30 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 		)
 	}
 
-	// Use VolumeClaimTemplate instead of pre-created PVC to ensure the volume
-	// is provisioned in the correct zone based on pod scheduling constraints
-	storageSize := resource.MustParse("8Gi")
-	if operatorConfig.Spec.OSBuilds != nil && operatorConfig.Spec.OSBuilds.PVCSize != "" {
-		storageSize = resource.MustParse(operatorConfig.Spec.OSBuilds.PVCSize)
-	}
-	var storageClassName *string
-	if imageBuild.Spec.StorageClass != "" {
-		storageClassName = &imageBuild.Spec.StorageClass
-	}
-
-	pipelineWorkspaces := []tektonv1.WorkspaceBinding{
-		{
+	// Determine the shared-workspace binding:
+	// - If InputFilesServer is enabled and a PVC already exists (from upload phase), use it
+	// - Otherwise, use VolumeClaimTemplate to create a new PVC with proper zone affinity
+	var sharedWorkspaceBinding tektonv1.WorkspaceBinding
+	if imageBuild.Spec.GetInputFilesServer() && imageBuild.Status.PVCName != "" {
+		// Use existing PVC that contains uploaded files
+		log.Info("Using existing PVC with uploaded files", "pvc", imageBuild.Status.PVCName)
+		sharedWorkspaceBinding = tektonv1.WorkspaceBinding{
+			Name: "shared-workspace",
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: imageBuild.Status.PVCName,
+			},
+		}
+	} else {
+		// Create new PVC via VolumeClaimTemplate for proper zone affinity
+		storageSize := resource.MustParse("8Gi")
+		if operatorConfig.Spec.OSBuilds != nil && operatorConfig.Spec.OSBuilds.PVCSize != "" {
+			storageSize = resource.MustParse(operatorConfig.Spec.OSBuilds.PVCSize)
+		}
+		var storageClassName *string
+		if imageBuild.Spec.StorageClass != "" {
+			storageClassName = &imageBuild.Spec.StorageClass
+		}
+		sharedWorkspaceBinding = tektonv1.WorkspaceBinding{
 			Name: "shared-workspace",
 			VolumeClaimTemplate: &corev1.PersistentVolumeClaim{
 				Spec: corev1.PersistentVolumeClaimSpec{
@@ -519,7 +530,11 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 					},
 				},
 			},
-		},
+		}
+	}
+
+	pipelineWorkspaces := []tektonv1.WorkspaceBinding{
+		sharedWorkspaceBinding,
 		{
 			Name: "manifest-config-workspace",
 			ConfigMap: &corev1.ConfigMapVolumeSource{
