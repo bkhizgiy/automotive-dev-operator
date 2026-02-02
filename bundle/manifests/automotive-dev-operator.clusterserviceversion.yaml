@@ -106,7 +106,7 @@ metadata:
     categories: Developer Tools
     com.redhat.openshift.versions: v4.18-v4.20
     containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator:0.1.0
-    createdAt: "2026-02-02T17:10:15Z"
+    createdAt: "2026-02-02T17:48:09Z"
     description: The CentOS Automotive Suite Operator enables building automotive
       OS images on OpenShift clusters.
     operatorframework.io/suggested-namespace: automotive-dev-operator-system
@@ -477,7 +477,7 @@ spec:
   - email: bkhizgiy@redhat.com
     name: Bella Khizgiyaev
   maturity: alpha
-  minKubeVersion: 1.26.0
+  minKubeVersion: 1.31.0
   provider:
     name: Red Hat
     url: https://github.com/centos-automotive-suite
