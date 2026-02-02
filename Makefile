@@ -3,7 +3,7 @@
 # To re-generate a bundle for another specific version without changing the standard setup, you can:
 # - use the VERSION as arg of the bundle target (e.g make bundle VERSION=0.0.2)
 # - use environment variables to overwrite this value (e.g export VERSION=0.0.2)
-VERSION ?= 0.0.1
+VERSION ?= 0.1.0
 
 # CHANNELS define the bundle channels used in the bundle.
 # Add a new line here if you would like to change its default config. (E.g CHANNELS = "candidate,fast,stable")
@@ -278,6 +278,9 @@ bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metada
 	$(OPERATOR_SDK) generate kustomize manifests -q
 	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
 	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
+	@# Replace OPERATOR_IMAGE environment variable and VERSION placeholder in CSV
+	sed -i.bak 's|value: controller:latest|value: $(IMG)|g' ./bundle/manifests/*.yaml && rm -f ./bundle/manifests/*.bak
+	sed -i.bak 's|VERSION|$(VERSION)|g' ./bundle/manifests/*.yaml && rm -f ./bundle/manifests/*.bak
 	$(OPERATOR_SDK) bundle validate ./bundle
 
 .PHONY: bundle-build
@@ -347,4 +350,32 @@ build-caib: ## Build the caib tool
 .PHONY: build-api-server
 build-api-server: ## Build the api server
 	go build -o bin/build-api cmd/build-api/main.go
+
+##@ Release
+
+.PHONY: prepare-release
+prepare-release: ## Prepare a release (usage: make prepare-release VERSION=0.1.0)
+	@./hack/prepare-release.sh $(VERSION)
+
+.PHONY: bundle-validate-operatorhub
+bundle-validate-operatorhub: operator-sdk ## Validate bundle for OperatorHub submission
+	$(OPERATOR_SDK) bundle validate ./bundle
+	$(OPERATOR_SDK) bundle validate ./bundle --select-optional suite=operatorframework
+
+.PHONY: community-operators-bundle
+community-operators-bundle: bundle ## Prepare bundle for community-operators-prod submission
+	@mkdir -p community-operators-prod/operators/automotive-dev-operator/$(VERSION)/manifests
+	@mkdir -p community-operators-prod/operators/automotive-dev-operator/$(VERSION)/metadata
+	@cp -r bundle/manifests/* community-operators-prod/operators/automotive-dev-operator/$(VERSION)/manifests/
+	@cp -r bundle/metadata/* community-operators-prod/operators/automotive-dev-operator/$(VERSION)/metadata/
+	@if [ ! -f community-operators-prod/operators/automotive-dev-operator/ci.yaml ]; then \
+		echo "updateGraph: semver-mode" > community-operators-prod/operators/automotive-dev-operator/ci.yaml; \
+		echo "Created ci.yaml with default updateGraph: semver-mode"; \
+	else \
+		echo "Using existing ci.yaml (not overwriting)"; \
+	fi
+	@echo "Bundle prepared at: community-operators-prod/operators/automotive-dev-operator/$(VERSION)"
+
+.PHONY: release-images
+release-images: docker-buildx bundle-build bundle-push catalog-build catalog-push ## Build and push all release images (operator, bundle, catalog)
 

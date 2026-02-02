@@ -88,7 +88,7 @@ spec:
             fieldRef:
               fieldPath: metadata.namespace
         - name: OPERATOR_IMAGE
-          value: controller:latest
+          value: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
         ports:
         - containerPort: 8080
           name: build-api

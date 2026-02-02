@@ -5,74 +5,82 @@ metadata:
     alm-examples: |-
       [
         {
-          "apiVersion": "automotive.sdv.cloud.redhat.com/v1",
+          "apiVersion": "automotive.sdv.cloud.redhat.com/v1alpha1",
           "kind": "ImageBuild",
           "metadata": {
-            "annotations": {
-              "description": "Example ImageBuild CR. The architecture can be set to any supported value like \"aarch64\", \"x86_64\", etc. See your build platform's documentation for supported values.\n"
-            },
-            "labels": {
-              "app.kubernetes.io/managed-by": "kustomize",
-              "app.kubernetes.io/name": "automotive-dev-operator"
-            },
             "name": "imagebuild-sample"
           },
           "spec": {
             "architecture": "amd64",
-            "automotiveImageBuilder": "quay.io/centos-sig-automotive/automotive-image-builder:1.0.0",
-            "distro": "cs9",
-            "exportFormat": "qcow2",
-            "manifestConfigMap": "mpp",
-            "mode": "image",
-            "serveArtifact": false,
-            "serveExpiryHours": 24,
-            "target": "qemu"
-          },
-          "status": {
-            "phase": "Completed",
-            "message": "Image build completed successfully",
-            "taskRunName": "imagebuild-sample-run-abc123",
-            "pvcName": "imagebuild-sample-pvc",
-            "artifactPath": "/workspace/output/image.qcow2",
-            "artifactFileName": "image.qcow2",
-            "startTime": "2024-01-15T10:00:00Z",
-            "completionTime": "2024-01-15T10:25:00Z"
+            "aib": {
+              "distro": "autosd",
+              "image": "quay.io/centos-sig-automotive/automotive-image-builder:1.0.0",
+              "manifestConfigMap": "my-manifest",
+              "mode": "image",
+              "target": "qemu"
+            },
+            "export": {
+              "format": "qcow2",
+              "compression": "gzip"
+            }
           }
         },
         {
-          "apiVersion": "automotive.sdv.cloud.redhat.com/v1",
+          "apiVersion": "automotive.sdv.cloud.redhat.com/v1alpha1",
           "kind": "Image",
           "metadata": {
-            "labels": {
-              "app.kubernetes.io/managed-by": "kustomize",
-              "app.kubernetes.io/name": "automotive-dev-operator"
-            },
             "name": "image-sample"
           },
           "spec": {
             "architecture": "amd64",
-            "distro": "cs9",
+            "distro": "autosd",
             "exportFormat": "qcow2",
             "target": "qemu",
             "location": {
               "type": "registry",
               "registry": {
-                "url": "quay.io/example/my-image:latest"
+                "url": "quay.io/example/automotive-image:v1.0.0"
               }
             }
+          }
+        },
+        {
+          "apiVersion": "automotive.sdv.cloud.redhat.com/v1alpha1",
+          "kind": "CatalogImage",
+          "metadata": {
+            "name": "catalogimage-sample"
           },
-          "status": {
-            "phase": "Available",
-            "message": "Image is available and verified",
-            "lastVerified": "2024-01-15T10:30:00Z",
-            "lastAccessed": "2024-01-15T11:00:00Z",
-            "accessCount": 5
+          "spec": {
+            "registryUrl": "quay.io/example/automotive-image:v1.0.0",
+            "metadata": {
+              "architecture": "amd64",
+              "distro": "autosd",
+              "bootc": true
+            },
+            "tags": ["production", "stable"]
+          }
+        },
+        {
+          "apiVersion": "automotive.sdv.cloud.redhat.com/v1alpha1",
+          "kind": "OperatorConfig",
+          "metadata": {
+            "name": "config",
+            "namespace": "automotive-dev-operator-system"
+          },
+          "spec": {
+            "osBuilds": {
+              "enabled": true,
+              "pvcSize": "8Gi"
+            },
+            "buildAPI": {
+              "enabled": true
+            }
           }
         }
       ]
     capabilities: Basic Install
     categories: Developer Tools
-    containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
+    containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator:VERSION
     operatorframework.io/suggested-namespace: automotive-dev-operator-system
     repository: https://github.com/centos-automotive-suite/automotive-dev-operator
     support: Red Hat
@@ -82,21 +90,12 @@ spec:
   apiservicedefinitions: {}
   customresourcedefinitions:
     owned:
-    - description: ImageBuild is the Schema for the imagebuilds API
-      displayName: Image Build
-      kind: ImageBuild
-      name: imagebuilds.automotive.sdv.cloud.redhat.com
-      version: v1
-    - description: Image is the Schema for the images API
-      displayName: Image
-      kind: Image
-      name: images.automotive.sdv.cloud.redhat.com
-      version: v1
-    - description: OperatorConfig is the Schema for the operatorconfigs API
-      displayName: Operator Config
-      kind: OperatorConfig
-      name: operatorconfigs.automotive.sdv.cloud.redhat.com
-      version: v1
+    - description: CatalogImage represents an automotive OS image in the catalog registry
+        for discovery and deployment
+      displayName: Catalog Image
+      kind: CatalogImage
+      name: catalogimages.automotive.sdv.cloud.redhat.com
+      version: v1alpha1
     - description: ImageBuild is the Schema for the imagebuilds API
       displayName: Image Build
       kind: ImageBuild
@@ -112,11 +111,14 @@ spec:
       kind: OperatorConfig
       name: operatorconfigs.automotive.sdv.cloud.redhat.com
       version: v1alpha1
-  description: CentOS Automotive Suite
+  description: |
+    The CentOS Automotive Suite Operator enables building automotive OS images on OpenShift clusters.
+
+    For detailed documentation, visit the [project repository](https://github.com/centos-automotive-suite/automotive-dev-operator).
   displayName: CentOS Automotive Suite
   icon:
-  - base64data: ""
-    mediatype: ""
+  - base64data: PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48cmVjdCB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgZmlsbD0iIzAwNjdCNSIvPjx0ZXh0IHg9IjUwIiB5PSI1NSIgZm9udC1mYW1pbHk9IkFyaWFsIiBmb250LXNpemU9IjQwIiBmaWxsPSJ3aGl0ZSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+QURPPC90ZXh0Pjwvc3ZnPg==
+    mediatype: image/svg+xml
   install:
     spec:
       deployments: null
@@ -135,8 +137,14 @@ spec:
   links:
   - name: CentOS Automotive Suite
     url: https://github.com/centos-automotive-suite/automotive-dev-operator
+  maintainers:
+  - email: bzlotnik@redhat.com
+    name: Benny Zlotnik
+  - email: bkhizgiy@redhat.com
+    name: Bella Khizgiyaev
   maturity: alpha
   minKubeVersion: 1.26.0
   provider:
     name: Red Hat
+    url: https://github.com/centos-automotive-suite
   version: 0.0.0
