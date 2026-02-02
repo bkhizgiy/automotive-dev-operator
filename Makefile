@@ -348,3 +348,26 @@ build-caib: ## Build the caib tool
 build-api-server: ## Build the api server
 	go build -o bin/build-api cmd/build-api/main.go
 
+##@ Release
+
+.PHONY: prepare-release
+prepare-release: ## Prepare a release (usage: make prepare-release VERSION=0.1.0)
+	@./hack/prepare-release.sh $(VERSION)
+
+.PHONY: bundle-validate-operatorhub
+bundle-validate-operatorhub: operator-sdk ## Validate bundle for OperatorHub submission
+	$(OPERATOR_SDK) bundle validate ./bundle
+	$(OPERATOR_SDK) bundle validate ./bundle --select-optional suite=operatorframework
+
+.PHONY: community-operators-bundle
+community-operators-bundle: bundle ## Prepare bundle for community-operators-prod submission
+	@mkdir -p community-operators-prod/operators/automotive-dev-operator/$(VERSION)/manifests
+	@mkdir -p community-operators-prod/operators/automotive-dev-operator/$(VERSION)/metadata
+	@cp -r bundle/manifests/* community-operators-prod/operators/automotive-dev-operator/$(VERSION)/manifests/
+	@cp -r bundle/metadata/* community-operators-prod/operators/automotive-dev-operator/$(VERSION)/metadata/
+	@echo "updateGraph: semver-mode" > community-operators-prod/operators/automotive-dev-operator/ci.yaml
+	@echo "Bundle prepared at: community-operators-prod/operators/automotive-dev-operator/$(VERSION)"
+
+.PHONY: release-images
+release-images: docker-buildx bundle-build bundle-push catalog-build catalog-push ## Build and push all release images (operator, bundle, catalog)
+

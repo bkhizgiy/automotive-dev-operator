@@ -25,3 +25,5 @@ go.work
 *.swp
 *.swo
 *~
+
+catalog/automotive-dev-operator.yaml
