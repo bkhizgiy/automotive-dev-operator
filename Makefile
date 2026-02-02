@@ -50,7 +50,7 @@ endif
 # This is useful for CI or a project to utilize a specific version of the operator-sdk toolkit.
 OPERATOR_SDK_VERSION ?= v1.39.1
 # Image URL to use all building/pushing image targets
-IMG ?= quay.io/rh-sdv-cloud/automotive-dev-operator:latest
+IMG ?= $(IMAGE_TAG_BASE):v$(VERSION)
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.31.0
 
@@ -280,6 +280,7 @@ bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metada
 	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
 	@# Replace OPERATOR_IMAGE environment variable and VERSION placeholder in CSV
 	sed -i.bak 's|value: controller:latest|value: $(IMG)|g' ./bundle/manifests/*.yaml && rm -f ./bundle/manifests/*.bak
+	sed -i.bak 's|value: $(IMAGE_TAG_BASE):latest|value: $(IMG)|g' ./bundle/manifests/*.yaml && rm -f ./bundle/manifests/*.bak
 	sed -i.bak 's|VERSION|$(VERSION)|g' ./bundle/manifests/*.yaml && rm -f ./bundle/manifests/*.bak
 	$(OPERATOR_SDK) bundle validate ./bundle
 
