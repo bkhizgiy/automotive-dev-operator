@@ -27,6 +27,7 @@ import (
 
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/auth"
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/catalog"
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/config"
 	buildapitypes "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi"
 	buildapiclient "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi/client"
 	"github.com/spf13/cobra"
@@ -401,8 +402,21 @@ Examples:
 		Run:   runList,
 	}
 
+	loginCmd := &cobra.Command{
+		Use:   "login [server-url]",
+		Short: "Save server endpoint and authenticate for subsequent commands",
+		Long: `Login saves the Build API server URL locally (~/.caib/cli.json) so you do not need
+to pass --server or set CAIB_SERVER for later commands. If the server uses OIDC,
+this command also performs authentication and caches the token.
+
+Example:
+  caib login https://build-api.my-cluster.example.com`,
+		Args: cobra.ExactArgs(1),
+		Run:  runLogin,
+	}
+
 	// build command flags (bootc - the default)
-	buildCmd.Flags().StringVar(&serverURL, "server", os.Getenv("CAIB_SERVER"), "REST API server base URL")
+	buildCmd.Flags().StringVar(&serverURL, "server", config.DefaultServer(), "REST API server base URL")
 	buildCmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication")
 	buildCmd.Flags().StringVarP(&buildName, "name", "n", "", "name for the ImageBuild (auto-generated if omitted)")
 	buildCmd.Flags().StringVarP(&distro, "distro", "d", "autosd", "distribution to build")
@@ -434,7 +448,7 @@ Examples:
 	buildCmd.Flags().StringVar(&leaseDuration, "lease", "03:00:00", "device lease duration for flash (HH:MM:SS)")
 
 	listCmd.Flags().StringVar(
-		&serverURL, "server", os.Getenv("CAIB_SERVER"), "REST API server base URL (e.g. https://api.example)",
+		&serverURL, "server", config.DefaultServer(), "REST API server base URL (e.g. https://api.example)",
 	)
 	listCmd.Flags().StringVar(
 		&authToken, "token", os.Getenv("CAIB_TOKEN"),
@@ -442,7 +456,7 @@ Examples:
 	)
 
 	// disk command flags (create disk from existing container)
-	diskCmd.Flags().StringVar(&serverURL, "server", os.Getenv("CAIB_SERVER"), "REST API server base URL")
+	diskCmd.Flags().StringVar(&serverURL, "server", config.DefaultServer(), "REST API server base URL")
 	diskCmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication")
 	diskCmd.Flags().StringVarP(&buildName, "name", "n", "", "name for the build job (auto-generated if omitted)")
 	diskCmd.Flags().StringVarP(&outputDir, "output", "o", "", "download disk image to file from registry (requires --push)")
@@ -469,7 +483,7 @@ Examples:
 	diskCmd.Flags().StringVar(&leaseDuration, "lease", "03:00:00", "device lease duration for flash (HH:MM:SS)")
 
 	// build-dev command flags (traditional ostree/package builds)
-	buildDevCmd.Flags().StringVar(&serverURL, "server", os.Getenv("CAIB_SERVER"), "REST API server base URL")
+	buildDevCmd.Flags().StringVar(&serverURL, "server", config.DefaultServer(), "REST API server base URL")
 	buildDevCmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication")
 	buildDevCmd.Flags().StringVarP(&buildName, "name", "n", "", "name for the ImageBuild")
 	buildDevCmd.Flags().StringVarP(&distro, "distro", "d", "autosd", "distribution to build")
@@ -496,7 +510,7 @@ Examples:
 	buildDevCmd.Flags().StringVar(&leaseDuration, "lease", "03:00:00", "device lease duration for flash (HH:MM:SS)")
 
 	// flash command flags
-	flashCmd.Flags().StringVar(&serverURL, "server", os.Getenv("CAIB_SERVER"), "REST API server base URL")
+	flashCmd.Flags().StringVar(&serverURL, "server", config.DefaultServer(), "REST API server base URL")
 	flashCmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication")
 	flashCmd.Flags().StringVar(&jumpstarterClient, "client", "", "path to Jumpstarter client config file (required)")
 	flashCmd.Flags().StringVarP(&flashName, "name", "n", "", "name for the flash job (auto-generated if omitted)")
@@ -508,7 +522,7 @@ Examples:
 	_ = flashCmd.MarkFlagRequired("client")
 
 	// Add all commands
-	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, flashCmd, catalog.NewCatalogCmd())
+	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, flashCmd, loginCmd, catalog.NewCatalogCmd())
 	// Add deprecated aliases for backwards compatibility
 	rootCmd.AddCommand(buildBootcAliasCmd, buildLegacyAliasCmd, buildTraditionalAliasCmd)
 
@@ -518,13 +532,41 @@ Examples:
 	}
 }
 
+// runLogin saves the server URL and optionally performs OIDC authentication.
+func runLogin(_ *cobra.Command, args []string) {
+	raw := strings.TrimSpace(args[0])
+	if raw == "" {
+		handleError(fmt.Errorf("server URL is required"))
+	}
+	server := raw
+	if !strings.HasPrefix(server, "http://") && !strings.HasPrefix(server, "https://") {
+		server = "https://" + server
+	}
+	if err := config.SaveServerURL(server); err != nil {
+		handleError(fmt.Errorf("failed to save server URL: %w", err))
+	}
+	fmt.Printf("Server saved: %s\n", server)
+
+	ctx := context.Background()
+	token, didAuth, err := auth.GetTokenWithReauth(ctx, server, "")
+	if err != nil {
+		fmt.Printf("Warning: authentication failed (you may need --token or kubeconfig for API calls): %v\n", err)
+		return
+	}
+	if token != "" && didAuth {
+		fmt.Println("OIDC authentication successful. Token cached for subsequent commands.")
+	} else if token != "" {
+		fmt.Println("Using existing or kubeconfig token. You can run build/list/disk commands without --server.")
+	}
+}
+
 // runBuild handles the main 'build' command (bootc builds)
 func runBuild(_ *cobra.Command, args []string) {
 	ctx := context.Background()
 	manifest = args[0]
 
 	if serverURL == "" {
-		handleError(fmt.Errorf("--server is required (or set CAIB_SERVER env)"))
+		handleError(fmt.Errorf("--server is required (or set CAIB_SERVER, or run 'caib login <server-url>')"))
 	}
 	validateOutputRequiresPush(outputDir, exportOCI, "--push")
 
@@ -659,7 +701,7 @@ func runDisk(_ *cobra.Command, args []string) {
 	containerRef = args[0]
 
 	if serverURL == "" {
-		handleError(fmt.Errorf("--server is required (or set CAIB_SERVER env)"))
+		handleError(fmt.Errorf("--server is required (or set CAIB_SERVER, or run 'caib login <server-url>')"))
 	}
 
 	// Validate: need either --output or --push
@@ -1059,7 +1101,7 @@ func runBuildDev(_ *cobra.Command, args []string) {
 	manifest = args[0]
 
 	if serverURL == "" {
-		handleError(fmt.Errorf("--server is required (or set CAIB_SERVER env)"))
+		handleError(fmt.Errorf("--server is required (or set CAIB_SERVER, or run 'caib login <server-url>')"))
 	}
 	validateOutputRequiresPush(outputDir, exportOCI, "--push")
 
@@ -1678,7 +1720,7 @@ func isTarInsideGzip(filePath string) bool {
 func runList(_ *cobra.Command, _ []string) {
 	ctx := context.Background()
 	if strings.TrimSpace(serverURL) == "" {
-		fmt.Println("Error: --server is required (or set CAIB_SERVER)")
+		fmt.Println("Error: --server is required (or set CAIB_SERVER, or run 'caib login <server-url>')")
 		os.Exit(1)
 	}
 
@@ -1781,7 +1823,7 @@ func runFlash(_ *cobra.Command, args []string) {
 	imageRef := args[0]
 
 	if serverURL == "" {
-		handleError(fmt.Errorf("--server is required (or set CAIB_SERVER env)"))
+		handleError(fmt.Errorf("--server is required (or set CAIB_SERVER, or run 'caib login <server-url>')"))
 	}
 
 	if jumpstarterClient == "" {
