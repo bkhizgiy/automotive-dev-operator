@@ -235,6 +235,7 @@ fi
 echo ""
 echo "Regenerating catalog..."
 BUNDLE_IMG_INTERNAL="image-registry.openshift-image-registry.svc:5000/${CATALOG_NAMESPACE}/automotive-dev-operator-bundle:v${VERSION}"
+mkdir -p catalog
 cat > catalog/automotive-dev-operator.yaml << EOF
 ---
 defaultChannel: alpha
