@@ -333,6 +333,12 @@ func (c *Client) UploadFiles(ctx context.Context, name string, files []Upload) e
 		go func() {
 			defer close(done)
 			for _, f := range files {
+				// Write destination path as a separate field since Go's Part.FileName()
+				// strips directory paths per RFC 7578
+				if err := mw.WriteField("path", f.DestPath); err != nil {
+					_ = pw.CloseWithError(err)
+					return
+				}
 				file, err := os.Open(f.SourcePath)
 				if err != nil {
 					_ = pw.CloseWithError(err)
