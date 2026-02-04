@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path"
@@ -188,7 +189,7 @@ func LoadLimitsFromConfig(cfg *automotivev1alpha1.BuildAPIConfig) APILimits {
 }
 
 // safeFilename validates that a filename is safe for use in shell commands
-// It only allows alphanumeric characters, dots, hyphens, underscores, and single forward slashes for paths
+// It only allows alphanumeric characters, dots, hyphens, underscores, at signs, and single forward slashes for paths
 func safeFilename(filename string) bool {
 	if filename == "" {
 		return false
@@ -202,7 +203,7 @@ func safeFilename(filename string) bool {
 			'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
 			'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
 			'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-			'.', '-', '_', '/':
+			'.', '-', '_', '/', '@':
 			// Safe characters
 			continue
 		default:
@@ -1359,6 +1360,101 @@ func getBuildTemplate(c *gin.Context, name string) {
 	})
 }
 
+// uploadContext holds the context needed for file upload operations.
+type uploadContext struct {
+	restCfg   *rest.Config
+	namespace string
+	podName   string
+	container string
+	limits    *APILimits
+}
+
+// processFilePartResult contains the result of processing a single file part.
+type processFilePartResult struct {
+	bytesWritten int64
+}
+
+// validateDestPath checks if the destination path is safe for upload.
+func validateDestPath(dest string) (string, error) {
+	if dest == "" {
+		return "", fmt.Errorf("missing destination filename")
+	}
+	if !safeFilename(dest) {
+		return "", fmt.Errorf("invalid destination filename: %s", dest)
+	}
+	cleanDest := path.Clean(dest)
+	if strings.HasPrefix(cleanDest, "..") || strings.HasPrefix(cleanDest, "/") {
+		return "", fmt.Errorf("invalid destination path: %s", dest)
+	}
+	return cleanDest, nil
+}
+
+// processFilePart handles a single file part from the multipart upload.
+func processFilePart(part *multipart.Part, pendingPath string, uctx *uploadContext) (processFilePartResult, error) {
+	dest := pendingPath
+	if dest == "" {
+		dest = strings.TrimSpace(part.FileName())
+	}
+
+	cleanDest, err := validateDestPath(dest)
+	if err != nil {
+		return processFilePartResult{}, err
+	}
+
+	tmp, err := os.CreateTemp("", "upload-*")
+	if err != nil {
+		return processFilePartResult{}, err
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		if closeErr := tmp.Close(); closeErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close temp file: %v\n", closeErr)
+		}
+	}()
+	defer func() {
+		if removeErr := os.Remove(tmpName); removeErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to remove temp file: %v\n", removeErr)
+		}
+	}()
+
+	limitedReader := io.LimitReader(part, uctx.limits.MaxUploadFileSize+1)
+	n, err := io.Copy(tmp, limitedReader)
+	if err != nil {
+		return processFilePartResult{}, err
+	}
+	if n > uctx.limits.MaxUploadFileSize {
+		return processFilePartResult{}, fmt.Errorf("file %s exceeds maximum size (%d bytes)", dest, uctx.limits.MaxUploadFileSize)
+	}
+
+	destPath := "/workspace/shared/" + cleanDest
+	if err := copyFileToPod(uctx.restCfg, uctx.namespace, uctx.podName, uctx.container, tmpName, destPath); err != nil {
+		return processFilePartResult{}, fmt.Errorf("stream to pod failed: %w", err)
+	}
+
+	return processFilePartResult{bytesWritten: n}, nil
+}
+
+// findRunningUploadPod finds a running upload pod for the given build.
+func findRunningUploadPod(ctx context.Context, k8sClient client.Client, namespace, buildName string) (*corev1.Pod, error) {
+	podList := &corev1.PodList{}
+	if err := k8sClient.List(ctx, podList,
+		client.InNamespace(namespace),
+		client.MatchingLabels{
+			"automotive.sdv.cloud.redhat.com/imagebuild-name": buildName,
+			"app.kubernetes.io/name":                          "upload-pod",
+		},
+	); err != nil {
+		return nil, fmt.Errorf("error listing upload pods: %w", err)
+	}
+	for i := range podList.Items {
+		p := &podList.Items[i]
+		if p.Status.Phase == corev1.PodRunning {
+			return p, nil
+		}
+	}
+	return nil, nil
+}
+
 func (a *APIServer) uploadFiles(c *gin.Context, name string) {
 	namespace := resolveNamespace()
 
@@ -1378,25 +1474,10 @@ func (a *APIServer) uploadFiles(c *gin.Context, name string) {
 		return
 	}
 
-	// Find upload pod
-	podList := &corev1.PodList{}
-	if err := k8sClient.List(c.Request.Context(), podList,
-		client.InNamespace(namespace),
-		client.MatchingLabels{
-			"automotive.sdv.cloud.redhat.com/imagebuild-name": name,
-			"app.kubernetes.io/name":                          "upload-pod",
-		},
-	); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error listing upload pods: %v", err)})
+	uploadPod, err := findRunningUploadPod(c.Request.Context(), k8sClient, namespace, name)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
-	}
-	var uploadPod *corev1.Pod
-	for i := range podList.Items {
-		p := &podList.Items[i]
-		if p.Status.Phase == corev1.PodRunning {
-			uploadPod = p
-			break
-		}
 	}
 	if uploadPod == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "upload pod not ready"})
@@ -1421,7 +1502,16 @@ func (a *APIServer) uploadFiles(c *gin.Context, name string) {
 		return
 	}
 
+	uctx := &uploadContext{
+		restCfg:   restCfg,
+		namespace: namespace,
+		podName:   uploadPod.Name,
+		container: uploadPod.Spec.Containers[0].Name,
+		limits:    &a.limits,
+	}
+
 	var totalBytesUploaded int64
+	var pendingPath string
 	for {
 		part, err := reader.NextPart()
 		if err == io.EOF {
@@ -1431,69 +1521,33 @@ func (a *APIServer) uploadFiles(c *gin.Context, name string) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("read part: %v", err)})
 			return
 		}
+
+		// Handle "path" field - stores the destination path for the next file
+		if part.FormName() == "path" {
+			pathBytes, err := io.ReadAll(io.LimitReader(part, 4096))
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("read path: %v", err)})
+				return
+			}
+			pendingPath = strings.TrimSpace(string(pathBytes))
+			continue
+		}
+
 		if part.FormName() != "file" {
 			continue
 		}
-		dest := strings.TrimSpace(part.FileName())
-		if dest == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "missing destination filename"})
-			return
-		}
 
-		// Validate filename for security - prevent command injection
-		if !safeFilename(dest) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid destination filename: %s", dest)})
-			return
-		}
-
-		cleanDest := path.Clean(dest)
-		if strings.HasPrefix(cleanDest, "..") || strings.HasPrefix(cleanDest, "/") {
-			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid destination path: %s", dest)})
-			return
-		}
-
-		tmp, err := os.CreateTemp("", "upload-*")
+		result, err := processFilePart(part, pendingPath, uctx)
+		pendingPath = ""
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 
-		tmpName := tmp.Name()
-		defer func() {
-			if err := tmp.Close(); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to close temp file: %v\n", err)
-			}
-		}()
-		defer func() {
-			if err := os.Remove(tmpName); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to remove temp file: %v\n", err)
-			}
-		}()
-
-		limitedReader := io.LimitReader(part, a.limits.MaxUploadFileSize+1)
-		n, err := io.Copy(tmp, limitedReader)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		if n > a.limits.MaxUploadFileSize {
-			errMsg := fmt.Sprintf("file %s exceeds maximum size (%d bytes)", dest, a.limits.MaxUploadFileSize)
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": errMsg})
-			return
-		}
-
-		totalBytesUploaded += n
+		totalBytesUploaded += result.bytesWritten
 		if totalBytesUploaded > a.limits.MaxTotalUploadSize {
 			errMsg := fmt.Sprintf("total upload size exceeds maximum (%d bytes)", a.limits.MaxTotalUploadSize)
 			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": errMsg})
-			return
-		}
-
-		destPath := "/workspace/shared/" + cleanDest
-		if err := copyFileToPod(
-			restCfg, namespace, uploadPod.Name, uploadPod.Spec.Containers[0].Name, tmpName, destPath,
-		); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("stream to pod failed: %v", err)})
 			return
 		}
 	}
