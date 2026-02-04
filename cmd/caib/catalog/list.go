@@ -25,6 +25,7 @@ import (
 	"os"
 	"text/tabwriter"
 
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/config"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -92,10 +93,10 @@ func runList(_ *cobra.Command, _ []string) error {
 	// Get server URL
 	server := serverURL
 	if server == "" {
-		server = os.Getenv("CAIB_SERVER")
+		server = config.DefaultServer()
 	}
 	if server == "" {
-		return fmt.Errorf("server URL required (use --server or CAIB_SERVER env var)")
+		return fmt.Errorf("server URL required (use --server, CAIB_SERVER env var or run 'caib login <server-url>')")
 	}
 
 	// Get auth token
