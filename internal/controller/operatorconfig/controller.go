@@ -14,6 +14,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -491,6 +492,12 @@ func (r *OperatorConfigReconciler) deployOSBuilds(
 		}
 	}
 
+	// Create partition configuration ConfigMap
+	if err := r.createOrUpdatePartitionConfig(ctx, config); err != nil {
+		r.Log.Error(err, "Failed to create partition configuration")
+		return fmt.Errorf("failed to create partition configuration: %w", err)
+	}
+
 	// Generate and deploy Tekton tasks
 	tektonTasks := []*tektonv1.Task{
 		tasks.GenerateBuildAutomotiveImageTask(operatorNamespace, buildConfig, ""),
@@ -531,8 +538,38 @@ func (r *OperatorConfigReconciler) deployOSBuilds(
 	return nil
 }
 
+func (r *OperatorConfigReconciler) createOrUpdatePartitionConfig(ctx context.Context, owner *automotivev1alpha1.OperatorConfig) error {
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "aib-partition-config",
+			Namespace: operatorNamespace,
+		},
+		Data: map[string]string{
+			"partition-rules.yaml": `targets:
+  ridesx4:
+    include: ["system_a", "system_b", "boot_a"]
+`,
+		},
+	}
+
+	if err := controllerutil.SetControllerReference(owner, configMap, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set controller reference: %w", err)
+	}
+
+	return r.createOrUpdate(ctx, configMap, owner)
+}
+
 func (r *OperatorConfigReconciler) cleanupOSBuilds(ctx context.Context) error {
 	r.Log.Info("Cleaning up OSBuilds resources")
+
+	// Delete partition configuration ConfigMap
+	configMap := &corev1.ConfigMap{}
+	configMap.Name = "aib-partition-config"
+	configMap.Namespace = operatorNamespace
+	if err := r.Delete(ctx, configMap); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete partition configuration ConfigMap: %w", err)
+	}
+	r.Log.Info("Partition configuration ConfigMap deleted")
 
 	// Delete Tekton tasks
 	taskNames := []string{"build-automotive-image", "push-artifact-registry", "prepare-builder", "flash-image"}

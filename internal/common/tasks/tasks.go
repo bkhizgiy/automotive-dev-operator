@@ -87,7 +87,7 @@ func GeneratePushArtifactRegistryTask(namespace string) *tektonv1.Task {
 			Steps: []tektonv1.Step{
 				{
 					Name:  "push-artifact",
-					Image: "ghcr.io/oras-project/oras:v1.2.0",
+					Image: "quay.io/konflux-ci/yq:latest",
 					Env: []corev1.EnvVar{
 						{
 							Name:  "DOCKER_CONFIG",
@@ -102,6 +102,11 @@ func GeneratePushArtifactRegistryTask(namespace string) *tektonv1.Task {
 							MountPath: "/docker-config/config.json",
 							SubPath:   ".dockerconfigjson",
 						},
+						{
+							Name:      "partition-config",
+							MountPath: "/etc/partition-config",
+							ReadOnly:  true,
+						},
 					},
 				},
 			},
@@ -111,6 +116,17 @@ func GeneratePushArtifactRegistryTask(namespace string) *tektonv1.Task {
 					VolumeSource: corev1.VolumeSource{
 						Secret: &corev1.SecretVolumeSource{
 							SecretName: "$(params.secret-ref)",
+						},
+					},
+				},
+				{
+					Name: "partition-config",
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "aib-partition-config",
+							},
+							Optional: ptr.To(true),
 						},
 					},
 				},
