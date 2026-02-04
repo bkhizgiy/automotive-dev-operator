@@ -52,6 +52,25 @@ get_partition_name() {
   basename "$1" | sed -E 's/\.(simg|raw|img)(\.tar)?(\.(gz|lz4|xz))?$//'
 }
 
+# Remap partition names for specific targets where AIB's logical names
+# don't match the physical partition layout on the device.
+# Args: $1 = partition name, $2 = target
+remap_partition_for_target() {
+  part_name="$1"
+  target_name="$2"
+
+  # ride4* and ridesx4* targets use system_b for qm_var content
+  case "$target_name" in
+    ride4*|ridesx4*)
+      case "$part_name" in
+        qm_var) echo "system_b" ; return ;;
+      esac
+      ;;
+  esac
+
+  echo "$part_name"
+}
+
 # Get decompressed file size from sidecar .size file (created by build_image.sh)
 # Falls back to empty string if sidecar doesn't exist
 get_decompressed_size() {
@@ -111,7 +130,8 @@ if [ -d "${parts_dir}" ] && [ -n "$(ls -A "${parts_dir}" 2>/dev/null)" ]; then
     if [ -f "$part_file" ]; then
       filename="$part_file"
       part_media_type=$(get_media_type "$filename")
-      partition_name=$(get_partition_name "$filename")
+      raw_partition_name=$(get_partition_name "$filename")
+      partition_name=$(remap_partition_for_target "$raw_partition_name" "$target")
       decompressed_size=$(get_decompressed_size "$filename")
 
       echo "  Layer: ${filename} (partition: ${partition_name}, type: ${part_media_type}, decompressed: ${decompressed_size:-unknown})"
@@ -146,7 +166,6 @@ if [ -d "${parts_dir}" ] && [ -n "$(ls -A "${parts_dir}" 2>/dev/null)" ]; then
     fi
   done
 
-  # Guard: fail fast if no partition files were found
   if [ -z "$file_list" ]; then
     echo "ERROR: No partition files found in ${parts_dir}" >&2
     echo "  Expected .simg, .raw, or .img files but directory appears empty or contains no regular files" >&2
@@ -154,7 +173,7 @@ if [ -d "${parts_dir}" ] && [ -n "$(ls -A "${parts_dir}" 2>/dev/null)" ]; then
     exit 1
   fi
 
-  # Get artifact type from first entry in filtered file_list (avoids sidecar .size files)
+  # Get artifact type from first entry in filtered file_list
   first_filename=$(echo "$file_list" | cut -d',' -f1)
   artifact_type=$(get_artifact_type "$first_filename")
 
@@ -193,7 +212,7 @@ EOF
   echo ""
   echo "=== Multi-layer artifact pushed successfully ==="
   echo ""
-  echo "Files are stored flat (no subdirectory). After pull, you get:"
+  echo "After pull, you get:"
   echo "$file_list" | sed 's/,/\n/g' | while read -r f; do echo "  ./$f"; done
   echo ""
   echo "Pull commands:"
