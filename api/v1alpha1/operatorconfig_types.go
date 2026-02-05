@@ -26,7 +26,13 @@ import (
 // This type is used internally for compatibility with task generation
 type BuildConfig struct {
 	// UseMemoryVolumes determines whether to use memory-backed volumes for build operations
+	// Default: false (disk-backed)
 	UseMemoryVolumes bool `json:"useMemoryVolumes,omitempty"`
+
+	// UseMemoryContainerStorage determines whether to use memory-backed volumes for container storage
+	// This controls /var/lib/containers/storage, /run/osbuild, and /var/tmp volumes
+	// Default: false (disk-backed)
+	UseMemoryContainerStorage bool `json:"useMemoryContainerStorage,omitempty"`
 
 	// MemoryVolumeSize specifies the size limit for memory-backed volumes (required if UseMemoryVolumes is true)
 	// Example: "2Gi"
@@ -154,10 +160,18 @@ type OSBuildsConfig struct {
 	Enabled bool `json:"enabled"`
 
 	// UseMemoryVolumes determines whether to use memory-backed volumes for build operations
+	// Default: false (disk-backed)
 	// +optional
 	UseMemoryVolumes bool `json:"useMemoryVolumes,omitempty"`
 
-	// MemoryVolumeSize specifies the size limit for memory-backed volumes (required if UseMemoryVolumes is true)
+	// UseMemoryContainerStorage determines whether to use memory-backed volumes for container storage
+	// This controls /var/lib/containers/storage, /run/osbuild, and /var/tmp volumes
+	// Default: false (disk-backed)
+	// +optional
+	UseMemoryContainerStorage bool `json:"useMemoryContainerStorage,omitempty"`
+
+	// MemoryVolumeSize specifies the size limit for memory-backed volumes
+	// Only used when UseMemoryVolumes or UseMemoryContainerStorage is true
 	// Example: "2Gi"
 	// +optional
 	MemoryVolumeSize string `json:"memoryVolumeSize,omitempty"`
