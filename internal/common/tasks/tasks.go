@@ -15,10 +15,11 @@ import (
 // BuildConfig defines configuration options for build operations
 // This is an internal type used for task generation
 type BuildConfig struct {
-	UseMemoryVolumes bool
-	MemoryVolumeSize string
-	PVCSize          string
-	RuntimeClassName string
+	UseMemoryVolumes          bool
+	UseMemoryContainerStorage bool
+	MemoryVolumeSize          string
+	PVCSize                   string
+	RuntimeClassName          string
 }
 
 // AutomotiveImageBuilder is the default container image for the automotive image builder.
@@ -364,17 +365,13 @@ func GenerateBuildAutomotiveImageTask(namespace string, buildConfig *BuildConfig
 				{
 					Name: "run-dir",
 					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{
-							Medium: corev1.StorageMediumMemory, // tmpfs supports xattrs for SELinux
-						},
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
 					},
 				},
 				{
 					Name: "container-storage",
 					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{
-							Medium: corev1.StorageMediumMemory, // tmpfs supports xattrs for SELinux
-						},
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
 					},
 				},
 				{
@@ -399,6 +396,28 @@ func GenerateBuildAutomotiveImageTask(namespace string, buildConfig *BuildConfig
 				}
 
 				if buildConfig.MemoryVolumeSize != "" {
+					sizeLimit := resource.MustParse(buildConfig.MemoryVolumeSize)
+					vol.EmptyDir.SizeLimit = &sizeLimit
+				}
+			}
+		}
+	}
+
+	// Configure container storage volumes based on UseMemoryContainerStorage
+	// Default to disk storage; set UseMemoryContainerStorage=true to use memory-backed volumes
+	useMemoryContainerStorage := false
+	if buildConfig != nil {
+		useMemoryContainerStorage = buildConfig.UseMemoryContainerStorage
+	}
+	if useMemoryContainerStorage {
+		for i := range task.Spec.Volumes {
+			vol := &task.Spec.Volumes[i]
+
+			if vol.Name == "container-storage" || vol.Name == "run-dir" {
+				vol.EmptyDir = &corev1.EmptyDirVolumeSource{
+					Medium: corev1.StorageMediumMemory, // tmpfs supports xattrs for SELinux
+				}
+				if buildConfig != nil && buildConfig.MemoryVolumeSize != "" {
 					sizeLimit := resource.MustParse(buildConfig.MemoryVolumeSize)
 					vol.EmptyDir.SizeLimit = &sizeLimit
 				}
@@ -1055,8 +1074,8 @@ func buildEnvFrom(envSecretRef string) []corev1.EnvFromSource {
 }
 
 // GeneratePrepareBuilderTask creates a Tekton Task that checks for/builds the aib-build helper container
-func GeneratePrepareBuilderTask(namespace string) *tektonv1.Task {
-	return &tektonv1.Task{
+func GeneratePrepareBuilderTask(namespace string, buildConfig *BuildConfig) *tektonv1.Task {
+	task := &tektonv1.Task{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "tekton.dev/v1",
 			Kind:       "Task",
@@ -1187,30 +1206,48 @@ func GeneratePrepareBuilderTask(namespace string) *tektonv1.Task {
 				{
 					Name: "container-storage",
 					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{
-							Medium: corev1.StorageMediumMemory,
-						},
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
 					},
 				},
 				{
 					Name: "run-osbuild",
 					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{
-							Medium: corev1.StorageMediumMemory,
-						},
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
 					},
 				},
 				{
 					Name: "var-tmp",
 					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{
-							Medium: corev1.StorageMediumMemory,
-						},
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
 					},
 				},
 			},
 		},
 	}
+
+	// Configure container storage volumes based on UseMemoryContainerStorage
+	// Default to disk storage; set UseMemoryContainerStorage=true to use memory-backed volumes
+	useMemoryContainerStorage := false
+	if buildConfig != nil {
+		useMemoryContainerStorage = buildConfig.UseMemoryContainerStorage
+	}
+	if useMemoryContainerStorage {
+		for i := range task.Spec.Volumes {
+			vol := &task.Spec.Volumes[i]
+
+			if vol.Name == "container-storage" || vol.Name == "run-osbuild" || vol.Name == "var-tmp" {
+				vol.EmptyDir = &corev1.EmptyDirVolumeSource{
+					Medium: corev1.StorageMediumMemory, // tmpfs supports xattrs for SELinux
+				}
+				if buildConfig != nil && buildConfig.MemoryVolumeSize != "" {
+					sizeLimit := resource.MustParse(buildConfig.MemoryVolumeSize)
+					vol.EmptyDir.SizeLimit = &sizeLimit
+				}
+			}
+		}
+	}
+
+	return task
 }
 
 // GenerateFlashTask creates a Tekton Task for flashing images to hardware via Jumpstarter

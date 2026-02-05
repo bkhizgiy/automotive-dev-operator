@@ -485,10 +485,11 @@ func (r *OperatorConfigReconciler) deployOSBuilds(
 	var buildConfig *tasks.BuildConfig
 	if config.Spec.OSBuilds != nil {
 		buildConfig = &tasks.BuildConfig{
-			UseMemoryVolumes: config.Spec.OSBuilds.UseMemoryVolumes,
-			MemoryVolumeSize: config.Spec.OSBuilds.MemoryVolumeSize,
-			PVCSize:          config.Spec.OSBuilds.PVCSize,
-			RuntimeClassName: config.Spec.OSBuilds.RuntimeClassName,
+			UseMemoryVolumes:          config.Spec.OSBuilds.UseMemoryVolumes,
+			UseMemoryContainerStorage: config.Spec.OSBuilds.UseMemoryContainerStorage,
+			MemoryVolumeSize:          config.Spec.OSBuilds.MemoryVolumeSize,
+			PVCSize:                   config.Spec.OSBuilds.PVCSize,
+			RuntimeClassName:          config.Spec.OSBuilds.RuntimeClassName,
 		}
 	}
 
@@ -502,7 +503,7 @@ func (r *OperatorConfigReconciler) deployOSBuilds(
 	tektonTasks := []*tektonv1.Task{
 		tasks.GenerateBuildAutomotiveImageTask(operatorNamespace, buildConfig, ""),
 		tasks.GeneratePushArtifactRegistryTask(operatorNamespace),
-		tasks.GeneratePrepareBuilderTask(operatorNamespace),
+		tasks.GeneratePrepareBuilderTask(operatorNamespace, buildConfig),
 		tasks.GenerateFlashTask(operatorNamespace),
 	}
 
