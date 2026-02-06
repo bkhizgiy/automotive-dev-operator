@@ -1203,6 +1203,8 @@ func listBuilds(c *gin.Context) {
 			CreatedAt:      b.CreationTimestamp.Format(time.RFC3339),
 			StartTime:      startStr,
 			CompletionTime: compStr,
+			ContainerImage: b.Spec.GetContainerPush(),
+			DiskImage:      b.Spec.GetExportOCI(),
 		})
 	}
 	writeJSON(c, http.StatusOK, resp)

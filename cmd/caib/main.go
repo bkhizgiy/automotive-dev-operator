@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/containers/image/v5/copy"
@@ -1763,9 +1764,44 @@ func runList(_ *cobra.Command, _ []string) {
 		fmt.Println("No ImageBuilds found")
 		return
 	}
-	fmt.Printf("%-20s %-12s %-20s %-20s %-20s\n", "NAME", "STATUS", "MESSAGE", "CREATED", "ARTIFACT")
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	defer func() {
+		if err := w.Flush(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to flush output: %v\n", err)
+		}
+	}()
+
+	if _, err := fmt.Fprintln(w, "NAME\tSTATUS\tAGE\tREQUESTED BY\tARTIFACT"); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to write header: %v\n", err)
+		return
+	}
 	for _, it := range items {
-		fmt.Printf("%-20s %-12s %-20s %-20s %-20s\n", it.Name, it.Phase, it.Message, it.CreatedAt, "")
+		artifact := it.DiskImage
+		if artifact == "" {
+			artifact = it.ContainerImage
+		}
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", it.Name, it.Phase, formatAge(it.CreatedAt), it.RequestedBy, artifact); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to write row: %v\n", err)
+		}
+	}
+}
+
+func formatAge(rfcTime string) string {
+	t, err := time.Parse(time.RFC3339, rfcTime)
+	if err != nil {
+		return rfcTime
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
 }
 
