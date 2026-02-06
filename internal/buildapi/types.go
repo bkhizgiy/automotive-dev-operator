@@ -222,6 +222,8 @@ type BuildListItem struct {
 	CreatedAt      string `json:"createdAt"`
 	StartTime      string `json:"startTime,omitempty"`
 	CompletionTime string `json:"completionTime,omitempty"`
+	ContainerImage string `json:"containerImage,omitempty"`
+	DiskImage      string `json:"diskImage,omitempty"`
 }
 
 type (
