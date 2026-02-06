@@ -1277,7 +1277,9 @@ func getBuild(c *gin.Context, name string) {
 			}
 			return ""
 		}(),
-		Jumpstarter: jumpstarterInfo,
+		ContainerImage: build.Spec.GetContainerPush(),
+		DiskImage:      build.Spec.GetExportOCI(),
+		Jumpstarter:    jumpstarterInfo,
 	})
 }
 

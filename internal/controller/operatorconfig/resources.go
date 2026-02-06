@@ -76,10 +76,9 @@ func (r *OperatorConfigReconciler) buildBuildAPIContainers(isOpenShift bool) []c
 	}
 	containers := []corev1.Container{
 		{
-			Name:            "build-api",
-			Image:           getOperatorImage(),
-			ImagePullPolicy: corev1.PullIfNotPresent,
-			Command:         []string{"/build-api"},
+			Name:    "build-api",
+			Image:   getOperatorImage(),
+			Command: []string{"/build-api"},
 			Resources: corev1.ResourceRequirements{
 				Requests: corev1.ResourceList{
 					corev1.ResourceCPU:    resource.MustParse("50m"),
@@ -108,9 +107,8 @@ func (r *OperatorConfigReconciler) buildBuildAPIContainers(isOpenShift bool) []c
 	// Only add oauth-proxy on OpenShift
 	if isOpenShift {
 		containers = append(containers, corev1.Container{
-			Name:            "oauth-proxy",
-			Image:           "registry.redhat.io/openshift4/ose-oauth-proxy:latest",
-			ImagePullPolicy: corev1.PullIfNotPresent,
+			Name:  "oauth-proxy",
+			Image: "registry.redhat.io/openshift4/ose-oauth-proxy:latest",
 			Args: []string{
 				"--provider=openshift",
 				"--https-address=",
@@ -199,10 +197,9 @@ func (r *OperatorConfigReconciler) buildBuildAPIDeployment(isOpenShift bool) *ap
 					ServiceAccountName: "ado-controller-manager",
 					InitContainers: []corev1.Container{
 						{
-							Name:            "init-secrets",
-							Image:           getOperatorImage(),
-							ImagePullPolicy: corev1.PullIfNotPresent,
-							Command:         []string{"/init-secrets"},
+							Name:    "init-secrets",
+							Image:   getOperatorImage(),
+							Command: []string{"/init-secrets"},
 							Env: []corev1.EnvVar{
 								{
 									Name: "POD_NAMESPACE",

@@ -208,6 +208,8 @@ type BuildResponse struct {
 	RequestedBy    string           `json:"requestedBy,omitempty"`
 	StartTime      string           `json:"startTime,omitempty"`
 	CompletionTime string           `json:"completionTime,omitempty"`
+	ContainerImage string           `json:"containerImage,omitempty"`
+	DiskImage      string           `json:"diskImage,omitempty"`
 	Jumpstarter    *JumpstarterInfo `json:"jumpstarter,omitempty"`
 }
 

@@ -35,9 +35,10 @@ import (
 )
 
 const (
-	archAMD64   = "amd64"
-	archARM64   = "arm64"
-	phaseFailed = "Failed"
+	archAMD64      = "amd64"
+	archARM64      = "arm64"
+	phaseCompleted = "Completed"
+	phaseFailed    = "Failed"
 )
 
 // getDefaultArch returns the current system architecture in caib format
@@ -402,6 +403,25 @@ Examples:
 		Run:   runList,
 	}
 
+	downloadCmd := &cobra.Command{
+		Use:   "download <build-name>",
+		Short: "Download disk image artifact from a completed build",
+		Long: `Download retrieves the disk image artifact from a completed build.
+
+The build must have pushed a disk image to an OCI registry (via --push-disk
+or --push on disk/build-dev commands). The artifact is pulled from the
+registry to a local file.
+
+Examples:
+  # Download disk image from a completed build
+  caib download my-build -o ./disk.qcow2
+
+  # Download to a directory (multi-layer artifacts extract here)
+  caib download my-build -o ./output/`,
+		Args: cobra.ExactArgs(1),
+		Run:  runDownload,
+	}
+
 	loginCmd := &cobra.Command{
 		Use:   "login [server-url]",
 		Short: "Save server endpoint and authenticate for subsequent commands",
@@ -509,6 +529,11 @@ Example:
 	buildDevCmd.Flags().StringVar(&jumpstarterClient, "client", "", "path to Jumpstarter client config file (required for --flash)")
 	buildDevCmd.Flags().StringVar(&leaseDuration, "lease", "03:00:00", "device lease duration for flash (HH:MM:SS)")
 
+	// download command flags
+	downloadCmd.Flags().StringVar(&serverURL, "server", config.DefaultServer(), "REST API server base URL")
+	downloadCmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication")
+	downloadCmd.Flags().StringVarP(&outputDir, "output", "o", "", "destination file or directory for the artifact")
+
 	// flash command flags
 	flashCmd.Flags().StringVar(&serverURL, "server", config.DefaultServer(), "REST API server base URL")
 	flashCmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication")
@@ -522,7 +547,7 @@ Example:
 	_ = flashCmd.MarkFlagRequired("client")
 
 	// Add all commands
-	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, flashCmd, loginCmd, catalog.NewCatalogCmd())
+	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, downloadCmd, flashCmd, loginCmd, catalog.NewCatalogCmd())
 	// Add deprecated aliases for backwards compatibility
 	rootCmd.AddCommand(buildBootcAliasCmd, buildLegacyAliasCmd, buildTraditionalAliasCmd)
 
@@ -1317,7 +1342,7 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 			}
 
 			// Handle terminal build states
-			if st.Phase == "Completed" {
+			if st.Phase == phaseCompleted {
 				flashWasExecuted := strings.Contains(st.Message, "flash")
 				if flashWasExecuted {
 					fmt.Println("\n" + strings.Repeat("=", 50))
@@ -1744,6 +1769,50 @@ func runList(_ *cobra.Command, _ []string) {
 	}
 }
 
+func runDownload(_ *cobra.Command, args []string) {
+	ctx := context.Background()
+	downloadBuildName := args[0]
+
+	if serverURL == "" {
+		handleError(fmt.Errorf("--server is required (or set CAIB_SERVER, or run 'caib login <server-url>')"))
+	}
+
+	if outputDir == "" {
+		handleError(fmt.Errorf("--output / -o is required"))
+	}
+
+	var st *buildapitypes.BuildResponse
+	err := executeWithReauth(serverURL, &authToken, func(api *buildapiclient.Client) error {
+		var err error
+		st, err = api.GetBuild(ctx, downloadBuildName)
+		return err
+	})
+	if err != nil {
+		handleError(fmt.Errorf("error getting build %s: %w", downloadBuildName, err))
+	}
+
+	if st.Phase != phaseCompleted {
+		handleError(fmt.Errorf("build %s is not completed (phase: %s), cannot download artifacts", downloadBuildName, st.Phase))
+	}
+
+	ociRef := st.DiskImage
+	if ociRef == "" {
+		handleError(fmt.Errorf("build %s has no disk image artifact to download (no OCI export was configured)", downloadBuildName))
+	}
+
+	// Extract registry credentials from environment
+	effectiveRegistryURL, registryUsername, registryPassword := extractRegistryCredentials(ociRef, "")
+
+	if err := validateRegistryCredentials(effectiveRegistryURL, registryUsername, registryPassword); err != nil {
+		handleError(err)
+	}
+
+	fmt.Printf("Downloading disk image from %s\n", ociRef)
+	if err := pullOCIArtifact(ociRef, outputDir, registryUsername, registryPassword); err != nil {
+		handleError(fmt.Errorf("download failed: %w", err))
+	}
+}
+
 func loadTokenFromKubeconfig() (string, error) {
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	// First, ask client-go to build a client config. This will execute any exec credential plugins
@@ -1912,7 +1981,7 @@ func waitForFlashCompletion(ctx context.Context, api *buildapiclient.Client, nam
 			}
 
 			// Handle terminal states
-			if st.Phase == "Completed" {
+			if st.Phase == phaseCompleted {
 				fmt.Println("Flash completed successfully!")
 				return
 			}
