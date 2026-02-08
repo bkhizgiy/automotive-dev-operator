@@ -88,7 +88,7 @@ jobs:
       - name: Collect logs on failure
         if: failure()
         run: |
-          echo "=== Controller Manager Logs ==="
+          echo "=== Operator Logs ==="
           kubectl logs -n automotive-dev-operator-system -l control-plane=operator --tail=100
           echo "=== All Pods in operator namespace ==="
           kubectl get pods -n automotive-dev-operator-system -o wide
