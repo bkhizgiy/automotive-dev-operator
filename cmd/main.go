@@ -145,9 +145,10 @@ func main() {
 	}
 
 	imageBuildReconciler := &imagebuild.ImageBuildReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Log:    ctrl.Log.WithName("controllers").WithName("ImageBuild"),
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		Log:        ctrl.Log.WithName("controllers").WithName("ImageBuild"),
+		RestConfig: mgr.GetConfig(),
 	}
 
 	if err = imageBuildReconciler.SetupWithManager(mgr); err != nil {

@@ -22,6 +22,9 @@ type BuildConfig struct {
 	RuntimeClassName          string
 }
 
+// DefaultInternalRegistryURL is the standard in-cluster URL for the OpenShift internal image registry.
+const DefaultInternalRegistryURL = "image-registry.openshift-image-registry.svc:5000"
+
 // AutomotiveImageBuilder is the default container image for the automotive image builder.
 const AutomotiveImageBuilder = "quay.io/centos-sig-automotive/automotive-image-builder:1.0.0"
 
@@ -639,6 +642,7 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 				{Name: "shared-workspace"},
 				{Name: "manifest-config-workspace"},
 				{Name: "registry-auth", Optional: true},
+				{Name: "flash-oci-auth", Optional: true},
 				{Name: "jumpstarter-client", Optional: true},
 			},
 			Results: []tektonv1.PipelineResult{
@@ -1033,6 +1037,7 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 					},
 					Workspaces: []tektonv1.WorkspacePipelineTaskBinding{
 						{Name: "jumpstarter-client", Workspace: "jumpstarter-client"},
+						{Name: "flash-oci-auth", Workspace: "flash-oci-auth"},
 					},
 					// Flash runs after push-disk-artifact (if it ran) or build-image
 					RunAfter: []string{"push-disk-artifact"},
@@ -1319,6 +1324,12 @@ func GenerateFlashTask(namespace string) *tektonv1.Task {
 					MountPath:   "/workspace/jumpstarter-client",
 					Optional:    true,
 				},
+				{
+					Name:        "flash-oci-auth",
+					Description: "Workspace containing OCI credentials (username, password) for flash image pull",
+					MountPath:   "/workspace/flash-oci-auth",
+					Optional:    true,
+				},
 			},
 			Steps: []tektonv1.Step{
 				{
@@ -1344,6 +1355,10 @@ func GenerateFlashTask(namespace string) *tektonv1.Task {
 						{
 							Name:  "JMP_CLIENT_CONFIG",
 							Value: "/workspace/jumpstarter-client/client.yaml",
+						},
+						{
+							Name:  "FLASH_OCI_AUTH_PATH",
+							Value: "/workspace/flash-oci-auth",
 						},
 						{
 							Name:  "RESULTS_LEASE_ID_PATH",

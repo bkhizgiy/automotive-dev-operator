@@ -132,6 +132,11 @@ type BuildRequest struct {
 	ExportOCI      string `json:"exportOci,omitempty"`      // Registry URL to push disk as OCI artifact
 	BuilderImage   string `json:"builderImage,omitempty"`   // Custom builder image
 
+	// Internal registry push configuration
+	UseInternalRegistry       bool   `json:"useInternalRegistry,omitempty"`       // Push to OpenShift internal registry
+	InternalRegistryImageName string `json:"internalRegistryImageName,omitempty"` // Override image name (default: build name)
+	InternalRegistryTag       string `json:"internalRegistryTag,omitempty"`       // Tag for internal registry image (default: build name)
+
 	// Flash configuration for Jumpstarter device flashing after build
 	FlashEnabled       bool   `json:"flashEnabled,omitempty"`       // Enable flashing after build
 	FlashClientConfig  string `json:"flashClientConfig,omitempty"`  // Base64-encoded Jumpstarter client config
@@ -210,6 +215,8 @@ type BuildResponse struct {
 	CompletionTime string           `json:"completionTime,omitempty"`
 	ContainerImage string           `json:"containerImage,omitempty"`
 	DiskImage      string           `json:"diskImage,omitempty"`
+	RegistryToken  string           `json:"registryToken,omitempty"`
+	Warning        string           `json:"warning,omitempty"`
 	Jumpstarter    *JumpstarterInfo `json:"jumpstarter,omitempty"`
 }
 

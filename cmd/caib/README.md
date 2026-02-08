@@ -77,7 +77,7 @@ bin/caib build <manifest.aib.yml> [flags]
 **Required flags:**
 | Flag | Description |
 |------|-------------|
-| `--push` | Push bootc container to registry (e.g., `quay.io/org/image:tag`) |
+| `--push` or `--internal-registry` | Push destination (external registry URL or OpenShift internal registry) |
 
 **Optional flags:**
 | Flag | Default | Description |
@@ -100,6 +100,9 @@ bin/caib build <manifest.aib.yml> [flags]
 | `--timeout` | `60` | Timeout in minutes |
 | `-w`, `--wait` | `false` | Wait for build to complete |
 | `-f`, `--follow` | `false` | Follow build logs |
+| `--internal-registry` | `false` | Push to OpenShift internal registry (no credentials needed) |
+| `--image-name` | (build name) | Override image name in internal registry |
+| `--image-tag` | (build name) | Override tag in internal registry |
 
 **Examples:**
 
@@ -118,6 +121,27 @@ bin/caib build my-manifest.aib.yml \
   --format qcow2 \
   --push-disk quay.io/myorg/automotive-disk:v1.0 \
   -o ./my-image.qcow2 \
+  --follow
+
+# Push to OpenShift internal registry (no credentials required)
+bin/caib build my-manifest.aib.yml \
+  --arch arm64 \
+  --internal-registry \
+  --follow
+
+# Internal registry with custom image name and tag
+bin/caib build my-manifest.aib.yml \
+  --arch arm64 \
+  --internal-registry \
+  --image-name my-automotive-os \
+  --image-tag v1.0 \
+  --follow
+
+# Internal registry with disk image
+bin/caib build my-manifest.aib.yml \
+  --arch arm64 \
+  --internal-registry \
+  --disk \
   --follow
 
 # Use custom builder image
@@ -274,6 +298,10 @@ For registry authentication (`--push`, `--push-disk`):
 
 1. `REGISTRY_USERNAME` / `REGISTRY_PASSWORD` environment variables
 2. Docker/Podman auth files (`~/.docker/config.json`, `~/.config/containers/auth.json`)
+
+For the OpenShift internal registry (`--internal-registry`):
+
+No credentials are needed. The system automatically creates a short-lived service account token for the `pipeline` SA and uses it to authenticate to the internal registry. The `pipeline` SA must have `registry-editor` permissions (applied automatically by the operator's RBAC).
 
 ## Manifest File References
 
