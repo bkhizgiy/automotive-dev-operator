@@ -663,24 +663,8 @@ func (r *OperatorConfigReconciler) buildBuildControllerClusterRole() *rbacv1.Clu
 				Verbs:     []string{"get", "create"},
 			},
 			{
-				APIGroups: []string{"security.openshift.io"},
-				Resources: []string{"securitycontextconstraints"},
-				Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete", "use"},
-			},
-			{
 				APIGroups: []string{"route.openshift.io"},
 				Resources: []string{"routes"},
-				Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
-			},
-			// RBAC resources
-			{
-				APIGroups: []string{"rbac.authorization.k8s.io"},
-				Resources: []string{"rolebindings", "clusterrolebindings"},
-				Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
-			},
-			{
-				APIGroups: []string{"rbac.authorization.k8s.io"},
-				Resources: []string{"clusterroles"},
 				Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 			},
 			// Tekton resources
