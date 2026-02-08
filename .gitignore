@@ -27,3 +27,4 @@ go.work
 *~
 
 catalog/automotive-dev-operator.yaml
+bundle/

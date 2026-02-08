@@ -371,6 +371,9 @@ community-operators-bundle: bundle ## Prepare bundle for community-operators-pro
 	@mkdir -p community-operators-prod/operators/automotive-dev-operator/$(VERSION)/metadata
 	@cp -r bundle/manifests/* community-operators-prod/operators/automotive-dev-operator/$(VERSION)/manifests/
 	@cp -r bundle/metadata/* community-operators-prod/operators/automotive-dev-operator/$(VERSION)/metadata/
+	@if ! grep -q 'com.redhat.openshift.versions' community-operators-prod/operators/automotive-dev-operator/$(VERSION)/metadata/annotations.yaml; then \
+		echo '  com.redhat.openshift.versions: v4.18-v4.21' >> community-operators-prod/operators/automotive-dev-operator/$(VERSION)/metadata/annotations.yaml; \
+	fi
 	@if [ ! -f community-operators-prod/operators/automotive-dev-operator/ci.yaml ]; then \
 		echo "updateGraph: semver-mode" > community-operators-prod/operators/automotive-dev-operator/ci.yaml; \
 		echo "Created ci.yaml with default updateGraph: semver-mode"; \
