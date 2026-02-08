@@ -460,7 +460,7 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 	}
 
 	// Add flash params if flash is enabled
-	var flashExporterSelector, flashCmd string
+	var flashExporterSelector, flashCmd, flashOCIAuthSecretName string
 	if imageBuild.Spec.IsFlashEnabled() {
 		target := imageBuild.Spec.GetTarget()
 		if operatorConfig.Spec.Jumpstarter != nil {
@@ -475,33 +475,56 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 		}
 		// Resolve the flash image ref — for internal registry builds, translate to external URL
 		flashImageRef := imageBuild.Spec.GetExportOCI()
-		flashOCIUsername := ""
-		flashOCIPassword := ""
+		flashOCIAuthSecretName := ""
 		if imageBuild.Spec.GetUseServiceAccountAuth() && flashImageRef != "" {
 			if clusterRegistryRoute != "" {
 				flashImageRef = strings.Replace(flashImageRef,
-					"image-registry.openshift-image-registry.svc:5000",
+					tasks.DefaultInternalRegistryURL,
 					clusterRegistryRoute, 1)
 			}
-			// Create a short-lived token for the flash exporter to pull the image
+			// Create a Secret with SA token credentials for the flash exporter
+			if r.RestConfig == nil {
+				return fmt.Errorf("RestConfig is nil, cannot create flash OCI credentials")
+			}
+			clientset, err := kuberneteslib.NewForConfig(r.RestConfig)
+			if err != nil {
+				return fmt.Errorf("failed to create clientset for flash OCI credentials: %w", err)
+			}
 			expSeconds := int64(4 * 3600)
 			tokenReq := &authnv1.TokenRequest{
 				Spec: authnv1.TokenRequestSpec{
 					ExpirationSeconds: &expSeconds,
 				},
 			}
-			clientset, csErr := kuberneteslib.NewForConfig(r.RestConfig)
-			if csErr == nil {
-				tokenResp, tokenErr := clientset.CoreV1().ServiceAccounts(imageBuild.Namespace).
-					CreateToken(ctx, "pipeline", tokenReq, metav1.CreateOptions{})
-				if tokenErr == nil {
-					flashOCIUsername = "serviceaccount"
-					flashOCIPassword = tokenResp.Status.Token
-				} else {
-					log.Error(tokenErr, "failed to create SA token for flash OCI credentials")
-				}
-			} else {
-				log.Error(csErr, "failed to create clientset for flash OCI credentials")
+			tokenResp, err := clientset.CoreV1().ServiceAccounts(imageBuild.Namespace).
+				CreateToken(ctx, "pipeline", tokenReq, metav1.CreateOptions{})
+			if err != nil {
+				return fmt.Errorf("failed to create SA token for flash OCI credentials: %w", err)
+			}
+			flashOCIAuthSecretName = imageBuild.Name + "-flash-oci-auth"
+			ociSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      flashOCIAuthSecretName,
+					Namespace: imageBuild.Namespace,
+					Labels: map[string]string{
+						"app.kubernetes.io/managed-by":                  "automotive-dev-operator",
+						"app.kubernetes.io/part-of":                     "automotive-dev",
+						"automotive.sdv.cloud.redhat.com/build-name":    imageBuild.Name,
+						"automotive.sdv.cloud.redhat.com/transient":     "true",
+						"automotive.sdv.cloud.redhat.com/resource-type": "flash-oci-auth",
+					},
+					OwnerReferences: []metav1.OwnerReference{
+						*metav1.NewControllerRef(imageBuild, automotivev1alpha1.GroupVersion.WithKind("ImageBuild")),
+					},
+				},
+				Type: corev1.SecretTypeOpaque,
+				Data: map[string][]byte{
+					"username": []byte("serviceaccount"),
+					"password": []byte(tokenResp.Status.Token),
+				},
+			}
+			if _, err := clientset.CoreV1().Secrets(imageBuild.Namespace).Create(ctx, ociSecret, metav1.CreateOptions{}); err != nil {
+				return fmt.Errorf("failed to create flash OCI auth secret: %w", err)
 			}
 		}
 
@@ -530,15 +553,8 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 				Name:  "jumpstarter-image",
 				Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: operatorConfig.Spec.Jumpstarter.GetJumpstarterImage()},
 			},
-			tektonv1.Param{
-				Name:  "flash-oci-username",
-				Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: flashOCIUsername},
-			},
-			tektonv1.Param{
-				Name:  "flash-oci-password",
-				Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: flashOCIPassword},
-			},
 		)
+
 	}
 
 	// Determine the shared-workspace binding:
@@ -608,6 +624,14 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 				SecretName: imageBuild.Spec.GetFlashClientConfigSecretRef(),
 			},
 		})
+		if flashOCIAuthSecretName != "" {
+			pipelineWorkspaces = append(pipelineWorkspaces, tektonv1.WorkspaceBinding{
+				Name: "flash-oci-auth",
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: flashOCIAuthSecretName,
+				},
+			})
+		}
 	}
 
 	nodeAffinity := &corev1.NodeAffinity{

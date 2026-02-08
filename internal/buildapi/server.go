@@ -64,10 +64,10 @@ const (
 
 	// Flash TaskRun constants
 	flashTaskRunLabel = "automotive.sdv.cloud.redhat.com/flash-taskrun"
-
-	// Internal registry constants
-	defaultInternalRegistryURL = "image-registry.openshift-image-registry.svc:5000"
 )
+
+// defaultInternalRegistryURL is an alias for the shared constant.
+const defaultInternalRegistryURL = tasks.DefaultInternalRegistryURL
 
 func generateRegistryImageRef(host, namespace, imageName, tag string) string {
 	return fmt.Sprintf("%s/%s/%s:%s", host, namespace, imageName, tag)
@@ -1543,6 +1543,12 @@ func (a *APIServer) getBuild(c *gin.Context, name string) {
 		registryToken, tokenErr = a.mintRegistryToken(ctx, c, namespace)
 		if tokenErr != nil {
 			a.log.Error(tokenErr, "failed to mint registry token", "build", name)
+			tokenWarning := fmt.Sprintf("failed to mint registry token: %v", tokenErr)
+			if warning != "" {
+				warning = warning + "; " + tokenWarning
+			} else {
+				warning = tokenWarning
+			}
 		}
 	}
 

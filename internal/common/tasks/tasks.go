@@ -22,6 +22,9 @@ type BuildConfig struct {
 	RuntimeClassName          string
 }
 
+// DefaultInternalRegistryURL is the standard in-cluster URL for the OpenShift internal image registry.
+const DefaultInternalRegistryURL = "image-registry.openshift-image-registry.svc:5000"
+
 // AutomotiveImageBuilder is the default container image for the automotive image builder.
 const AutomotiveImageBuilder = "quay.io/centos-sig-automotive/automotive-image-builder:1.0.0"
 
@@ -634,23 +637,12 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 						StringVal: automotivev1alpha1.DefaultJumpstarterImage,
 					},
 				},
-				{
-					Name:        "flash-oci-username",
-					Type:        tektonv1.ParamTypeString,
-					Description: "OCI username for flash image pull (internal registry)",
-					Default:     &tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: ""},
-				},
-				{
-					Name:        "flash-oci-password",
-					Type:        tektonv1.ParamTypeString,
-					Description: "OCI password/token for flash image pull (internal registry)",
-					Default:     &tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: ""},
-				},
 			},
 			Workspaces: []tektonv1.PipelineWorkspaceDeclaration{
 				{Name: "shared-workspace"},
 				{Name: "manifest-config-workspace"},
 				{Name: "registry-auth", Optional: true},
+				{Name: "flash-oci-auth", Optional: true},
 				{Name: "jumpstarter-client", Optional: true},
 			},
 			Results: []tektonv1.PipelineResult{
@@ -1042,23 +1034,10 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 								StringVal: "$(params.jumpstarter-image)",
 							},
 						},
-						{
-							Name: "oci-username",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.flash-oci-username)",
-							},
-						},
-						{
-							Name: "oci-password",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.flash-oci-password)",
-							},
-						},
 					},
 					Workspaces: []tektonv1.WorkspacePipelineTaskBinding{
 						{Name: "jumpstarter-client", Workspace: "jumpstarter-client"},
+						{Name: "flash-oci-auth", Workspace: "flash-oci-auth"},
 					},
 					// Flash runs after push-disk-artifact (if it ran) or build-image
 					RunAfter: []string{"push-disk-artifact"},
@@ -1330,18 +1309,6 @@ func GenerateFlashTask(namespace string) *tektonv1.Task {
 						StringVal: automotivev1alpha1.DefaultJumpstarterImage,
 					},
 				},
-				{
-					Name:        "oci-username",
-					Type:        tektonv1.ParamTypeString,
-					Description: "OCI username for image pull authentication",
-					Default:     &tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: ""},
-				},
-				{
-					Name:        "oci-password",
-					Type:        tektonv1.ParamTypeString,
-					Description: "OCI password/token for image pull authentication",
-					Default:     &tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: ""},
-				},
 			},
 			Results: []tektonv1.TaskResult{
 				{
@@ -1355,6 +1322,12 @@ func GenerateFlashTask(namespace string) *tektonv1.Task {
 					Name:        "jumpstarter-client",
 					Description: "Workspace containing the Jumpstarter client config (client.yaml)",
 					MountPath:   "/workspace/jumpstarter-client",
+					Optional:    true,
+				},
+				{
+					Name:        "flash-oci-auth",
+					Description: "Workspace containing OCI credentials (username, password) for flash image pull",
+					MountPath:   "/workspace/flash-oci-auth",
 					Optional:    true,
 				},
 			},
@@ -1384,12 +1357,8 @@ func GenerateFlashTask(namespace string) *tektonv1.Task {
 							Value: "/workspace/jumpstarter-client/client.yaml",
 						},
 						{
-							Name:  "OCI_USERNAME",
-							Value: "$(params.oci-username)",
-						},
-						{
-							Name:  "OCI_PASSWORD",
-							Value: "$(params.oci-password)",
+							Name:  "FLASH_OCI_AUTH_PATH",
+							Value: "/workspace/flash-oci-auth",
 						},
 						{
 							Name:  "RESULTS_LEASE_ID_PATH",

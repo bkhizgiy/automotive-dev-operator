@@ -55,17 +55,26 @@ cleanup() {
 trap cleanup EXIT
 
 echo "Starting flash operation..."
-
-# Build the command with OCI credentials if provided
-FULL_CMD="${FLASH_CMD}"
-if [ -n "${OCI_USERNAME:-}" ] && [ -n "${OCI_PASSWORD:-}" ]; then
-    echo "OCI credentials provided, passing to flash command"
-    FULL_CMD="OCI_USERNAME=${OCI_USERNAME} OCI_PASSWORD=${OCI_PASSWORD} ${FLASH_CMD}"
-fi
-
 echo "Executing: ${FLASH_CMD}"
 
-if ! jmp shell --client-config "${JMP_CLIENT_CONFIG}" --lease "${LEASE_NAME}" -- ${FULL_CMD}; then
+# Read OCI credentials from mounted secret workspace if available
+OCI_USERNAME=""
+OCI_PASSWORD=""
+FLASH_OCI_AUTH_PATH="${FLASH_OCI_AUTH_PATH:-/workspace/flash-oci-auth}"
+if [ -f "${FLASH_OCI_AUTH_PATH}/username" ] && [ -f "${FLASH_OCI_AUTH_PATH}/password" ]; then
+    OCI_USERNAME=$(cat "${FLASH_OCI_AUTH_PATH}/username")
+    OCI_PASSWORD=$(cat "${FLASH_OCI_AUTH_PATH}/password")
+fi
+
+# Build jmp shell command with optional OCI credentials forwarded via --env
+JMP_SHELL_ARGS="--client-config ${JMP_CLIENT_CONFIG} --lease ${LEASE_NAME}"
+if [ -n "${OCI_USERNAME}" ] && [ -n "${OCI_PASSWORD}" ]; then
+    echo "OCI credentials provided, forwarding to exporter"
+    JMP_SHELL_ARGS="${JMP_SHELL_ARGS} --env OCI_USERNAME=${OCI_USERNAME} --env OCI_PASSWORD=${OCI_PASSWORD}"
+fi
+
+# shellcheck disable=SC2086
+if ! jmp shell ${JMP_SHELL_ARGS} -- ${FLASH_CMD}; then
     echo ""
     echo "ERROR: Flash command failed"
     exit 1

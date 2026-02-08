@@ -9,6 +9,11 @@ import (
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 )
 
+const (
+	testBuildName = "test-build"
+	testNamespace = "test-ns"
+)
+
 var _ = Describe("Internal Registry", func() {
 
 	Describe("generateRegistryImageRef", func() {
@@ -148,7 +153,7 @@ var _ = Describe("Internal Registry", func() {
 		Context("internal registry mutual exclusivity", func() {
 			It("should pass validation when UseInternalRegistry is set without conflicting fields", func() {
 				req := &BuildRequest{
-					Name:                "test-build",
+					Name:                testBuildName,
 					Manifest:            "content: {}",
 					UseInternalRegistry: true,
 					Mode:                ModeBootc,
@@ -194,14 +199,14 @@ var _ = Describe("Internal Registry", func() {
 	Describe("Internal registry URL generation per mode", func() {
 		It("should set ContainerPush for bootc mode", func() {
 			req := &BuildRequest{
-				Name:                "test-build",
+				Name:                testBuildName,
 				Mode:                ModeBootc,
 				UseInternalRegistry: true,
 			}
 
-			imageName := "test-build"
-			tag := "test-build"
-			namespace := "test-ns"
+			imageName := testBuildName
+			tag := testBuildName
+			namespace := testNamespace
 
 			// Simulate what setupInternalRegistryBuild does for bootc
 			if req.Mode.IsBootc() {
@@ -221,14 +226,14 @@ var _ = Describe("Internal Registry", func() {
 
 		It("should set ExportOCI for traditional mode", func() {
 			req := &BuildRequest{
-				Name:                "test-build",
+				Name:                testBuildName,
 				Mode:                ModePackage,
 				UseInternalRegistry: true,
 			}
 
-			imageName := "test-build"
-			tag := "test-build"
-			namespace := "test-ns"
+			imageName := testBuildName
+			tag := testBuildName
+			namespace := testNamespace
 
 			if req.Mode.IsBootc() {
 				req.ContainerPush = generateRegistryImageRef(defaultInternalRegistryURL, namespace, imageName, tag)
@@ -244,15 +249,15 @@ var _ = Describe("Internal Registry", func() {
 
 		It("should set both ContainerPush and ExportOCI for bootc with disk", func() {
 			req := &BuildRequest{
-				Name:                "test-build",
+				Name:                testBuildName,
 				Mode:                ModeBootc,
 				UseInternalRegistry: true,
 				BuildDiskImage:      true,
 			}
 
-			imageName := "test-build"
-			tag := "test-build"
-			namespace := "test-ns"
+			imageName := testBuildName
+			tag := testBuildName
+			namespace := testNamespace
 
 			if req.Mode.IsBootc() {
 				req.ContainerPush = generateRegistryImageRef(defaultInternalRegistryURL, namespace, imageName, tag)
@@ -269,14 +274,14 @@ var _ = Describe("Internal Registry", func() {
 
 		It("should set ExportOCI for disk mode", func() {
 			req := &BuildRequest{
-				Name:                "test-build",
+				Name:                testBuildName,
 				Mode:                ModeDisk,
 				UseInternalRegistry: true,
 			}
 
-			imageName := "test-build"
-			tag := "test-build"
-			namespace := "test-ns"
+			imageName := testBuildName
+			tag := testBuildName
+			namespace := testNamespace
 
 			if req.Mode.IsBootc() {
 				req.ContainerPush = generateRegistryImageRef(defaultInternalRegistryURL, namespace, imageName, tag)
@@ -290,15 +295,15 @@ var _ = Describe("Internal Registry", func() {
 
 		It("should imply BuildDiskImage for bootc with flash", func() {
 			req := &BuildRequest{
-				Name:                "test-build",
+				Name:                testBuildName,
 				Mode:                ModeBootc,
 				UseInternalRegistry: true,
 				FlashEnabled:        true,
 			}
 
-			imageName := "test-build"
-			tag := "test-build"
-			namespace := "test-ns"
+			imageName := testBuildName
+			tag := testBuildName
+			namespace := testNamespace
 
 			// Simulate flash implying disk image
 			if req.FlashEnabled && !req.BuildDiskImage {
