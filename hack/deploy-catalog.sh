@@ -16,24 +16,49 @@ Examples:
   $0              # Full redeploy (most common)
   $0 uninstall    # Just uninstall
   $0 build        # Just build images
+  $0 -y           # Full redeploy, skip confirmation
 EOF
     exit 0
 }
 
-# Parse command (default: full redeploy)
-COMMAND="${1:-redeploy}"
-case "$COMMAND" in
-    help|-h|--help)
-        show_help
-        ;;
-    uninstall|build|redeploy)
-        ;;
-    *)
-        echo "Unknown command: $COMMAND"
-        echo "Run '$0 help' for usage"
-        exit 1
-        ;;
-esac
+# Parse command and flags
+SKIP_CONFIRM=false
+COMMAND=""
+for arg in "$@"; do
+    case "$arg" in
+        -y|--yes)
+            SKIP_CONFIRM=true
+            ;;
+        help|-h|--help)
+            show_help
+            ;;
+        uninstall|build|redeploy)
+            COMMAND="$arg"
+            ;;
+        *)
+            echo "Unknown argument: $arg"
+            echo "Run '$0 help' for usage"
+            exit 1
+            ;;
+    esac
+done
+COMMAND="${COMMAND:-redeploy}"
+
+# Confirm before destructive operations (redeploy, uninstall)
+if [ "$COMMAND" != "build" ] && [ "$SKIP_CONFIRM" = false ]; then
+    CLUSTER_URL=$(oc whoami --show-server 2>/dev/null || echo "unknown")
+    CLUSTER_USER=$(oc whoami 2>/dev/null || echo "unknown")
+    echo ""
+    echo "  Cluster: ${CLUSTER_URL}"
+    echo "  User:    ${CLUSTER_USER}"
+    echo "  Action:  ${COMMAND}"
+    echo ""
+    read -r -p "Proceed? [y/N] " response
+    if [[ ! "$response" =~ ^[Yy]$ ]]; then
+        echo "Aborted."
+        exit 0
+    fi
+fi
 
 # Configuration
 VERSION=${VERSION:-0.0.1}
