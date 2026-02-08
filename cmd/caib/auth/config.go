@@ -14,13 +14,17 @@ import (
 )
 
 // GetOIDCConfigFromAPI fetches OIDC configuration from the Build API server.
-func GetOIDCConfigFromAPI(serverURL string) (*OIDCConfig, error) {
+func GetOIDCConfigFromAPI(serverURL string, insecureSkipTLS bool) (*OIDCConfig, error) {
 	pool, err := x509.SystemCertPool()
 	if err != nil {
 		pool = x509.NewCertPool()
 	}
+	tlsConfig := &tls.Config{RootCAs: pool}
+	if insecureSkipTLS {
+		tlsConfig.InsecureSkipVerify = true
+	}
 	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{RootCAs: pool},
+		TLSClientConfig: tlsConfig,
 	}
 	client := &http.Client{
 		Timeout:   30 * time.Second,

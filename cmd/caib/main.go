@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -94,7 +96,23 @@ var (
 	useInternalRegistry       bool
 	internalRegistryImageName string
 	internalRegistryTag       string
+
+	// TLS options
+	insecureSkipTLS bool
 )
+
+// envBool parses a boolean from environment variable
+func envBool(key string) bool {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return false
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false
+	}
+	return b
+}
 
 // createBuildAPIClient creates a build API client with authentication token from flags or kubeconfig
 // It will attempt OIDC re-authentication if token is missing or expired
@@ -105,7 +123,7 @@ func createBuildAPIClient(serverURL string, authToken *string) (*buildapiclient.
 
 	// If no explicit token, try OIDC if config is available
 	if !explicitToken {
-		token, didAuth, err := auth.GetTokenWithReauth(ctx, serverURL, "")
+		token, didAuth, err := auth.GetTokenWithReauth(ctx, serverURL, "", insecureSkipTLS)
 		if err != nil {
 			// OIDC is configured but failed - don't silently fall back to kubeconfig
 			// This indicates a real authentication failure that should be reported
@@ -146,6 +164,9 @@ func createBuildAPIClient(serverURL string, authToken *string) (*buildapiclient.
 	}
 
 	// Configure TLS
+	if insecureSkipTLS {
+		opts = append(opts, buildapiclient.WithInsecureTLS())
+	}
 	// Check for custom CA certificate
 	if caCertFile := os.Getenv("SSL_CERT_FILE"); caCertFile != "" {
 		opts = append(opts, buildapiclient.WithCACertificate(caCertFile))
@@ -177,7 +198,7 @@ func executeWithReauth(serverURL string, authToken *string, fn func(*buildapicli
 	// Auth error (401) - try re-authentication; token may be rejected, not necessarily expired
 	fmt.Println("Authentication failed (401), re-authenticating...")
 
-	newToken, _, err := auth.GetTokenWithReauth(ctx, serverURL, *authToken)
+	newToken, _, err := auth.GetTokenWithReauth(ctx, serverURL, *authToken, insecureSkipTLS)
 	if err != nil {
 		return fmt.Errorf("re-authentication failed: %w", err)
 	}
@@ -299,6 +320,14 @@ func main() {
 
 	rootCmd.InitDefaultVersionFlag()
 	rootCmd.SetVersionTemplate("caib version: {{.Version}}\n")
+
+	// Global flags
+	rootCmd.PersistentFlags().BoolVar(
+		&insecureSkipTLS,
+		"insecure",
+		envBool("CAIB_INSECURE"),
+		"skip TLS certificate verification (insecure, for testing only; env: CAIB_INSECURE)",
+	)
 
 	// Main build command (bootc - the default, future-focused approach)
 	buildCmd := &cobra.Command{
@@ -591,7 +620,7 @@ func runLogin(_ *cobra.Command, args []string) {
 	fmt.Printf("Server saved: %s\n", server)
 
 	ctx := context.Background()
-	token, didAuth, err := auth.GetTokenWithReauth(ctx, server, "")
+	token, didAuth, err := auth.GetTokenWithReauth(ctx, server, "", insecureSkipTLS)
 	if err != nil {
 		fmt.Printf("Warning: authentication failed (you may need --token or kubeconfig for API calls): %v\n", err)
 		return
@@ -1326,12 +1355,16 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 	pendingWarningShown := false
 	retryLimitWarningShown := false
 
+	logTransport := &http.Transport{
+		ResponseHeaderTimeout: 30 * time.Second,
+		IdleConnTimeout:       2 * time.Minute,
+	}
+	if insecureSkipTLS {
+		logTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
 	logClient := &http.Client{
-		Timeout: 10 * time.Minute,
-		Transport: &http.Transport{
-			ResponseHeaderTimeout: 30 * time.Second,
-			IdleConnTimeout:       2 * time.Minute,
-		},
+		Timeout:   10 * time.Minute,
+		Transport: logTransport,
 	}
 	streamState := &logStreamState{}
 
@@ -2000,12 +2033,16 @@ func waitForFlashCompletion(ctx context.Context, api *buildapiclient.Client, nam
 	var lastPhase, lastMessage string
 	pendingWarningShown := false
 
+	flashLogTransport := &http.Transport{
+		ResponseHeaderTimeout: 30 * time.Second,
+		IdleConnTimeout:       2 * time.Minute,
+	}
+	if insecureSkipTLS {
+		flashLogTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
 	logClient := &http.Client{
-		Timeout: 10 * time.Minute,
-		Transport: &http.Transport{
-			ResponseHeaderTimeout: 30 * time.Second,
-			IdleConnTimeout:       2 * time.Minute,
-		},
+		Timeout:   10 * time.Minute,
+		Transport: flashLogTransport,
 	}
 	streamState := &logStreamState{}
 
