@@ -89,7 +89,7 @@ jobs:
         if: failure()
         run: |
           echo "=== Controller Manager Logs ==="
-          kubectl logs -n automotive-dev-operator-system -l control-plane=controller-manager --tail=100
+          kubectl logs -n automotive-dev-operator-system -l control-plane=operator --tail=100
           echo "=== All Pods in operator namespace ==="
           kubectl get pods -n automotive-dev-operator-system -o wide
           echo "=== Events ==="

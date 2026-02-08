@@ -127,14 +127,23 @@ uninstall_operator() {
     oc delete installplan -n ${NAMESPACE} --all --ignore-not-found=true 2>/dev/null || true
 
     echo "Deleting operator-managed resources..."
-    oc delete deployment ado-build-api ado-controller-manager -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
+    oc delete deployment ado-build-api ado-operator -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
     oc delete service ado-build-api -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
     oc delete route ado-build-api -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
-    oc delete serviceaccount ado-controller-manager -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
+    oc delete serviceaccount ado-operator -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
     oc delete secret ado-oauth-secrets -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
 
+    echo "Deleting build controller resources..."
+    oc delete deployment ado-build-controller -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
+    oc delete serviceaccount ado-build-controller -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
+    oc delete clusterrole ado-build-controller --ignore-not-found=true 2>/dev/null || true
+    oc delete clusterrolebinding ado-build-controller --ignore-not-found=true 2>/dev/null || true
+    oc delete role ado-build-controller-leader-election -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
+    oc delete rolebinding ado-build-controller-leader-election -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
+
     echo "Waiting for operator pods to terminate..."
-    oc wait --for=delete pod -l control-plane=controller-manager -n ${NAMESPACE} --timeout=60s 2>/dev/null || true
+    oc wait --for=delete pod -l control-plane=operator -n ${NAMESPACE} --timeout=60s 2>/dev/null || true
+    oc wait --for=delete pod -l app.kubernetes.io/component=build-controller -n ${NAMESPACE} --timeout=60s 2>/dev/null || true
 
     echo "Deleting CatalogSource to force catalog refresh..."
     oc delete catalogsource automotive-dev-operator-catalog -n ${CATALOG_NAMESPACE} --ignore-not-found=true
@@ -375,8 +384,8 @@ if [ "$COMMAND" = "redeploy" ]; then
     echo ""
     echo "Waiting for operator deployment to be available..."
     for i in {1..30}; do
-        if oc get deployment ado-controller-manager -n ${NAMESPACE} &>/dev/null; then
-            oc wait --for=condition=Available deployment/ado-controller-manager -n ${NAMESPACE} --timeout=300s && break
+        if oc get deployment ado-operator -n ${NAMESPACE} &>/dev/null; then
+            oc wait --for=condition=Available deployment/ado-operator -n ${NAMESPACE} --timeout=300s && break
         fi
         echo "  Deployment not yet created, checking pod status..."
         oc get pods -n ${NAMESPACE} 2>/dev/null | grep -v "^NAME" || true

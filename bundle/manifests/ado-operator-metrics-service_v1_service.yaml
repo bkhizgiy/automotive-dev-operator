@@ -5,8 +5,8 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: automotive-dev-operator
-    control-plane: controller-manager
-  name: ado-controller-manager-metrics-service
+    control-plane: operator
+  name: ado-operator-metrics-service
 spec:
   ports:
   - name: https
@@ -14,6 +14,6 @@ spec:
     protocol: TCP
     targetPort: 8443
   selector:
-    control-plane: controller-manager
+    control-plane: operator
 status:
   loadBalancer: {}
