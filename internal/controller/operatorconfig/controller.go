@@ -4,6 +4,7 @@ package operatorconfig
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -12,6 +13,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -109,7 +111,8 @@ type OperatorConfigReconciler struct {
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings;clusterroles;clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=tekton.dev,resources=tasks;pipelines;pipelineruns,verbs=get;list;watch;create;update;patch;delete
@@ -313,7 +316,7 @@ func (r *OperatorConfigReconciler) ensureBuildAPIOAuthSecret(
 
 func (r *OperatorConfigReconciler) updateBuildAPIServiceAccountAnnotation(ctx context.Context) error {
 	sa := &corev1.ServiceAccount{}
-	if err := r.Get(ctx, client.ObjectKey{Name: "ado-controller-manager", Namespace: operatorNamespace}, sa); err != nil {
+	if err := r.Get(ctx, client.ObjectKey{Name: "ado-operator", Namespace: operatorNamespace}, sa); err != nil {
 		return fmt.Errorf("failed to get service account: %w", err)
 	}
 
@@ -476,6 +479,11 @@ func (r *OperatorConfigReconciler) deployOSBuilds(
 ) error {
 	r.Log.Info("Starting OSBuilds deployment")
 
+	// Deploy build controller (runs ImageBuild/Image/CatalogImage controllers)
+	if err := r.deployBuildController(ctx, config); err != nil {
+		return fmt.Errorf("failed to deploy build controller: %w", err)
+	}
+
 	// Deploy build-api (required for CLI access to builds)
 	if err := r.deployBuildAPI(ctx, config); err != nil {
 		return fmt.Errorf("failed to deploy build-api: %w", err)
@@ -560,6 +568,115 @@ func (r *OperatorConfigReconciler) createOrUpdatePartitionConfig(ctx context.Con
 	return r.createOrUpdate(ctx, configMap, owner)
 }
 
+func (r *OperatorConfigReconciler) deployBuildController(ctx context.Context, config *automotivev1alpha1.OperatorConfig) error {
+	// In "all" mode, build controllers run in-process; no separate deployment needed.
+	if os.Getenv("OPERATOR_MODE") == "all" {
+		r.Log.Info("Skipping build controller deployment (running in 'all' mode)")
+		return nil
+	}
+	r.Log.Info("Starting build controller deployment")
+
+	// Create/update ServiceAccount
+	sa := r.buildBuildControllerServiceAccount()
+	if err := r.createOrUpdate(ctx, sa, config); err != nil {
+		return fmt.Errorf("failed to create/update build controller service account: %w", err)
+	}
+
+	// Create/update ClusterRole
+	clusterRole := r.buildBuildControllerClusterRole()
+	if err := r.createOrUpdate(ctx, clusterRole, config); err != nil {
+		return fmt.Errorf("failed to create/update build controller cluster role: %w", err)
+	}
+
+	// Create/update ClusterRoleBinding
+	clusterRoleBinding := r.buildBuildControllerClusterRoleBinding()
+	if err := r.createOrUpdate(ctx, clusterRoleBinding, config); err != nil {
+		return fmt.Errorf("failed to create/update build controller cluster role binding: %w", err)
+	}
+
+	// Create/update leader election Role
+	leRole := r.buildBuildControllerLeaderElectionRole()
+	if err := r.createOrUpdate(ctx, leRole, config); err != nil {
+		return fmt.Errorf("failed to create/update build controller leader election role: %w", err)
+	}
+
+	// Create/update leader election RoleBinding
+	leRoleBinding := r.buildBuildControllerLeaderElectionRoleBinding()
+	if err := r.createOrUpdate(ctx, leRoleBinding, config); err != nil {
+		return fmt.Errorf("failed to create/update build controller leader election role binding: %w", err)
+	}
+
+	// Create/update Deployment with owner reference for reconciliation
+	deployment := r.buildBuildControllerDeployment()
+	if err := controllerutil.SetControllerReference(config, deployment, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set controller reference on build controller deployment: %w", err)
+	}
+	if err := r.createOrUpdate(ctx, deployment, config); err != nil {
+		return fmt.Errorf("failed to create/update build controller deployment: %w", err)
+	}
+
+	r.Log.Info("Build controller deployment completed successfully")
+	return nil
+}
+
+func (r *OperatorConfigReconciler) cleanupBuildController(ctx context.Context) error {
+	// In "all" mode, build controllers run in-process; nothing to clean up.
+	if os.Getenv("OPERATOR_MODE") == "all" {
+		r.Log.Info("Skipping build controller cleanup (running in 'all' mode)")
+		return nil
+	}
+	r.Log.Info("Cleaning up build controller resources")
+
+	// Delete Deployment
+	deployment := &appsv1.Deployment{}
+	deployment.Name = buildControllerName
+	deployment.Namespace = operatorNamespace
+	if err := r.Delete(ctx, deployment); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete build controller deployment: %w", err)
+	}
+
+	// Delete ServiceAccount
+	sa := &corev1.ServiceAccount{}
+	sa.Name = buildControllerName
+	sa.Namespace = operatorNamespace
+	if err := r.Delete(ctx, sa); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete build controller service account: %w", err)
+	}
+
+	// Delete ClusterRole
+	clusterRole := &rbacv1.ClusterRole{}
+	clusterRole.Name = buildControllerName
+	if err := r.Delete(ctx, clusterRole); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete build controller cluster role: %w", err)
+	}
+
+	// Delete ClusterRoleBinding
+	clusterRoleBinding := &rbacv1.ClusterRoleBinding{}
+	clusterRoleBinding.Name = buildControllerName
+	if err := r.Delete(ctx, clusterRoleBinding); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete build controller cluster role binding: %w", err)
+	}
+
+	// Delete leader election Role
+	leRole := &rbacv1.Role{}
+	leRole.Name = buildControllerName + "-leader-election"
+	leRole.Namespace = operatorNamespace
+	if err := r.Delete(ctx, leRole); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete build controller leader election role: %w", err)
+	}
+
+	// Delete leader election RoleBinding
+	leRoleBinding := &rbacv1.RoleBinding{}
+	leRoleBinding.Name = buildControllerName + "-leader-election"
+	leRoleBinding.Namespace = operatorNamespace
+	if err := r.Delete(ctx, leRoleBinding); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete build controller leader election role binding: %w", err)
+	}
+
+	r.Log.Info("Build controller cleanup completed")
+	return nil
+}
+
 func (r *OperatorConfigReconciler) cleanupOSBuilds(ctx context.Context) error {
 	r.Log.Info("Cleaning up OSBuilds resources")
 
@@ -596,6 +713,11 @@ func (r *OperatorConfigReconciler) cleanupOSBuilds(ctx context.Context) error {
 	// Cleanup build-api
 	if err := r.cleanupBuildAPI(ctx); err != nil {
 		return fmt.Errorf("failed to cleanup build-api: %w", err)
+	}
+
+	// Cleanup build controller
+	if err := r.cleanupBuildController(ctx); err != nil {
+		return fmt.Errorf("failed to cleanup build controller: %w", err)
 	}
 
 	r.Log.Info("OSBuilds cleanup completed successfully")

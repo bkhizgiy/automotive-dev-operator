@@ -106,7 +106,7 @@ metadata:
     categories: Developer Tools
     com.redhat.openshift.versions: v4.18-v4.20
     containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator:0.1.0
-    createdAt: "2026-02-02T17:48:09Z"
+    createdAt: "2026-02-08T18:21:32Z"
     description: The CentOS Automotive Suite Operator enables building automotive
       OS images on OpenShift clusters.
     operatorframework.io/suggested-namespace: automotive-dev-operator-system
@@ -190,6 +190,7 @@ spec:
           - ""
           resources:
           - pods/exec
+          - serviceaccounts/token
           verbs:
           - create
         - apiGroups:
@@ -254,6 +255,13 @@ spec:
           - patch
           - update
         - apiGroups:
+          - image.openshift.io
+          resources:
+          - imagestreams
+          verbs:
+          - create
+          - get
+        - apiGroups:
           - networking.k8s.io
           resources:
           - ingresses
@@ -271,6 +279,7 @@ spec:
           - clusterrolebindings
           - clusterroles
           - rolebindings
+          - roles
           verbs:
           - create
           - delete
@@ -319,25 +328,37 @@ spec:
           - patch
           - update
           - watch
-        serviceAccountName: ado-controller-manager
+        - apiGroups:
+          - authentication.k8s.io
+          resources:
+          - tokenreviews
+          verbs:
+          - create
+        - apiGroups:
+          - authorization.k8s.io
+          resources:
+          - subjectaccessreviews
+          verbs:
+          - create
+        serviceAccountName: ado-operator
       deployments:
       - label:
           app.kubernetes.io/managed-by: kustomize
           app.kubernetes.io/name: automotive-dev-operator
-          control-plane: controller-manager
-        name: ado-controller-manager
+          control-plane: operator
+        name: ado-operator
         spec:
           replicas: 1
           selector:
             matchLabels:
-              control-plane: controller-manager
+              control-plane: operator
           strategy: {}
           template:
             metadata:
               annotations:
                 kubectl.kubernetes.io/default-container: manager
               labels:
-                control-plane: controller-manager
+                control-plane: operator
             spec:
               affinity:
                 nodeAffinity:
@@ -355,6 +376,7 @@ spec:
                         - linux
               containers:
               - args:
+                - --mode=all
                 - --leader-elect
                 - --health-probe-bind-address=:8081
                 - --metrics-bind-address=0
@@ -366,8 +388,8 @@ spec:
                     fieldRef:
                       fieldPath: metadata.namespace
                 - name: OPERATOR_IMAGE
-                  value: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
-                image: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
+                  value: quay.io/rh-sdv-cloud/automotive-dev-operator:v0.1.0
+                image: quay.io/rh-sdv-cloud/automotive-dev-operator:v0.1.0
                 livenessProbe:
                   httpGet:
                     path: /healthz
@@ -404,7 +426,7 @@ spec:
                   valueFrom:
                     fieldRef:
                       fieldPath: metadata.namespace
-                image: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
+                image: quay.io/rh-sdv-cloud/automotive-dev-operator:v0.1.0
                 name: init-oauth-secrets
                 resources:
                   limits:
@@ -420,7 +442,7 @@ spec:
                     - ALL
               securityContext:
                 runAsNonRoot: true
-              serviceAccountName: ado-controller-manager
+              serviceAccountName: ado-operator
               terminationGracePeriodSeconds: 10
       permissions:
       - rules:
@@ -455,7 +477,7 @@ spec:
           verbs:
           - create
           - patch
-        serviceAccountName: ado-controller-manager
+        serviceAccountName: ado-operator
     strategy: deployment
   installModes:
   - supported: true

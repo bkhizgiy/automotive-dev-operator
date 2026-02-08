@@ -20,6 +20,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 
 	routev1 "github.com/openshift/api/route/v1"
@@ -47,6 +48,12 @@ import (
 	// +kubebuilder:scaffold:imports
 )
 
+const (
+	modeAll      = "all"
+	modePlatform = "platform"
+	modeBuild    = "build"
+)
+
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
@@ -70,6 +77,7 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var mode string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -81,6 +89,10 @@ func main() {
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.StringVar(&mode, "mode", modeAll,
+		"Controller mode: 'platform' runs only OperatorConfig controller, "+
+			"'build' runs only ImageBuild/Image/CatalogImage controllers, "+
+			"'all' runs all controllers.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -88,6 +100,11 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	if mode != modeAll && mode != modePlatform && mode != modeBuild {
+		setupLog.Error(fmt.Errorf("invalid mode %q", mode), "mode must be one of: all, platform, build")
+		os.Exit(1)
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -131,62 +148,81 @@ func main() {
 		// https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.19.0/pkg/metrics/filters#WithAuthenticationAndAuthorization
 		metricsServerOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
 	}
+	leaderElectionID := "930f6355.sdv.cloud.redhat.com"
+	if mode == modeBuild {
+		leaderElectionID = "930f6355-build.sdv.cloud.redhat.com"
+	}
+
+	// Expose mode to controllers so they can adjust behavior (e.g., skip deploying
+	// a separate build controller when all controllers run in-process).
+	if err := os.Setenv("OPERATOR_MODE", mode); err != nil {
+		setupLog.Error(err, "unable to set OPERATOR_MODE")
+		os.Exit(1)
+	}
+
+	setupLog.Info("starting controller", "mode", mode, "leaderElectionID", leaderElectionID)
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "930f6355.sdv.cloud.redhat.com",
+		LeaderElectionID:       leaderElectionID,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
 
-	imageBuildReconciler := &imagebuild.ImageBuildReconciler{
-		Client:     mgr.GetClient(),
-		Scheme:     mgr.GetScheme(),
-		Log:        ctrl.Log.WithName("controllers").WithName("ImageBuild"),
-		RestConfig: mgr.GetConfig(),
+	// Register controllers based on mode
+	if mode == modePlatform || mode == modeAll {
+		operatorConfigReconciler := &operatorconfig.OperatorConfigReconciler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+			Log:    ctrl.Log.WithName("controllers").WithName("OperatorConfig"),
+		}
+
+		if err = operatorConfigReconciler.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "OperatorConfig")
+			os.Exit(1)
+		}
 	}
 
-	if err = imageBuildReconciler.SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ImageBuild")
-		os.Exit(1)
-	}
+	if mode == modeBuild || mode == modeAll {
+		imageBuildReconciler := &imagebuild.ImageBuildReconciler{
+			Client:     mgr.GetClient(),
+			Scheme:     mgr.GetScheme(),
+			Log:        ctrl.Log.WithName("controllers").WithName("ImageBuild"),
+			RestConfig: mgr.GetConfig(),
+		}
 
-	imageReconciler := &image.ImageReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Log:    ctrl.Log.WithName("controllers").WithName("Image"),
-	}
+		if err = imageBuildReconciler.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "ImageBuild")
+			os.Exit(1)
+		}
 
-	if err = imageReconciler.SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Image")
-		os.Exit(1)
-	}
+		imageReconciler := &image.ImageReconciler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+			Log:    ctrl.Log.WithName("controllers").WithName("Image"),
+		}
 
-	operatorConfigReconciler := &operatorconfig.OperatorConfigReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Log:    ctrl.Log.WithName("controllers").WithName("OperatorConfig"),
-	}
+		if err = imageReconciler.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "Image")
+			os.Exit(1)
+		}
 
-	if err = operatorConfigReconciler.SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "OperatorConfig")
-		os.Exit(1)
-	}
+		catalogImageReconciler := &catalogimage.CatalogImageReconciler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+			Log:    ctrl.Log.WithName("controllers").WithName("CatalogImage"),
+		}
 
-	catalogImageReconciler := &catalogimage.CatalogImageReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Log:    ctrl.Log.WithName("controllers").WithName("CatalogImage"),
-	}
-
-	if err = catalogImageReconciler.SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "CatalogImage")
-		os.Exit(1)
+		if err = catalogImageReconciler.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "CatalogImage")
+			os.Exit(1)
+		}
 	}
 
 	// Health checks

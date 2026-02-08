@@ -1,12 +1,13 @@
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
-  name: metrics-auth-rolebinding
+  creationTimestamp: null
+  name: ado-pipeline-registry-editor
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: metrics-auth-role
+  name: registry-editor
 subjects:
 - kind: ServiceAccount
-  name: operator
+  name: pipeline
   namespace: system
