@@ -297,6 +297,7 @@ EOF
   # Files are pushed from current directory (parts_dir) so they extract flat
   # shellcheck disable=SC2086
   "$HOME/bin/oras" push --disable-path-validation \
+    --image-spec v1.1 \
     --artifact-type "${artifact_type}" \
     --annotation-file "$annotations_file" \
     "${repo_url}" \
@@ -343,6 +344,7 @@ else
   echo "  Annotations: distro=${distro}, target=${target}, arch=${arch}"
 
   "$HOME/bin/oras" push --disable-path-validation \
+    --image-spec v1.1 \
     --artifact-type "${media_type}" \
     --annotation "automotive.sdv.cloud.redhat.com/distro=${distro}" \
     --annotation "automotive.sdv.cloud.redhat.com/target=${target}" \

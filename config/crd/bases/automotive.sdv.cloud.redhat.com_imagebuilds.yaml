@@ -124,6 +124,11 @@ spec:
                     description: Format specifies the disk image output format (e.g.,
                       raw, qcow2, simg, or any AIB-supported format)
                     type: string
+                  useServiceAccountAuth:
+                    description: |-
+                      UseServiceAccountAuth indicates the build should authenticate to the registry
+                      using a service account token instead of explicit credentials
+                    type: boolean
                 type: object
               flash:
                 description: Flash contains configuration for flashing the built image

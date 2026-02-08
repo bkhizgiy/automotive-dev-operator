@@ -25,7 +25,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	apiserverv1beta1 "k8s.io/apiserver/pkg/apis/apiserver/v1beta1"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
@@ -62,7 +64,166 @@ const (
 
 	// Flash TaskRun constants
 	flashTaskRunLabel = "automotive.sdv.cloud.redhat.com/flash-taskrun"
+
+	// Internal registry constants
+	defaultInternalRegistryURL = "image-registry.openshift-image-registry.svc:5000"
 )
+
+func generateRegistryImageRef(host, namespace, imageName, tag string) string {
+	return fmt.Sprintf("%s/%s/%s:%s", host, namespace, imageName, tag)
+}
+
+func translateToExternalURL(internalURL, externalRouteHost string) string {
+	return strings.Replace(internalURL, defaultInternalRegistryURL, externalRouteHost, 1)
+}
+
+func getExternalRegistryRoute(ctx context.Context, k8sClient client.Client, namespace string) (string, error) {
+	operatorConfig := &automotivev1alpha1.OperatorConfig{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "config", Namespace: namespace}, operatorConfig); err != nil {
+		if !k8serrors.IsNotFound(err) {
+			return "", fmt.Errorf("error reading OperatorConfig: %w", err)
+		}
+		// OperatorConfig not found, fall through to auto-detection
+	} else if operatorConfig.Spec.OSBuilds != nil && operatorConfig.Spec.OSBuilds.ClusterRegistryRoute != "" {
+		return operatorConfig.Spec.OSBuilds.ClusterRegistryRoute, nil
+	}
+
+	// Auto-detect from OpenShift Route
+	route := &unstructured.Unstructured{}
+	route.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "route.openshift.io",
+		Version: "v1",
+		Kind:    "Route",
+	})
+	if err := k8sClient.Get(ctx, types.NamespacedName{
+		Name:      "default-route",
+		Namespace: "openshift-image-registry",
+	}, route); err != nil {
+		return "", fmt.Errorf("cannot determine external registry route: set clusterRegistryRoute in OperatorConfig or expose default-route in openshift-image-registry")
+	}
+
+	host, _, _ := unstructured.NestedString(route.Object, "spec", "host")
+	if host == "" {
+		return "", fmt.Errorf("default-route exists but has no host")
+	}
+	return host, nil
+}
+
+func createInternalRegistrySecret(ctx context.Context, restCfg *rest.Config, namespace, buildName string) (string, error) {
+	clientset, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		return "", fmt.Errorf("error creating clientset: %w", err)
+	}
+
+	// Request a 4-hour token for the pipeline SA (covers build + push duration)
+	expSeconds := int64(4 * 3600)
+	tokenReq := &authnv1.TokenRequest{
+		Spec: authnv1.TokenRequestSpec{
+			ExpirationSeconds: &expSeconds,
+		},
+	}
+	tokenResp, err := clientset.CoreV1().ServiceAccounts(namespace).
+		CreateToken(ctx, "pipeline", tokenReq, metav1.CreateOptions{})
+	if err != nil {
+		return "", fmt.Errorf("error creating SA token: %w", err)
+	}
+
+	// Build dockerconfigjson
+	auth := base64.StdEncoding.EncodeToString([]byte("serviceaccount:" + tokenResp.Status.Token))
+	dockerConfig := fmt.Sprintf(`{"auths":{"%s":{"auth":"%s"}}}`, defaultInternalRegistryURL, auth)
+
+	secretName := buildName + "-registry-auth"
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by":                  "build-api",
+				"app.kubernetes.io/part-of":                     "automotive-dev",
+				"automotive.sdv.cloud.redhat.com/resource-type": "registry-auth",
+				"automotive.sdv.cloud.redhat.com/build-name":    buildName,
+				"automotive.sdv.cloud.redhat.com/transient":     "true",
+			},
+		},
+		Type: corev1.SecretTypeDockerConfigJson,
+		Data: map[string][]byte{
+			".dockerconfigjson": []byte(dockerConfig),
+		},
+	}
+
+	if _, err := clientset.CoreV1().Secrets(namespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
+		return "", fmt.Errorf("error creating internal registry secret: %w", err)
+	}
+	return secretName, nil
+}
+
+// ensureImageStream creates an ImageStream if it doesn't already exist.
+// The OpenShift internal registry requires an ImageStream before oras can push to it.
+func ensureImageStream(ctx context.Context, k8sClient client.Client, namespace, name string) error {
+	is := &unstructured.Unstructured{}
+	is.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "image.openshift.io",
+		Version: "v1",
+		Kind:    "ImageStream",
+	})
+
+	// Check if it already exists
+	err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, is)
+	if err == nil {
+		return nil // already exists
+	}
+	if !k8serrors.IsNotFound(err) {
+		return fmt.Errorf("error checking ImageStream %s: %w", name, err)
+	}
+
+	// Create it
+	newIS := &unstructured.Unstructured{}
+	newIS.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "image.openshift.io",
+		Version: "v1",
+		Kind:    "ImageStream",
+	})
+	newIS.SetName(name)
+	newIS.SetNamespace(namespace)
+	newIS.SetLabels(map[string]string{
+		"app.kubernetes.io/managed-by":              "build-api",
+		"app.kubernetes.io/part-of":                 "automotive-dev",
+		"automotive.sdv.cloud.redhat.com/transient": "true",
+	})
+
+	if err := k8sClient.Create(ctx, newIS); err != nil {
+		if k8serrors.IsAlreadyExists(err) {
+			return nil
+		}
+		return fmt.Errorf("error creating ImageStream %s: %w", name, err)
+	}
+	return nil
+}
+
+// mintRegistryToken creates a fresh short-lived token for the pipeline SA
+// so the caller can pull images from the internal registry.
+func (a *APIServer) mintRegistryToken(ctx context.Context, c *gin.Context, namespace string) (string, error) {
+	restCfg, err := getRESTConfigFromRequest(c)
+	if err != nil {
+		return "", fmt.Errorf("error getting REST config for token mint: %w", err)
+	}
+	clientset, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		return "", fmt.Errorf("error creating clientset for token mint: %w", err)
+	}
+	expSeconds := int64(4 * 3600)
+	tokenReq := &authnv1.TokenRequest{
+		Spec: authnv1.TokenRequestSpec{
+			ExpirationSeconds: &expSeconds,
+		},
+	}
+	tokenResp, err := clientset.CoreV1().ServiceAccounts(namespace).
+		CreateToken(ctx, "pipeline", tokenReq, metav1.CreateOptions{})
+	if err != nil {
+		return "", fmt.Errorf("error creating token for SA pipeline in %s: %w", namespace, err)
+	}
+	return tokenResp.Status.Token, nil
+}
 
 // APILimits holds configurable limits for the API server
 type APILimits struct {
@@ -384,7 +545,7 @@ func (a *APIServer) handleListBuilds(c *gin.Context) {
 func (a *APIServer) handleGetBuild(c *gin.Context) {
 	name := c.Param("name")
 	a.log.Info("get build", "build", name, "reqID", c.GetString("reqID"))
-	getBuild(c, name)
+	a.getBuild(c, name)
 }
 
 func (a *APIServer) handleStreamLogs(c *gin.Context) {
@@ -990,13 +1151,108 @@ func setupBuildSecrets(
 	return envSecretRef, pushSecretName, nil
 }
 
+// resolveRegistryForBuild handles registry setup for both internal and external registry builds.
+// It returns envSecretRef, pushSecretName, and an error (non-nil means the response was already written).
+func (a *APIServer) resolveRegistryForBuild(
+	ctx context.Context, c *gin.Context, k8sClient client.Client,
+	namespace string, req *BuildRequest,
+) (string, string, error) {
+	if req.UseInternalRegistry {
+		return a.setupInternalRegistryBuild(ctx, c, k8sClient, namespace, req)
+	}
+
+	envSecretRef, pushSecretName, err := setupBuildSecrets(ctx, k8sClient, namespace, req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return "", "", err
+	}
+	return envSecretRef, pushSecretName, nil
+}
+
+// setupInternalRegistryBuild validates and configures internal registry push,
+// returning ("", pushSecretName, nil) on success.
+func (a *APIServer) setupInternalRegistryBuild(
+	ctx context.Context, c *gin.Context, k8sClient client.Client,
+	namespace string, req *BuildRequest,
+) (string, string, error) {
+	// Validate mutual exclusivity
+	if req.ContainerPush != "" || req.ExportOCI != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "useInternalRegistry cannot be used with containerPush or exportOci"})
+		return "", "", fmt.Errorf("validation error")
+	}
+	if req.RegistryCredentials != nil && req.RegistryCredentials.Enabled {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "useInternalRegistry cannot be used with registryCredentials"})
+		return "", "", fmt.Errorf("validation error")
+	}
+	if req.FlashEnabled {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "flash with useInternalRegistry is not yet supported"})
+		return "", "", fmt.Errorf("validation error")
+	}
+
+	// Resolve external route (validates registry is reachable)
+	if _, err := getExternalRegistryRoute(ctx, k8sClient, namespace); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return "", "", err
+	}
+
+	// Generate image name and tag
+	imageName := req.InternalRegistryImageName
+	if imageName == "" {
+		imageName = req.Name
+	}
+	tag := req.InternalRegistryTag
+	if tag == "" {
+		tag = req.Name
+	}
+
+	// Set concrete URLs based on build mode
+	if req.Mode.IsBootc() {
+		// Bootc: push container, optionally push disk
+		req.ContainerPush = generateRegistryImageRef(defaultInternalRegistryURL, namespace, imageName, tag)
+		if req.BuildDiskImage {
+			req.ExportOCI = generateRegistryImageRef(defaultInternalRegistryURL, namespace, imageName+"-disk", tag)
+		}
+	} else {
+		// Traditional/disk modes: push disk image as OCI artifact
+		req.ExportOCI = generateRegistryImageRef(defaultInternalRegistryURL, namespace, imageName, tag)
+	}
+
+	// Pre-create ImageStream(s) so the OpenShift internal registry accepts oras pushes
+	imageStreams := []string{imageName}
+	if req.Mode.IsBootc() && req.BuildDiskImage {
+		imageStreams = append(imageStreams, imageName+"-disk")
+	}
+	for _, isName := range imageStreams {
+		if err := ensureImageStream(ctx, k8sClient, namespace, isName); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error creating ImageStream: %v", err)})
+			return "", "", err
+		}
+	}
+
+	// Create auth secret from SA token
+	restCfg, err := getRESTConfigFromRequest(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error getting REST config: %v", err)})
+		return "", "", err
+	}
+	secretName, err := createInternalRegistrySecret(ctx, restCfg, namespace, req.Name)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return "", "", err
+	}
+	// Return as both envSecretRef (for pipeline registry-auth workspace + WhenExpression)
+	// and pushSecretName (for push credential binding)
+	return secretName, secretName, nil
+}
+
 // buildExportSpec creates ExportSpec configuration from build request
 func buildExportSpec(req *BuildRequest) *automotivev1alpha1.ExportSpec {
 	export := &automotivev1alpha1.ExportSpec{
-		Format:         string(req.ExportFormat),
-		Compression:    req.Compression,
-		BuildDiskImage: req.BuildDiskImage,
-		Container:      req.ContainerPush,
+		Format:                string(req.ExportFormat),
+		Compression:           req.Compression,
+		BuildDiskImage:        req.BuildDiskImage,
+		Container:             req.ContainerPush,
+		UseServiceAccountAuth: req.UseInternalRegistry,
 	}
 
 	// Set disk export if OCI URL is specified
@@ -1076,9 +1332,8 @@ func (a *APIServer) createBuild(c *gin.Context) {
 		"automotive.sdv.cloud.redhat.com/architecture": string(req.Architecture),
 	}
 
-	envSecretRef, pushSecretName, err := setupBuildSecrets(ctx, k8sClient, namespace, &req)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	envSecretRef, pushSecretName, apiErr := a.resolveRegistryForBuild(ctx, c, k8sClient, namespace, &req)
+	if apiErr != nil {
 		return
 	}
 
@@ -1210,7 +1465,7 @@ func listBuilds(c *gin.Context) {
 	writeJSON(c, http.StatusOK, resp)
 }
 
-func getBuild(c *gin.Context, name string) {
+func (a *APIServer) getBuild(c *gin.Context, name string) {
 	namespace := resolveNamespace()
 	k8sClient, err := getClientFromRequest(c)
 	if err != nil {
@@ -1229,6 +1484,25 @@ func getBuild(c *gin.Context, name string) {
 		return
 	}
 
+	containerImage := build.Spec.GetContainerPush()
+	diskImage := build.Spec.GetExportOCI()
+	var warning string
+
+	if build.Spec.GetUseServiceAccountAuth() {
+		externalRoute, err := getExternalRegistryRoute(ctx, k8sClient, namespace)
+		if err != nil {
+			a.log.Error(err, "failed to resolve external registry route, returning internal URLs", "build", name)
+			warning = fmt.Sprintf("external registry route lookup failed: %v; returning internal URLs", err)
+		} else if externalRoute != "" {
+			if containerImage != "" {
+				containerImage = translateToExternalURL(containerImage, externalRoute)
+			}
+			if diskImage != "" {
+				diskImage = translateToExternalURL(diskImage, externalRoute)
+			}
+		}
+	}
+
 	// For completed builds, check if Jumpstarter is available and get target mapping
 	var jumpstarterInfo *JumpstarterInfo
 	if build.Status.Phase == "Completed" {
@@ -1244,11 +1518,11 @@ func getBuild(c *gin.Context, name string) {
 					if mapping, ok := operatorConfig.Spec.Jumpstarter.TargetMappings[build.Spec.GetTarget()]; ok {
 						jumpstarterInfo.ExporterSelector = mapping.Selector
 						flashCmd := mapping.FlashCmd
-						// Replace placeholders in flash command
+						// Replace placeholders in flash command using translated URLs
 						if flashCmd != "" {
-							imageURI := build.Spec.GetExportOCI()
+							imageURI := diskImage
 							if imageURI == "" {
-								imageURI = build.Spec.GetContainerPush()
+								imageURI = containerImage
 							}
 							if imageURI != "" {
 								flashCmd = strings.ReplaceAll(flashCmd, "{image_uri}", imageURI)
@@ -1259,6 +1533,17 @@ func getBuild(c *gin.Context, name string) {
 					}
 				}
 			}
+		}
+	}
+
+	// Mint a fresh registry token only for completed/failed internal registry builds
+	var registryToken string
+	if build.Spec.GetUseServiceAccountAuth() &&
+		(build.Status.Phase == phaseCompleted || build.Status.Phase == phaseFailed) {
+		var tokenErr error
+		registryToken, tokenErr = a.mintRegistryToken(ctx, c, namespace)
+		if tokenErr != nil {
+			a.log.Error(tokenErr, "failed to mint registry token", "build", name)
 		}
 	}
 
@@ -1279,8 +1564,10 @@ func getBuild(c *gin.Context, name string) {
 			}
 			return ""
 		}(),
-		ContainerImage: build.Spec.GetContainerPush(),
-		DiskImage:      build.Spec.GetExportOCI(),
+		ContainerImage: containerImage,
+		DiskImage:      diskImage,
+		RegistryToken:  registryToken,
+		Warning:        warning,
 		Jumpstarter:    jumpstarterInfo,
 	})
 }

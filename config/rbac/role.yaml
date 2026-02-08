@@ -41,6 +41,7 @@ rules:
   - ""
   resources:
   - pods/exec
+  - serviceaccounts/token
   verbs:
   - create
 - apiGroups:
@@ -104,6 +105,13 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - image.openshift.io
+  resources:
+  - imagestreams
+  verbs:
+  - create
+  - get
 - apiGroups:
   - networking.k8s.io
   resources:
