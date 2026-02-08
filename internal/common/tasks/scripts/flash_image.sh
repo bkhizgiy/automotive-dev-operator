@@ -55,9 +55,17 @@ cleanup() {
 trap cleanup EXIT
 
 echo "Starting flash operation..."
+
+# Build the command with OCI credentials if provided
+FULL_CMD="${FLASH_CMD}"
+if [ -n "${OCI_USERNAME:-}" ] && [ -n "${OCI_PASSWORD:-}" ]; then
+    echo "OCI credentials provided, passing to flash command"
+    FULL_CMD="OCI_USERNAME=${OCI_USERNAME} OCI_PASSWORD=${OCI_PASSWORD} ${FLASH_CMD}"
+fi
+
 echo "Executing: ${FLASH_CMD}"
 
-if ! jmp shell --client-config "${JMP_CLIENT_CONFIG}" --lease "${LEASE_NAME}" -- ${FLASH_CMD}; then
+if ! jmp shell --client-config "${JMP_CLIENT_CONFIG}" --lease "${LEASE_NAME}" -- ${FULL_CMD}; then
     echo ""
     echo "ERROR: Flash command failed"
     exit 1

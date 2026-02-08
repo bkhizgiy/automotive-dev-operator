@@ -4,6 +4,7 @@ package imagebuild
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
@@ -12,12 +13,15 @@ import (
 	routev1 "github.com/openshift/api/route/v1"
 	pod "github.com/tektoncd/pipeline/pkg/apis/pipeline/pod"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
+	authnv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	kuberneteslib "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -37,8 +41,9 @@ const (
 //nolint:revive // Name follows Kubebuilder convention for reconcilers
 type ImageBuildReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Log    logr.Logger
+	Scheme     *runtime.Scheme
+	Log        logr.Logger
+	RestConfig *rest.Config
 }
 
 // +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=imagebuilds,verbs=get;list;watch;create;update;patch;delete
@@ -468,6 +473,38 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 			return fmt.Errorf("flash enabled but no Jumpstarter target mapping found for target %q; "+
 				"configure OperatorConfig.spec.jumpstarter.targetMappings[%q] with selector and flashCmd", target, target)
 		}
+		// Resolve the flash image ref — for internal registry builds, translate to external URL
+		flashImageRef := imageBuild.Spec.GetExportOCI()
+		flashOCIUsername := ""
+		flashOCIPassword := ""
+		if imageBuild.Spec.GetUseServiceAccountAuth() && flashImageRef != "" {
+			if clusterRegistryRoute != "" {
+				flashImageRef = strings.Replace(flashImageRef,
+					"image-registry.openshift-image-registry.svc:5000",
+					clusterRegistryRoute, 1)
+			}
+			// Create a short-lived token for the flash exporter to pull the image
+			expSeconds := int64(4 * 3600)
+			tokenReq := &authnv1.TokenRequest{
+				Spec: authnv1.TokenRequestSpec{
+					ExpirationSeconds: &expSeconds,
+				},
+			}
+			clientset, csErr := kuberneteslib.NewForConfig(r.RestConfig)
+			if csErr == nil {
+				tokenResp, tokenErr := clientset.CoreV1().ServiceAccounts(imageBuild.Namespace).
+					CreateToken(ctx, "pipeline", tokenReq, metav1.CreateOptions{})
+				if tokenErr == nil {
+					flashOCIUsername = "serviceaccount"
+					flashOCIPassword = tokenResp.Status.Token
+				} else {
+					log.Error(tokenErr, "failed to create SA token for flash OCI credentials")
+				}
+			} else {
+				log.Error(csErr, "failed to create clientset for flash OCI credentials")
+			}
+		}
+
 		params = append(params,
 			tektonv1.Param{
 				Name:  "flash-enabled",
@@ -475,7 +512,7 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 			},
 			tektonv1.Param{
 				Name:  "flash-image-ref",
-				Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: imageBuild.Spec.GetExportOCI()},
+				Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: flashImageRef},
 			},
 			tektonv1.Param{
 				Name:  "flash-exporter-selector",
@@ -492,6 +529,14 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 			tektonv1.Param{
 				Name:  "jumpstarter-image",
 				Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: operatorConfig.Spec.Jumpstarter.GetJumpstarterImage()},
+			},
+			tektonv1.Param{
+				Name:  "flash-oci-username",
+				Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: flashOCIUsername},
+			},
+			tektonv1.Param{
+				Name:  "flash-oci-password",
+				Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: flashOCIPassword},
 			},
 		)
 	}

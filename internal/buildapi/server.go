@@ -1184,11 +1184,6 @@ func (a *APIServer) setupInternalRegistryBuild(
 		c.JSON(http.StatusBadRequest, gin.H{"error": "useInternalRegistry cannot be used with registryCredentials"})
 		return "", "", fmt.Errorf("validation error")
 	}
-	if req.FlashEnabled {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "flash with useInternalRegistry is not yet supported"})
-		return "", "", fmt.Errorf("validation error")
-	}
-
 	// Resolve external route (validates registry is reachable)
 	if _, err := getExternalRegistryRoute(ctx, k8sClient, namespace); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -1209,6 +1204,10 @@ func (a *APIServer) setupInternalRegistryBuild(
 	if req.Mode.IsBootc() {
 		// Bootc: push container, optionally push disk
 		req.ContainerPush = generateRegistryImageRef(defaultInternalRegistryURL, namespace, imageName, tag)
+		// Flash requires a disk image
+		if req.FlashEnabled && !req.BuildDiskImage {
+			req.BuildDiskImage = true
+		}
 		if req.BuildDiskImage {
 			req.ExportOCI = generateRegistryImageRef(defaultInternalRegistryURL, namespace, imageName+"-disk", tag)
 		}

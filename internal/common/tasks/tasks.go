@@ -634,6 +634,18 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 						StringVal: automotivev1alpha1.DefaultJumpstarterImage,
 					},
 				},
+				{
+					Name:        "flash-oci-username",
+					Type:        tektonv1.ParamTypeString,
+					Description: "OCI username for flash image pull (internal registry)",
+					Default:     &tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: ""},
+				},
+				{
+					Name:        "flash-oci-password",
+					Type:        tektonv1.ParamTypeString,
+					Description: "OCI password/token for flash image pull (internal registry)",
+					Default:     &tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: ""},
+				},
 			},
 			Workspaces: []tektonv1.PipelineWorkspaceDeclaration{
 				{Name: "shared-workspace"},
@@ -1030,6 +1042,20 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 								StringVal: "$(params.jumpstarter-image)",
 							},
 						},
+						{
+							Name: "oci-username",
+							Value: tektonv1.ParamValue{
+								Type:      tektonv1.ParamTypeString,
+								StringVal: "$(params.flash-oci-username)",
+							},
+						},
+						{
+							Name: "oci-password",
+							Value: tektonv1.ParamValue{
+								Type:      tektonv1.ParamTypeString,
+								StringVal: "$(params.flash-oci-password)",
+							},
+						},
 					},
 					Workspaces: []tektonv1.WorkspacePipelineTaskBinding{
 						{Name: "jumpstarter-client", Workspace: "jumpstarter-client"},
@@ -1304,6 +1330,18 @@ func GenerateFlashTask(namespace string) *tektonv1.Task {
 						StringVal: automotivev1alpha1.DefaultJumpstarterImage,
 					},
 				},
+				{
+					Name:        "oci-username",
+					Type:        tektonv1.ParamTypeString,
+					Description: "OCI username for image pull authentication",
+					Default:     &tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: ""},
+				},
+				{
+					Name:        "oci-password",
+					Type:        tektonv1.ParamTypeString,
+					Description: "OCI password/token for image pull authentication",
+					Default:     &tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: ""},
+				},
 			},
 			Results: []tektonv1.TaskResult{
 				{
@@ -1344,6 +1382,14 @@ func GenerateFlashTask(namespace string) *tektonv1.Task {
 						{
 							Name:  "JMP_CLIENT_CONFIG",
 							Value: "/workspace/jumpstarter-client/client.yaml",
+						},
+						{
+							Name:  "OCI_USERNAME",
+							Value: "$(params.oci-username)",
+						},
+						{
+							Name:  "OCI_PASSWORD",
+							Value: "$(params.oci-password)",
 						},
 						{
 							Name:  "RESULTS_LEASE_ID_PATH",
