@@ -89,7 +89,7 @@ type Target struct {
 	Name string `json:"name"`
 }
 
-func runList(_ *cobra.Command, _ []string) error {
+func runList(cmd *cobra.Command, _ []string) error {
 	// Get server URL
 	server := serverURL
 	if server == "" {
@@ -144,7 +144,7 @@ func runList(_ *cobra.Command, _ []string) error {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	client := &http.Client{}
+	client := newHTTPClient(getInsecureSkipTLS(cmd))
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to make request: %w", err)
