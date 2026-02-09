@@ -66,15 +66,47 @@ if [ -f "${FLASH_OCI_AUTH_PATH}/username" ] && [ -f "${FLASH_OCI_AUTH_PATH}/pass
     OCI_PASSWORD=$(cat "${FLASH_OCI_AUTH_PATH}/password")
 fi
 
-# Build jmp shell command with optional OCI credentials forwarded via --env
+# Build jmp shell command with optional OCI credentials written to file on exporter
 JMP_SHELL_ARGS="--client-config ${JMP_CLIENT_CONFIG} --lease ${LEASE_NAME}"
+
 if [ -n "${OCI_USERNAME}" ] && [ -n "${OCI_PASSWORD}" ]; then
-    echo "OCI credentials provided, forwarding to exporter"
-    JMP_SHELL_ARGS="${JMP_SHELL_ARGS} --env OCI_USERNAME=${OCI_USERNAME} --env OCI_PASSWORD=${OCI_PASSWORD}"
+    echo "OCI credentials provided, forwarding to exporter via auth file"
+    REGISTRY_HOST=$(echo "${IMAGE_REF}" | cut -d'/' -f1)
+    AUTH_B64=$(printf '%s:%s' "${OCI_USERNAME}" "${OCI_PASSWORD}" | base64 | tr -d '\n')
+
+    # Function to escape JSON string values
+    escape_json() {
+        printf '%s\n' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+    }
+
+    # Safely construct JSON without jq dependency
+    REGISTRY_HOST_ESCAPED=$(escape_json "${REGISTRY_HOST}")
+    AUTH_B64_ESCAPED=$(escape_json "${AUTH_B64}")
+    AUTH_JSON="{\"auths\":{\"${REGISTRY_HOST_ESCAPED}\":{\"auth\":\"${AUTH_B64_ESCAPED}\"}}}"
+
+    # Pipe auth config through stdin to avoid credentials in command args
+    # shellcheck disable=SC2086
+    set +e  # Temporarily disable errexit to capture exit code
+    echo "${AUTH_JSON}" | jmp shell ${JMP_SHELL_ARGS} -- sh -c "
+        mkdir -p /tmp/.oci-auth && \
+        cat > /tmp/.oci-auth/config.json && \
+        REGISTRY_AUTH_FILE=/tmp/.oci-auth/config.json ${FLASH_CMD}; \
+        EXIT_CODE=\$?; \
+        rm -rf /tmp/.oci-auth; \
+        exit \$EXIT_CODE
+    "
+    FLASH_EXIT=$?
+    set -e  # Restore errexit
+else
+    # No credentials, run flash command directly
+    # shellcheck disable=SC2086
+    set +e  # Temporarily disable errexit to capture exit code
+    jmp shell ${JMP_SHELL_ARGS} -- ${FLASH_CMD}
+    FLASH_EXIT=$?
+    set -e  # Restore errexit
 fi
 
-# shellcheck disable=SC2086
-if ! jmp shell ${JMP_SHELL_ARGS} -- ${FLASH_CMD}; then
+if [ ${FLASH_EXIT} -ne 0 ]; then
     echo ""
     echo "ERROR: Flash command failed"
     exit 1
