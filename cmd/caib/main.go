@@ -245,7 +245,38 @@ func executeWithReauth(serverURL string, authToken *string, fn func(*buildapicli
 	return err
 }
 
-// extractRegistryCredentials extracts registry URL and returns registry URL and credentials from env vars
+// writeRegistryCredentialsFile writes registry credentials to a mode-0600 temp file and returns its path.
+func writeRegistryCredentialsFile(token string) (string, error) {
+	creds, err := json.Marshal(map[string]string{
+		"username": "serviceaccount",
+		"token":    token,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	f, err := os.CreateTemp("", "caib-registry-creds-*.json")
+	if err != nil {
+		return "", err
+	}
+	name := f.Name()
+
+	if _, err := f.Write(creds); err != nil {
+		_ = f.Close()
+		_ = os.Remove(name)
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(name)
+		return "", err
+	}
+	if err := os.Chmod(name, 0600); err != nil {
+		_ = os.Remove(name)
+		return "", err
+	}
+	return name, nil
+}
+
 func extractRegistryCredentials(primaryRef, secondaryRef string) (string, string, string) {
 	// Get credentials from environment variables only
 	username := os.Getenv("REGISTRY_USERNAME")
@@ -699,9 +730,15 @@ func displayBuildResults(ctx context.Context, api *buildapiclient.Client, buildN
 			fmt.Printf("Disk image: %s\n", st.DiskImage)
 		}
 		if st.RegistryToken != "" {
-			fmt.Printf("\nRegistry credentials (valid ~4 hours):\n")
-			fmt.Printf("  Username: serviceaccount\n")
-			fmt.Printf("  Token:    %s\n", st.RegistryToken)
+			credsFile, err := writeRegistryCredentialsFile(st.RegistryToken)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to write registry credentials file: %v\n", err)
+				fmt.Printf("\nRegistry credentials (valid ~4 hours):\n")
+				fmt.Printf("  Username: serviceaccount\n")
+				fmt.Printf("  Token:    %s\n", st.RegistryToken)
+			} else {
+				fmt.Printf("\nRegistry credentials written to: %s (valid ~4 hours)\n", credsFile)
+			}
 		}
 	} else {
 		if containerPush != "" {

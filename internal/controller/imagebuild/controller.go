@@ -472,7 +472,7 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 		}
 		// Resolve the flash image ref — for internal registry builds, translate to external URL
 		flashImageRef := imageBuild.Spec.GetExportOCI()
-		flashOCIAuthSecretName := ""
+		flashOCIAuthSecretName = ""
 		if imageBuild.Spec.GetUseServiceAccountAuth() && flashImageRef != "" {
 			if clusterRegistryRoute != "" {
 				flashImageRef = strings.Replace(flashImageRef,
