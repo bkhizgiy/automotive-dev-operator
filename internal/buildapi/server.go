@@ -1596,6 +1596,22 @@ func (a *APIServer) getBuild(c *gin.Context, name string) {
 		RegistryToken:  registryToken,
 		Warning:        warning,
 		Jumpstarter:    jumpstarterInfo,
+		Parameters: &BuildParameters{
+			Architecture:           build.Spec.Architecture,
+			Distro:                 build.Spec.GetDistro(),
+			Target:                 build.Spec.GetTarget(),
+			Mode:                   build.Spec.GetMode(),
+			ExportFormat:           build.Spec.GetExportFormat(),
+			Compression:            build.Spec.GetCompression(),
+			StorageClass:           build.Spec.StorageClass,
+			AutomotiveImageBuilder: build.Spec.GetAIBImage(),
+			BuilderImage:           build.Spec.GetBuilderImage(),
+			ContainerRef:           build.Spec.GetContainerRef(),
+			BuildDiskImage:         build.Spec.GetBuildDiskImage(),
+			FlashEnabled:           build.Spec.IsFlashEnabled(),
+			FlashLeaseDuration:     build.Spec.GetFlashLeaseDuration(),
+			UseServiceAccountAuth:  build.Spec.GetUseServiceAccountAuth(),
+		},
 	})
 }
 

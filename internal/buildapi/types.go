@@ -218,6 +218,25 @@ type BuildResponse struct {
 	RegistryToken  string           `json:"registryToken,omitempty"`
 	Warning        string           `json:"warning,omitempty"`
 	Jumpstarter    *JumpstarterInfo `json:"jumpstarter,omitempty"`
+	Parameters     *BuildParameters `json:"parameters,omitempty"`
+}
+
+// BuildParameters describes the key input parameters that produced an ImageBuild.
+type BuildParameters struct {
+	Architecture           string `json:"architecture,omitempty"`
+	Distro                 string `json:"distro,omitempty"`
+	Target                 string `json:"target,omitempty"`
+	Mode                   string `json:"mode,omitempty"`
+	ExportFormat           string `json:"exportFormat,omitempty"`
+	Compression            string `json:"compression,omitempty"`
+	StorageClass           string `json:"storageClass,omitempty"`
+	AutomotiveImageBuilder string `json:"automotiveImageBuilder,omitempty"`
+	BuilderImage           string `json:"builderImage,omitempty"`
+	ContainerRef           string `json:"containerRef,omitempty"`
+	BuildDiskImage         bool   `json:"buildDiskImage,omitempty"`
+	FlashEnabled           bool   `json:"flashEnabled,omitempty"`
+	FlashLeaseDuration     string `json:"flashLeaseDuration,omitempty"`
+	UseServiceAccountAuth  bool   `json:"useServiceAccountAuth,omitempty"`
 }
 
 // BuildListItem represents a build in the list API

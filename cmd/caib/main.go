@@ -60,6 +60,7 @@ var (
 	serverURL              string
 	manifest               string
 	buildName              string
+	showOutputFormat       string
 	distro                 string
 	target                 string
 	architecture           string
@@ -469,6 +470,21 @@ Examples:
 		Run:   runList,
 	}
 
+	showCmd := &cobra.Command{
+		Use:   "show <build-name>",
+		Short: "Show detailed information for an ImageBuild",
+		Long: `Show retrieves detailed status and output fields for a single ImageBuild.
+
+Examples:
+  # Show details in table format
+  caib show my-build
+
+  # Show details as JSON
+  caib show my-build -o json`,
+		Args: cobra.ExactArgs(1),
+		Run:  runShow,
+	}
+
 	downloadCmd := &cobra.Command{
 		Use:   "download <build-name>",
 		Short: "Download disk image artifact from a completed build",
@@ -543,6 +559,16 @@ Example:
 	listCmd.Flags().StringVar(
 		&authToken, "token", os.Getenv("CAIB_TOKEN"),
 		"Bearer token for authentication (e.g., OpenShift access token)",
+	)
+	showCmd.Flags().StringVar(
+		&serverURL, "server", config.DefaultServer(), "REST API server base URL (e.g. https://api.example)",
+	)
+	showCmd.Flags().StringVar(
+		&authToken, "token", os.Getenv("CAIB_TOKEN"),
+		"Bearer token for authentication (e.g., OpenShift access token)",
+	)
+	showCmd.Flags().StringVarP(
+		&showOutputFormat, "output", "o", "table", "Output format (table, json, yaml)",
 	)
 
 	// disk command flags (create disk from existing container)
@@ -625,7 +651,7 @@ Example:
 	_ = flashCmd.MarkFlagRequired("client")
 
 	// Add all commands
-	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, downloadCmd, flashCmd, loginCmd, catalog.NewCatalogCmd())
+	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, showCmd, downloadCmd, flashCmd, loginCmd, catalog.NewCatalogCmd())
 	// Add deprecated aliases for backwards compatibility
 	rootCmd.AddCommand(buildBootcAliasCmd, buildLegacyAliasCmd, buildTraditionalAliasCmd)
 
@@ -1900,6 +1926,156 @@ func runList(_ *cobra.Command, _ []string) {
 			fmt.Fprintf(os.Stderr, "Warning: failed to write row: %v\n", err)
 		}
 	}
+}
+
+func runShow(_ *cobra.Command, args []string) {
+	ctx := context.Background()
+	showBuildName := args[0]
+
+	if strings.TrimSpace(serverURL) == "" {
+		handleError(fmt.Errorf("--server is required (or set CAIB_SERVER, or run 'caib login <server-url>')"))
+	}
+
+	var st *buildapitypes.BuildResponse
+	err := executeWithReauth(serverURL, &authToken, func(api *buildapiclient.Client) error {
+		var err error
+		st, err = api.GetBuild(ctx, showBuildName)
+		return err
+	})
+	if err != nil {
+		handleError(fmt.Errorf("error getting ImageBuild %s: %w", showBuildName, err))
+	}
+
+	// Backward-compatible fallback for older API servers that do not yet include response parameters.
+	if st.Parameters == nil {
+		_ = executeWithReauth(serverURL, &authToken, func(api *buildapiclient.Client) error {
+			tpl, err := api.GetBuildTemplate(ctx, showBuildName)
+			if err != nil {
+				return err
+			}
+			st.Parameters = buildParametersFromTemplate(tpl)
+			return nil
+		})
+	}
+
+	switch strings.ToLower(showOutputFormat) {
+	case "json":
+		out, err := json.MarshalIndent(st, "", "  ")
+		if err != nil {
+			handleError(fmt.Errorf("error rendering JSON output: %w", err))
+		}
+		fmt.Println(string(out))
+	case "yaml", "yml":
+		out, err := yaml.Marshal(st)
+		if err != nil {
+			handleError(fmt.Errorf("error rendering YAML output: %w", err))
+		}
+		fmt.Print(string(out))
+	case "table":
+		printBuildDetails(st)
+	default:
+		handleError(fmt.Errorf("invalid output format %q (supported: table, json, yaml)", showOutputFormat))
+	}
+}
+
+func buildParametersFromTemplate(tpl *buildapitypes.BuildTemplateResponse) *buildapitypes.BuildParameters {
+	if tpl == nil {
+		return nil
+	}
+
+	params := &buildapitypes.BuildParameters{
+		Architecture:           string(tpl.Architecture),
+		Distro:                 string(tpl.Distro),
+		Target:                 string(tpl.Target),
+		Mode:                   string(tpl.Mode),
+		ExportFormat:           string(tpl.ExportFormat),
+		Compression:            tpl.Compression,
+		StorageClass:           tpl.StorageClass,
+		AutomotiveImageBuilder: tpl.AutomotiveImageBuilder,
+		BuilderImage:           tpl.BuilderImage,
+		ContainerRef:           tpl.ContainerRef,
+		BuildDiskImage:         tpl.BuildDiskImage,
+		FlashEnabled:           tpl.FlashEnabled,
+		FlashLeaseDuration:     tpl.FlashLeaseDuration,
+		UseServiceAccountAuth:  tpl.UseInternalRegistry,
+	}
+
+	if strings.TrimSpace(params.Architecture) == "" &&
+		strings.TrimSpace(params.Distro) == "" &&
+		strings.TrimSpace(params.Target) == "" &&
+		strings.TrimSpace(params.Mode) == "" &&
+		strings.TrimSpace(params.ExportFormat) == "" &&
+		strings.TrimSpace(params.Compression) == "" &&
+		strings.TrimSpace(params.StorageClass) == "" &&
+		strings.TrimSpace(params.AutomotiveImageBuilder) == "" &&
+		strings.TrimSpace(params.BuilderImage) == "" &&
+		strings.TrimSpace(params.ContainerRef) == "" &&
+		strings.TrimSpace(params.FlashLeaseDuration) == "" &&
+		!params.BuildDiskImage &&
+		!params.FlashEnabled &&
+		!params.UseServiceAccountAuth {
+		return nil
+	}
+
+	return params
+}
+
+func printBuildDetails(st *buildapitypes.BuildResponse) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	defer func() {
+		if err := w.Flush(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to flush output: %v\n", err)
+		}
+	}()
+
+	rows := [][2]string{
+		{"Name", st.Name},
+		{"Phase", st.Phase},
+		{"Message", st.Message},
+		{"Requested By", valueOrDash(st.RequestedBy)},
+		{"Start Time", valueOrDash(st.StartTime)},
+		{"Completion Time", valueOrDash(st.CompletionTime)},
+		{"Container Image", valueOrDash(st.ContainerImage)},
+		{"Disk Image", valueOrDash(st.DiskImage)},
+		{"Warning", valueOrDash(st.Warning)},
+	}
+
+	if st.Parameters != nil {
+		rows = append(rows,
+			[2]string{"Architecture", valueOrDash(st.Parameters.Architecture)},
+			[2]string{"Distro", valueOrDash(st.Parameters.Distro)},
+			[2]string{"Target", valueOrDash(st.Parameters.Target)},
+			[2]string{"Mode", valueOrDash(st.Parameters.Mode)},
+			[2]string{"Export Format", valueOrDash(st.Parameters.ExportFormat)},
+			[2]string{"Compression", valueOrDash(st.Parameters.Compression)},
+			[2]string{"Storage Class", valueOrDash(st.Parameters.StorageClass)},
+			[2]string{"AIB Image", valueOrDash(st.Parameters.AutomotiveImageBuilder)},
+			[2]string{"Builder Image", valueOrDash(st.Parameters.BuilderImage)},
+		)
+	}
+
+	if st.Jumpstarter != nil {
+		rows = append(rows,
+			[2]string{"Jumpstarter Available", fmt.Sprintf("%t", st.Jumpstarter.Available)},
+			[2]string{"Jumpstarter Exporter", valueOrDash(st.Jumpstarter.ExporterSelector)},
+			[2]string{"Jumpstarter Flash Cmd", valueOrDash(st.Jumpstarter.FlashCmd)},
+			[2]string{"Jumpstarter Lease ID", valueOrDash(st.Jumpstarter.LeaseID)},
+		)
+	}
+
+	for _, row := range rows {
+		if _, err := fmt.Fprintf(w, "%s\t%s\n", row[0], row[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to write output row: %v\n", err)
+			return
+		}
+	}
+}
+
+func valueOrDash(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "-"
+	}
+	return v
 }
 
 func formatAge(rfcTime string) string {
