@@ -66,6 +66,22 @@ const (
 	flashTaskRunLabel = "automotive.sdv.cloud.redhat.com/flash-taskrun"
 )
 
+var getClientFromRequestFn = getClientFromRequest
+var loadOperatorConfigFn = func(
+	ctx context.Context,
+	k8sClient client.Client,
+	namespace string,
+) (*automotivev1alpha1.OperatorConfig, error) {
+	operatorConfig := &automotivev1alpha1.OperatorConfig{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{
+		Namespace: namespace,
+		Name:      "config",
+	}, operatorConfig); err != nil {
+		return nil, err
+	}
+	return operatorConfig, nil
+}
+
 // defaultInternalRegistryURL is an alias for the shared constant.
 const defaultInternalRegistryURL = tasks.DefaultInternalRegistryURL
 
@@ -460,6 +476,12 @@ func (a *APIServer) createRouter() *gin.Engine {
 			flashGroup.GET("", a.handleListFlash)
 			flashGroup.GET("/:name", a.handleGetFlash)
 			flashGroup.GET("/:name/logs", a.handleFlashLogs)
+		}
+
+		configGroup := v1.Group("/config")
+		configGroup.Use(a.authMiddleware())
+		{
+			configGroup.GET("", a.handleGetOperatorConfig)
 		}
 
 		// Register catalog routes with authentication
@@ -2374,6 +2396,46 @@ func (a *APIServer) handleGetAuthConfig(c *gin.Context) {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
+	c.JSON(http.StatusOK, response)
+}
+
+func (a *APIServer) handleGetOperatorConfig(c *gin.Context) {
+	ctx := c.Request.Context()
+	reqID, _ := c.Get("reqID")
+
+	a.log.Info("getting operator config", "reqID", reqID)
+
+	k8sClient, err := getClientFromRequestFn(c)
+	if err != nil {
+		a.log.Error(err, "failed to get k8s client", "reqID", reqID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create Kubernetes client"})
+		return
+	}
+
+	namespace := resolveNamespace()
+
+	operatorConfig, err := loadOperatorConfigFn(ctx, k8sClient, namespace)
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			a.log.Info("OperatorConfig not found; returning empty operator config response", "reqID", reqID, "namespace", namespace)
+			c.JSON(http.StatusOK, OperatorConfigResponse{})
+			return
+		}
+		a.log.Error(err, "failed to get OperatorConfig", "reqID", reqID, "namespace", namespace)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get operator configuration"})
+		return
+	}
+
+	// Build the response with Jumpstarter target mappings
+	response := OperatorConfigResponse{}
+
+	if operatorConfig.Spec.Jumpstarter != nil && len(operatorConfig.Spec.Jumpstarter.TargetMappings) > 0 {
+		response.JumpstarterTargets = make(map[string]string)
+		for target, mapping := range operatorConfig.Spec.Jumpstarter.TargetMappings {
+			response.JumpstarterTargets[target] = mapping.Selector
+		}
+	}
+
 	c.JSON(http.StatusOK, response)
 }
 

@@ -715,6 +715,32 @@ func applyRegistryCredentialsToRequest(req *buildapitypes.BuildRequest) {
 	}
 }
 
+// validateFlashTargetMapping validates that the selected target has a Jumpstarter mapping.
+func validateFlashTargetMapping(ctx context.Context, api *buildapiclient.Client, target string) {
+	config, err := api.GetOperatorConfig(ctx)
+	if err != nil {
+		handleError(fmt.Errorf("failed to get operator configuration for Jumpstarter validation: %w", err))
+	}
+
+	if len(config.JumpstarterTargets) == 0 {
+		handleError(fmt.Errorf("flash enabled but no Jumpstarter target mappings configured in operator"))
+	}
+
+	if _, exists := config.JumpstarterTargets[target]; !exists {
+		availableTargets := make([]string, 0, len(config.JumpstarterTargets))
+		for t := range config.JumpstarterTargets {
+			availableTargets = append(availableTargets, t)
+		}
+		handleError(
+			fmt.Errorf(
+				"flash enabled but no Jumpstarter target mapping found for target %q. Available targets: %v",
+				target,
+				availableTargets,
+			),
+		)
+	}
+}
+
 // displayBuildResults shows push locations after build completion
 func displayBuildResults(ctx context.Context, api *buildapiclient.Client, buildName string) {
 	if useInternalRegistry {
@@ -806,6 +832,7 @@ func runBuild(_ *cobra.Command, args []string) {
 		if jumpstarterClient == "" {
 			handleError(fmt.Errorf("--flash requires --client to specify Jumpstarter client config file"))
 		}
+		validateFlashTargetMapping(ctx, api, target)
 		clientConfigBytes, err := os.ReadFile(jumpstarterClient)
 		if err != nil {
 			handleError(fmt.Errorf("failed to read Jumpstarter client config: %w", err))
@@ -896,6 +923,7 @@ func runDisk(_ *cobra.Command, args []string) {
 		if jumpstarterClient == "" {
 			handleError(fmt.Errorf("--flash requires --client to specify Jumpstarter client config file"))
 		}
+		validateFlashTargetMapping(ctx, api, target)
 		clientConfigBytes, err := os.ReadFile(jumpstarterClient)
 		if err != nil {
 			handleError(fmt.Errorf("failed to read Jumpstarter client config: %w", err))
@@ -1288,6 +1316,8 @@ func runBuildDev(_ *cobra.Command, args []string) {
 		if jumpstarterClient == "" {
 			handleError(fmt.Errorf("--flash requires --client to specify Jumpstarter client config file"))
 		}
+		validateFlashTargetMapping(ctx, api, target)
+
 		clientConfigBytes, err := os.ReadFile(jumpstarterClient)
 		if err != nil {
 			handleError(fmt.Errorf("failed to read Jumpstarter client config: %w", err))
