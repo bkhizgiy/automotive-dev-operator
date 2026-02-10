@@ -88,6 +88,10 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+        - name: WATCH_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         - name: OPERATOR_IMAGE
           value: quay.io/rh-sdv-cloud/automotive-dev-operator:latest
         ports:

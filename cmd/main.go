@@ -30,6 +30,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -160,16 +161,35 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Support namespace-scoped operation for multi-instance deployment
+	watchNamespace := os.Getenv("WATCH_NAMESPACE")
+	if watchNamespace != "" {
+		setupLog.Info("configuring namespace-scoped operation", "namespace", watchNamespace)
+	} else {
+		setupLog.Info("configuring cluster-scoped operation")
+	}
+
 	setupLog.Info("starting controller", "mode", mode, "leaderElectionID", leaderElectionID)
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	mgrOptions := ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       leaderElectionID,
-	})
+	}
+
+	// Set namespace scope if specified
+	if watchNamespace != "" {
+		mgrOptions.Cache = cache.Options{
+			DefaultNamespaces: map[string]cache.Config{
+				watchNamespace: {},
+			},
+		}
+	}
+
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), mgrOptions)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
