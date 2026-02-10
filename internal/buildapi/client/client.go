@@ -391,3 +391,33 @@ func (c *Client) UploadFiles(ctx context.Context, name string, files []Upload) e
 	}
 	return nil
 }
+
+// GetOperatorConfig retrieves the operator configuration for CLI validation.
+func (c *Client) GetOperatorConfig(ctx context.Context) (*buildapi.OperatorConfigResponse, error) {
+	endpoint := c.resolve("/v1/config")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
+		}
+	}()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("get config failed: %s: %s", resp.Status, string(b))
+	}
+	var config buildapi.OperatorConfigResponse
+	if err := json.NewDecoder(resp.Body).Decode(&config); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+	return &config, nil
+}

@@ -233,6 +233,12 @@ type BuildListItem struct {
 	DiskImage      string `json:"diskImage,omitempty"`
 }
 
+// OperatorConfigResponse returns relevant operator configuration for CLI validation
+type OperatorConfigResponse struct {
+	// JumpstarterTargets contains the target mappings for Jumpstarter flashing
+	JumpstarterTargets map[string]string `json:"jumpstarterTargets,omitempty"`
+}
+
 type (
 	// BuildRequestAlias is an alias for BuildRequest used for backward compatibility.
 	BuildRequestAlias = BuildRequest
