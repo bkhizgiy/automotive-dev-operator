@@ -33,6 +33,7 @@ import (
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/auth"
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/catalog"
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/config"
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/sealed"
 	buildapitypes "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi"
 	buildapiclient "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi/client"
 	"github.com/fatih/color"
@@ -687,7 +688,13 @@ Example:
 	_ = flashCmd.MarkFlagRequired("client")
 
 	// Add all commands
+<<<<<<< HEAD
 	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, showCmd, downloadCmd, flashCmd, logsCmd, loginCmd, catalog.NewCatalogCmd())
+=======
+	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, showCmd, downloadCmd, flashCmd, loginCmd, loginCmd, catalog.NewCatalogCmd(), sealed.NewSealedCmd())
+	// Add deprecated aliases for backwards compatibility
+	rootCmd.AddCommand(buildBootcAliasCmd, buildLegacyAliasCmd, buildTraditionalAliasCmd)
+>>>>>>> 7d3f8f2 (Add seal image commands to caib CLI)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
