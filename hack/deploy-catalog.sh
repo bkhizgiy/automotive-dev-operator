@@ -63,6 +63,7 @@ fi
 # Configuration
 VERSION=${VERSION:-0.0.1}
 NAMESPACE=${NAMESPACE:-automotive-dev-operator-system}
+CATALOG_NAME=${CATALOG_NAME:-automotive-dev-operator-catalog}
 
 # Detect OpenShift internal registry
 echo "Detecting OpenShift internal registry..."
@@ -97,7 +98,7 @@ OPERATOR_TAG="latest"
 OPERATOR_IMG="${REGISTRY}/${NAMESPACE}/automotive-dev-operator:${OPERATOR_TAG}"
 
 BUNDLE_IMG="${REGISTRY}/${CATALOG_NAMESPACE}/automotive-dev-operator-bundle:v${VERSION}"
-CATALOG_IMG="${REGISTRY}/${CATALOG_NAMESPACE}/automotive-dev-operator-catalog:v${VERSION}"
+CATALOG_IMG="${REGISTRY}/${CATALOG_NAMESPACE}/${CATALOG_NAME}:v${VERSION}"
 CONTAINER_TOOL=${CONTAINER_TOOL:-podman}
 
 uninstall_operator() {
@@ -146,9 +147,9 @@ uninstall_operator() {
     oc wait --for=delete pod -l app.kubernetes.io/component=build-controller -n ${NAMESPACE} --timeout=60s 2>/dev/null || true
 
     echo "Deleting CatalogSource to force catalog refresh..."
-    oc delete catalogsource automotive-dev-operator-catalog -n ${CATALOG_NAMESPACE} --ignore-not-found=true
+    oc delete catalogsource ${CATALOG_NAME} -n ${CATALOG_NAMESPACE} --ignore-not-found=true
     echo "Waiting for catalog pod to terminate..."
-    oc wait --for=delete pod -l olm.catalogSource=automotive-dev-operator-catalog -n ${CATALOG_NAMESPACE} --timeout=60s 2>/dev/null || true
+    oc wait --for=delete pod -l olm.catalogSource=${CATALOG_NAME} -n ${CATALOG_NAMESPACE} --timeout=60s 2>/dev/null || true
 
     echo "Operator uninstall complete."
     echo ""
@@ -316,8 +317,10 @@ ${CONTAINER_TOOL} push ${CATALOG_IMG} --tls-verify=false
 
 echo ""
 echo "Updating CatalogSource manifest..."
-CATALOG_IMG_INTERNAL="image-registry.openshift-image-registry.svc:5000/${CATALOG_NAMESPACE}/automotive-dev-operator-catalog:v${VERSION}"
+CATALOG_IMG_INTERNAL="image-registry.openshift-image-registry.svc:5000/${CATALOG_NAMESPACE}/${CATALOG_NAME}:v${VERSION}"
 sed -i.bak "s|image:.*|image: ${CATALOG_IMG_INTERNAL}|g" catalogsource.yaml
+# Update metadata.name by pattern so repeated runs with different CATALOG_NAME keep working.
+sed -i.bak "/^metadata:/,/^spec:/ s|^  name:.*|  name: ${CATALOG_NAME}|g" catalogsource.yaml
 rm -f catalogsource.yaml.bak
 
 echo ""
@@ -345,7 +348,7 @@ if [ "$COMMAND" = "redeploy" ]; then
     echo ""
     echo "Waiting for catalog pod to be ready..."
     for i in {1..60}; do
-        CATALOG_POD=$(oc get pods -n ${CATALOG_NAMESPACE} -l olm.catalogSource=automotive-dev-operator-catalog -o name 2>/dev/null || echo "")
+        CATALOG_POD=$(oc get pods -n ${CATALOG_NAMESPACE} -l olm.catalogSource=${CATALOG_NAME} -o name 2>/dev/null || echo "")
         if [ -n "$CATALOG_POD" ]; then
             oc wait --for=condition=Ready ${CATALOG_POD} -n ${CATALOG_NAMESPACE} --timeout=120s && break
         fi

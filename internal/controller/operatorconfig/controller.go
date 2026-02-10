@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -16,6 +17,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -27,7 +29,6 @@ import (
 )
 
 const (
-	operatorNamespace     = "automotive-dev-operator-system"
 	finalizerName         = "operatorconfig.automotive.sdv.cloud.redhat.com/finalizer"
 	buildAPIName          = "ado-build-api"
 	phaseFailed           = "Failed"
@@ -39,23 +40,37 @@ func isNoMatchError(err error) bool {
 	if err == nil {
 		return false
 	}
-	errMsg := err.Error()
-	return errMsg == "no matches for kind \"Route\" in version \"route.openshift.io/v1\"" ||
-		errMsg == "no matches for kind \"Ingress\" in version \"networking.k8s.io/v1\""
+	if apimeta.IsNoMatchError(err) {
+		return true
+	}
+	errMsg := strings.ToLower(err.Error())
+	return strings.Contains(errMsg, "no matches for kind \"route\"") ||
+		strings.Contains(errMsg, "no matches for kind \"ingress\"")
 }
 
-// detectOpenShift checks if we're running on OpenShift by looking for OpenShift-specific APIs
-func (r *OperatorConfigReconciler) detectOpenShift(ctx context.Context) bool {
+// detectOpenShift checks if we're running on OpenShift by looking for OpenShift-specific APIs.
+// The probe uses the reconciled namespace so it works with namespace-scoped caches.
+func (r *OperatorConfigReconciler) detectOpenShift(ctx context.Context, namespace string) bool {
 	if r.IsOpenShift != nil {
 		return *r.IsOpenShift
+	}
+	if namespace == "" {
+		namespace = "default"
 	}
 
 	route := &routev1.Route{}
 	route.Name = "test"
-	route.Namespace = "default"
-	err := r.Get(ctx, client.ObjectKey{Name: "test", Namespace: "default"}, route)
+	route.Namespace = namespace
+	err := r.Get(ctx, client.ObjectKey{Name: "test", Namespace: namespace}, route)
 
-	isOpenShift := !isNoMatchError(err)
+	// Route API exists on OpenShift; probing a dummy object should return NotFound there.
+	// Any ambiguous error is treated as non-OpenShift to avoid creating OpenShift-only resources on Kubernetes.
+	isOpenShift := err == nil || errors.IsNotFound(err)
+	if err != nil && !errors.IsNotFound(err) && !isNoMatchError(err) {
+		r.Log.Error(err, "OpenShift detection probe failed unexpectedly, defaulting to non-OpenShift")
+		isOpenShift = false
+	}
+
 	r.IsOpenShift = &isOpenShift
 	r.Log.Info("Platform detected", "isOpenShift", isOpenShift)
 	return isOpenShift
@@ -148,7 +163,7 @@ func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// Handle deletion
 	if !config.DeletionTimestamp.IsZero() {
 		log.Info("Handling deletion")
-		if err := r.cleanupOSBuilds(ctx); err != nil {
+		if err := r.cleanupOSBuilds(ctx, config); err != nil {
 			log.Error(err, "Failed to cleanup OSBuilds")
 			return ctrl.Result{}, err
 		}
@@ -187,7 +202,7 @@ func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			statusChanged = true
 		}
 	} else {
-		if err := r.cleanupOSBuilds(ctx); err != nil {
+		if err := r.cleanupOSBuilds(ctx, config); err != nil {
 			log.Error(err, "Failed to cleanup OSBuilds")
 			if config.Status.Phase != phaseFailed {
 				config.Status.Phase = phaseFailed
@@ -244,16 +259,16 @@ func (r *OperatorConfigReconciler) deployBuildAPI(ctx context.Context, owner *au
 	r.Log.Info("Build API will read authentication config directly from OperatorConfig")
 
 	// Update ServiceAccount with build-api OAuth redirect annotation
-	if err := r.updateBuildAPIServiceAccountAnnotation(ctx); err != nil {
+	if err := r.updateBuildAPIServiceAccountAnnotation(ctx, owner); err != nil {
 		r.Log.Error(err, "Failed to update ServiceAccount build-api OAuth annotation")
 		return fmt.Errorf("failed to update ServiceAccount build-api OAuth annotation: %w", err)
 	}
 
-	isOpenShift := r.detectOpenShift(ctx)
+	isOpenShift := r.detectOpenShift(ctx, owner.Namespace)
 
 	// Create/update build-api deployment
 	r.Log.Info("Creating/updating build-api deployment")
-	buildAPIDeployment := r.buildBuildAPIDeployment(isOpenShift)
+	buildAPIDeployment := r.buildBuildAPIDeployment(owner.Namespace, isOpenShift)
 	if err := r.createOrUpdate(ctx, buildAPIDeployment, owner); err != nil {
 		r.Log.Error(err, "Failed to create/update build-api deployment")
 		return fmt.Errorf("failed to create/update build-api deployment: %w", err)
@@ -262,7 +277,7 @@ func (r *OperatorConfigReconciler) deployBuildAPI(ctx context.Context, owner *au
 
 	// Create/update build-api service
 	r.Log.Info("Creating/updating build-api service")
-	buildAPIService := r.buildBuildAPIService(isOpenShift)
+	buildAPIService := r.buildBuildAPIService(owner.Namespace, isOpenShift)
 	if err := r.createOrUpdate(ctx, buildAPIService, owner); err != nil {
 		r.Log.Error(err, "Failed to create/update build-api service")
 		return fmt.Errorf("failed to create/update build-api service: %w", err)
@@ -271,7 +286,7 @@ func (r *OperatorConfigReconciler) deployBuildAPI(ctx context.Context, owner *au
 
 	// Create/update build-api route (OpenShift)
 	r.Log.Info("Creating/updating build-api route")
-	buildAPIRoute := r.buildBuildAPIRoute()
+	buildAPIRoute := r.buildBuildAPIRoute(owner.Namespace)
 	if err := r.createOrUpdate(ctx, buildAPIRoute, owner); err != nil {
 		r.Log.Error(err, "Failed to create/update build-api route (this is expected on non-OpenShift clusters)")
 	} else {
@@ -280,7 +295,7 @@ func (r *OperatorConfigReconciler) deployBuildAPI(ctx context.Context, owner *au
 
 	// Create/update build-api ingress (Kubernetes)
 	r.Log.Info("Creating/updating build-api ingress")
-	buildAPIIngress := r.buildBuildAPIIngress()
+	buildAPIIngress := r.buildBuildAPIIngress(owner.Namespace)
 	if err := r.createOrUpdate(ctx, buildAPIIngress, owner); err != nil {
 		r.Log.Error(err,
 			"Failed to create/update build-api ingress (expected if ingress controller is not installed)")
@@ -294,18 +309,18 @@ func (r *OperatorConfigReconciler) deployBuildAPI(ctx context.Context, owner *au
 
 func (r *OperatorConfigReconciler) ensureBuildAPIOAuthSecret(
 	ctx context.Context,
-	_ *automotivev1alpha1.OperatorConfig,
+	owner *automotivev1alpha1.OperatorConfig,
 ) error {
 	secretName := "ado-build-api-oauth-proxy"
 	secret := &corev1.Secret{}
-	err := r.Get(ctx, client.ObjectKey{Name: secretName, Namespace: operatorNamespace}, secret)
+	err := r.Get(ctx, client.ObjectKey{Name: secretName, Namespace: owner.Namespace}, secret)
 
 	if err != nil {
 		if !errors.IsNotFound(err) {
 			return fmt.Errorf("failed to get secret %s: %w", secretName, err)
 		}
 		// Secret doesn't exist, create it
-		secret = r.buildOAuthSecret(secretName)
+		secret = r.buildOAuthSecret(secretName, owner.Namespace)
 		if err := r.Create(ctx, secret); err != nil {
 			return fmt.Errorf("failed to create secret %s: %w", secretName, err)
 		}
@@ -314,9 +329,9 @@ func (r *OperatorConfigReconciler) ensureBuildAPIOAuthSecret(
 	return nil
 }
 
-func (r *OperatorConfigReconciler) updateBuildAPIServiceAccountAnnotation(ctx context.Context) error {
+func (r *OperatorConfigReconciler) updateBuildAPIServiceAccountAnnotation(ctx context.Context, owner *automotivev1alpha1.OperatorConfig) error {
 	sa := &corev1.ServiceAccount{}
-	if err := r.Get(ctx, client.ObjectKey{Name: "ado-operator", Namespace: operatorNamespace}, sa); err != nil {
+	if err := r.Get(ctx, client.ObjectKey{Name: "ado-operator", Namespace: owner.Namespace}, sa); err != nil {
 		return fmt.Errorf("failed to get service account: %w", err)
 	}
 
@@ -339,11 +354,11 @@ func (r *OperatorConfigReconciler) updateBuildAPIServiceAccountAnnotation(ctx co
 	return nil
 }
 
-func (r *OperatorConfigReconciler) cleanupBuildAPI(ctx context.Context) error {
+func (r *OperatorConfigReconciler) cleanupBuildAPI(ctx context.Context, config *automotivev1alpha1.OperatorConfig) error {
 	// Delete build-api deployment
 	deployment := &appsv1.Deployment{}
 	deployment.Name = buildAPIName
-	deployment.Namespace = operatorNamespace
+	deployment.Namespace = config.Namespace
 	if err := r.Delete(ctx, deployment); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to delete build-api deployment: %w", err)
 	}
@@ -351,7 +366,7 @@ func (r *OperatorConfigReconciler) cleanupBuildAPI(ctx context.Context) error {
 	// Delete build-api service
 	service := &corev1.Service{}
 	service.Name = buildAPIName
-	service.Namespace = operatorNamespace
+	service.Namespace = config.Namespace
 	if err := r.Delete(ctx, service); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to delete build-api service: %w", err)
 	}
@@ -359,7 +374,7 @@ func (r *OperatorConfigReconciler) cleanupBuildAPI(ctx context.Context) error {
 	// Delete build-api route (OpenShift only)
 	route := &routev1.Route{}
 	route.Name = buildAPIName
-	route.Namespace = operatorNamespace
+	route.Namespace = config.Namespace
 	if err := r.Delete(ctx, route); err != nil && !errors.IsNotFound(err) && !isNoMatchError(err) {
 		r.Log.Error(err, "Failed to delete build-api route (ignoring, expected on non-OpenShift clusters)")
 	}
@@ -367,7 +382,7 @@ func (r *OperatorConfigReconciler) cleanupBuildAPI(ctx context.Context) error {
 	// Delete build-api ingress
 	ingress := &networkingv1.Ingress{}
 	ingress.Name = buildAPIName
-	ingress.Namespace = operatorNamespace
+	ingress.Namespace = config.Namespace
 	if err := r.Delete(ctx, ingress); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to delete build-api ingress: %w", err)
 	}
@@ -375,7 +390,7 @@ func (r *OperatorConfigReconciler) cleanupBuildAPI(ctx context.Context) error {
 	// Delete build-api OAuth secret
 	secret := &corev1.Secret{}
 	secret.Name = "ado-build-api-oauth-proxy"
-	secret.Namespace = operatorNamespace
+	secret.Namespace = config.Namespace
 	if err := r.Delete(ctx, secret); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to delete build-api OAuth secret: %w", err)
 	}
@@ -383,7 +398,7 @@ func (r *OperatorConfigReconciler) cleanupBuildAPI(ctx context.Context) error {
 	// Delete build-api internal JWT secret
 	jwtSecret := &corev1.Secret{}
 	jwtSecret.Name = internalJWTSecretName
-	jwtSecret.Namespace = operatorNamespace
+	jwtSecret.Namespace = config.Namespace
 	if err := r.Delete(ctx, jwtSecret); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to delete build-api internal JWT secret: %w", err)
 	}
@@ -393,15 +408,15 @@ func (r *OperatorConfigReconciler) cleanupBuildAPI(ctx context.Context) error {
 
 const internalJWTExpiryThreshold = 30 * 24 * time.Hour // Regenerate when within 30 days of expiry
 
-func (r *OperatorConfigReconciler) ensureBuildAPIInternalJWTSecret(ctx context.Context, _ *automotivev1alpha1.OperatorConfig) error {
+func (r *OperatorConfigReconciler) ensureBuildAPIInternalJWTSecret(ctx context.Context, owner *automotivev1alpha1.OperatorConfig) error {
 	secret := &corev1.Secret{}
-	err := r.Get(ctx, client.ObjectKey{Name: internalJWTSecretName, Namespace: operatorNamespace}, secret)
+	err := r.Get(ctx, client.ObjectKey{Name: internalJWTSecretName, Namespace: owner.Namespace}, secret)
 	if err != nil {
 		if !errors.IsNotFound(err) {
 			return fmt.Errorf("failed to get internal JWT secret %s: %w", internalJWTSecretName, err)
 		}
 		// Secret doesn't exist, create it
-		secret, err = r.buildInternalJWTSecret(internalJWTSecretName)
+		secret, err = r.buildInternalJWTSecret(internalJWTSecretName, owner.Namespace)
 		if err != nil {
 			return fmt.Errorf("failed to build internal JWT secret: %w", err)
 		}
@@ -416,27 +431,27 @@ func (r *OperatorConfigReconciler) ensureBuildAPIInternalJWTSecret(ctx context.C
 	if !ok {
 		// No expires-at (old secret format), regenerate
 		r.Log.Info("Internal JWT secret missing expires-at, regenerating", "name", internalJWTSecretName)
-		return r.regenerateInternalJWTSecret(ctx)
+		return r.regenerateInternalJWTSecret(ctx, owner)
 	}
 	expiresAt, err := time.Parse(time.RFC3339, string(expiresAtBytes))
 	if err != nil {
 		r.Log.Info("Internal JWT secret has invalid expires-at, regenerating", "name", internalJWTSecretName, "error", err)
-		return r.regenerateInternalJWTSecret(ctx)
+		return r.regenerateInternalJWTSecret(ctx, owner)
 	}
 	if time.Until(expiresAt) < internalJWTExpiryThreshold {
 		r.Log.Info("Internal JWT secret expired or expiring soon, regenerating", "name", internalJWTSecretName, "expiresAt", expiresAt)
-		return r.regenerateInternalJWTSecret(ctx)
+		return r.regenerateInternalJWTSecret(ctx, owner)
 	}
 	return nil
 }
 
-func (r *OperatorConfigReconciler) regenerateInternalJWTSecret(ctx context.Context) error {
-	secret, err := r.buildInternalJWTSecret(internalJWTSecretName)
+func (r *OperatorConfigReconciler) regenerateInternalJWTSecret(ctx context.Context, owner *automotivev1alpha1.OperatorConfig) error {
+	secret, err := r.buildInternalJWTSecret(internalJWTSecretName, owner.Namespace)
 	if err != nil {
 		return fmt.Errorf("failed to build internal JWT secret: %w", err)
 	}
 	existing := &corev1.Secret{}
-	if err := r.Get(ctx, client.ObjectKey{Name: internalJWTSecretName, Namespace: operatorNamespace}, existing); err != nil {
+	if err := r.Get(ctx, client.ObjectKey{Name: internalJWTSecretName, Namespace: owner.Namespace}, existing); err != nil {
 		if !errors.IsNotFound(err) {
 			return err
 		}
@@ -509,10 +524,10 @@ func (r *OperatorConfigReconciler) deployOSBuilds(
 
 	// Generate and deploy Tekton tasks
 	tektonTasks := []*tektonv1.Task{
-		tasks.GenerateBuildAutomotiveImageTask(operatorNamespace, buildConfig, ""),
-		tasks.GeneratePushArtifactRegistryTask(operatorNamespace),
-		tasks.GeneratePrepareBuilderTask(operatorNamespace, buildConfig),
-		tasks.GenerateFlashTask(operatorNamespace),
+		tasks.GenerateBuildAutomotiveImageTask(config.Namespace, buildConfig, ""),
+		tasks.GeneratePushArtifactRegistryTask(config.Namespace),
+		tasks.GeneratePrepareBuilderTask(config.Namespace, buildConfig),
+		tasks.GenerateFlashTask(config.Namespace),
 	}
 
 	for _, task := range tektonTasks {
@@ -531,7 +546,7 @@ func (r *OperatorConfigReconciler) deployOSBuilds(
 	}
 
 	// Generate and deploy Tekton pipeline
-	pipeline := tasks.GenerateTektonPipeline("automotive-build-pipeline", operatorNamespace)
+	pipeline := tasks.GenerateTektonPipeline("automotive-build-pipeline", config.Namespace)
 	pipeline.Labels["automotive.sdv.cloud.redhat.com/managed-by"] = config.Name
 
 	if err := controllerutil.SetControllerReference(config, pipeline, r.Scheme); err != nil {
@@ -551,7 +566,7 @@ func (r *OperatorConfigReconciler) createOrUpdatePartitionConfig(ctx context.Con
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "aib-partition-config",
-			Namespace: operatorNamespace,
+			Namespace: owner.Namespace,
 		},
 		Data: map[string]string{
 			"partition-rules.yaml": `targets:
@@ -577,7 +592,7 @@ func (r *OperatorConfigReconciler) deployBuildController(ctx context.Context, co
 	r.Log.Info("Starting build controller deployment")
 
 	// Create/update ServiceAccount
-	sa := r.buildBuildControllerServiceAccount()
+	sa := r.buildBuildControllerServiceAccount(config.Namespace)
 	if err := r.createOrUpdate(ctx, sa, config); err != nil {
 		return fmt.Errorf("failed to create/update build controller service account: %w", err)
 	}
@@ -589,25 +604,25 @@ func (r *OperatorConfigReconciler) deployBuildController(ctx context.Context, co
 	}
 
 	// Create/update ClusterRoleBinding
-	clusterRoleBinding := r.buildBuildControllerClusterRoleBinding()
+	clusterRoleBinding := r.buildBuildControllerClusterRoleBinding(config.Namespace)
 	if err := r.createOrUpdate(ctx, clusterRoleBinding, config); err != nil {
 		return fmt.Errorf("failed to create/update build controller cluster role binding: %w", err)
 	}
 
 	// Create/update leader election Role
-	leRole := r.buildBuildControllerLeaderElectionRole()
+	leRole := r.buildBuildControllerLeaderElectionRole(config.Namespace)
 	if err := r.createOrUpdate(ctx, leRole, config); err != nil {
 		return fmt.Errorf("failed to create/update build controller leader election role: %w", err)
 	}
 
 	// Create/update leader election RoleBinding
-	leRoleBinding := r.buildBuildControllerLeaderElectionRoleBinding()
+	leRoleBinding := r.buildBuildControllerLeaderElectionRoleBinding(config.Namespace)
 	if err := r.createOrUpdate(ctx, leRoleBinding, config); err != nil {
 		return fmt.Errorf("failed to create/update build controller leader election role binding: %w", err)
 	}
 
 	// Create/update Deployment with owner reference for reconciliation
-	deployment := r.buildBuildControllerDeployment()
+	deployment := r.buildBuildControllerDeployment(config.Namespace)
 	if err := controllerutil.SetControllerReference(config, deployment, r.Scheme); err != nil {
 		return fmt.Errorf("failed to set controller reference on build controller deployment: %w", err)
 	}
@@ -619,7 +634,7 @@ func (r *OperatorConfigReconciler) deployBuildController(ctx context.Context, co
 	return nil
 }
 
-func (r *OperatorConfigReconciler) cleanupBuildController(ctx context.Context) error {
+func (r *OperatorConfigReconciler) cleanupBuildController(ctx context.Context, config *automotivev1alpha1.OperatorConfig) error {
 	// In "all" mode, build controllers run in-process; nothing to clean up.
 	if os.Getenv("OPERATOR_MODE") == "all" {
 		r.Log.Info("Skipping build controller cleanup (running in 'all' mode)")
@@ -630,7 +645,7 @@ func (r *OperatorConfigReconciler) cleanupBuildController(ctx context.Context) e
 	// Delete Deployment
 	deployment := &appsv1.Deployment{}
 	deployment.Name = buildControllerName
-	deployment.Namespace = operatorNamespace
+	deployment.Namespace = config.Namespace
 	if err := r.Delete(ctx, deployment); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to delete build controller deployment: %w", err)
 	}
@@ -638,7 +653,7 @@ func (r *OperatorConfigReconciler) cleanupBuildController(ctx context.Context) e
 	// Delete ServiceAccount
 	sa := &corev1.ServiceAccount{}
 	sa.Name = buildControllerName
-	sa.Namespace = operatorNamespace
+	sa.Namespace = config.Namespace
 	if err := r.Delete(ctx, sa); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to delete build controller service account: %w", err)
 	}
@@ -660,7 +675,7 @@ func (r *OperatorConfigReconciler) cleanupBuildController(ctx context.Context) e
 	// Delete leader election Role
 	leRole := &rbacv1.Role{}
 	leRole.Name = buildControllerName + "-leader-election"
-	leRole.Namespace = operatorNamespace
+	leRole.Namespace = config.Namespace
 	if err := r.Delete(ctx, leRole); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to delete build controller leader election role: %w", err)
 	}
@@ -668,7 +683,7 @@ func (r *OperatorConfigReconciler) cleanupBuildController(ctx context.Context) e
 	// Delete leader election RoleBinding
 	leRoleBinding := &rbacv1.RoleBinding{}
 	leRoleBinding.Name = buildControllerName + "-leader-election"
-	leRoleBinding.Namespace = operatorNamespace
+	leRoleBinding.Namespace = config.Namespace
 	if err := r.Delete(ctx, leRoleBinding); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to delete build controller leader election role binding: %w", err)
 	}
@@ -677,13 +692,13 @@ func (r *OperatorConfigReconciler) cleanupBuildController(ctx context.Context) e
 	return nil
 }
 
-func (r *OperatorConfigReconciler) cleanupOSBuilds(ctx context.Context) error {
+func (r *OperatorConfigReconciler) cleanupOSBuilds(ctx context.Context, config *automotivev1alpha1.OperatorConfig) error {
 	r.Log.Info("Cleaning up OSBuilds resources")
 
 	// Delete partition configuration ConfigMap
 	configMap := &corev1.ConfigMap{}
 	configMap.Name = "aib-partition-config"
-	configMap.Namespace = operatorNamespace
+	configMap.Namespace = config.Namespace
 	if err := r.Delete(ctx, configMap); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to delete partition configuration ConfigMap: %w", err)
 	}
@@ -694,7 +709,7 @@ func (r *OperatorConfigReconciler) cleanupOSBuilds(ctx context.Context) error {
 	for _, taskName := range taskNames {
 		task := &tektonv1.Task{}
 		task.Name = taskName
-		task.Namespace = operatorNamespace
+		task.Namespace = config.Namespace
 		if err := r.Delete(ctx, task); err != nil && !errors.IsNotFound(err) {
 			return fmt.Errorf("failed to delete task %s: %w", taskName, err)
 		}
@@ -704,19 +719,19 @@ func (r *OperatorConfigReconciler) cleanupOSBuilds(ctx context.Context) error {
 	// Delete Tekton pipeline
 	pipeline := &tektonv1.Pipeline{}
 	pipeline.Name = "automotive-build-pipeline"
-	pipeline.Namespace = operatorNamespace
+	pipeline.Namespace = config.Namespace
 	if err := r.Delete(ctx, pipeline); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to delete pipeline: %w", err)
 	}
 	r.Log.Info("Pipeline deleted")
 
 	// Cleanup build-api
-	if err := r.cleanupBuildAPI(ctx); err != nil {
+	if err := r.cleanupBuildAPI(ctx, config); err != nil {
 		return fmt.Errorf("failed to cleanup build-api: %w", err)
 	}
 
 	// Cleanup build controller
-	if err := r.cleanupBuildController(ctx); err != nil {
+	if err := r.cleanupBuildController(ctx, config); err != nil {
 		return fmt.Errorf("failed to cleanup build controller: %w", err)
 	}
 

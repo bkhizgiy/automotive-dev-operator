@@ -32,15 +32,11 @@ func getOperatorImage() string {
 }
 
 // buildBuildAPIContainers builds the container list for build-API deployment, conditionally including oauth-proxy
-func (r *OperatorConfigReconciler) buildBuildAPIContainers(isOpenShift bool) []corev1.Container {
+func (r *OperatorConfigReconciler) buildBuildAPIContainers(namespace string, isOpenShift bool) []corev1.Container {
 	buildAPIEnv := []corev1.EnvVar{
 		{
-			Name: "BUILD_API_NAMESPACE",
-			ValueFrom: &corev1.EnvVarSource{
-				FieldRef: &corev1.ObjectFieldSelector{
-					FieldPath: "metadata.namespace",
-				},
-			},
+			Name:  "BUILD_API_NAMESPACE",
+			Value: namespace,
 		},
 		{
 			Name: "INTERNAL_JWT_ISSUER",
@@ -98,6 +94,42 @@ func (r *OperatorConfigReconciler) buildBuildAPIContainers(isOpenShift bool) []c
 					ContainerPort: 8080,
 					Protocol:      corev1.ProtocolTCP,
 				},
+			},
+			LivenessProbe: &corev1.Probe{
+				ProbeHandler: corev1.ProbeHandler{
+					HTTPGet: &corev1.HTTPGetAction{
+						Path: "/v1/healthz",
+						Port: intstr.FromInt(8080),
+					},
+				},
+				InitialDelaySeconds: 15,
+				PeriodSeconds:       20,
+				TimeoutSeconds:      5,
+				FailureThreshold:    3,
+			},
+			ReadinessProbe: &corev1.Probe{
+				ProbeHandler: corev1.ProbeHandler{
+					HTTPGet: &corev1.HTTPGetAction{
+						Path: "/v1/healthz",
+						Port: intstr.FromInt(8080),
+					},
+				},
+				InitialDelaySeconds: 5,
+				PeriodSeconds:       10,
+				TimeoutSeconds:      3,
+				FailureThreshold:    3,
+			},
+			StartupProbe: &corev1.Probe{
+				ProbeHandler: corev1.ProbeHandler{
+					HTTPGet: &corev1.HTTPGetAction{
+						Path: "/v1/healthz",
+						Port: intstr.FromInt(8080),
+					},
+				},
+				InitialDelaySeconds: 10,
+				PeriodSeconds:       5,
+				TimeoutSeconds:      3,
+				FailureThreshold:    30, // Allow up to 150s for startup
 			},
 			// No volume mounts needed - Build API reads directly from OperatorConfig CRD
 			SecurityContext: &corev1.SecurityContext{
@@ -169,11 +201,11 @@ func (r *OperatorConfigReconciler) buildBuildAPIContainers(isOpenShift bool) []c
 	return containers
 }
 
-func (r *OperatorConfigReconciler) buildBuildAPIDeployment(isOpenShift bool) *appsv1.Deployment {
+func (r *OperatorConfigReconciler) buildBuildAPIDeployment(namespace string, isOpenShift bool) *appsv1.Deployment {
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "ado-build-api",
-			Namespace: operatorNamespace,
+			Namespace: namespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/name":      "automotive-dev-operator",
 				"app.kubernetes.io/component": "build-api",
@@ -217,7 +249,7 @@ func (r *OperatorConfigReconciler) buildBuildAPIDeployment(isOpenShift bool) *ap
 							},
 						},
 					},
-					Containers: r.buildBuildAPIContainers(isOpenShift),
+					Containers: r.buildBuildAPIContainers(namespace, isOpenShift),
 					// No volumes needed - Build API reads directly from OperatorConfig CRD
 				},
 			},
@@ -225,7 +257,7 @@ func (r *OperatorConfigReconciler) buildBuildAPIDeployment(isOpenShift bool) *ap
 	}
 }
 
-func (r *OperatorConfigReconciler) buildBuildAPIService(isOpenShift bool) *corev1.Service {
+func (r *OperatorConfigReconciler) buildBuildAPIService(namespace string, isOpenShift bool) *corev1.Service {
 	// Always expose port 8080 (direct access to build-api)
 	ports := []corev1.ServicePort{
 		{
@@ -249,7 +281,7 @@ func (r *OperatorConfigReconciler) buildBuildAPIService(isOpenShift bool) *corev
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "ado-build-api",
-			Namespace: operatorNamespace,
+			Namespace: namespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/name":      "automotive-dev-operator",
 				"app.kubernetes.io/component": "build-api",
@@ -266,11 +298,11 @@ func (r *OperatorConfigReconciler) buildBuildAPIService(isOpenShift bool) *corev
 	}
 }
 
-func (r *OperatorConfigReconciler) buildBuildAPIRoute() *routev1.Route {
+func (r *OperatorConfigReconciler) buildBuildAPIRoute(namespace string) *routev1.Route {
 	return &routev1.Route{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "ado-build-api",
-			Namespace: operatorNamespace,
+			Namespace: namespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/name":      "automotive-dev-operator",
 				"app.kubernetes.io/component": "build-api",
@@ -294,14 +326,14 @@ func (r *OperatorConfigReconciler) buildBuildAPIRoute() *routev1.Route {
 	}
 }
 
-func (r *OperatorConfigReconciler) buildBuildAPIIngress() *networkingv1.Ingress {
+func (r *OperatorConfigReconciler) buildBuildAPIIngress(namespace string) *networkingv1.Ingress {
 	pathTypePrefix := networkingv1.PathTypePrefix
 	ingressClassName := "nginx"
 
 	return &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "ado-build-api",
-			Namespace: operatorNamespace,
+			Namespace: namespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/name":      "automotive-dev-operator",
 				"app.kubernetes.io/component": "build-api",
@@ -341,7 +373,7 @@ func (r *OperatorConfigReconciler) buildBuildAPIIngress() *networkingv1.Ingress 
 	}
 }
 
-func (r *OperatorConfigReconciler) buildOAuthSecret(name string) *corev1.Secret {
+func (r *OperatorConfigReconciler) buildOAuthSecret(name, namespace string) *corev1.Secret {
 	// Generate a random 32-byte cookie secret for AES-256
 	cookieSecret := make([]byte, 32)
 	if _, err := rand.Read(cookieSecret); err != nil {
@@ -353,7 +385,7 @@ func (r *OperatorConfigReconciler) buildOAuthSecret(name string) *corev1.Secret 
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: operatorNamespace,
+			Namespace: namespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/name":    "automotive-dev-operator",
 				"app.kubernetes.io/part-of": "automotive-dev-operator",
@@ -366,7 +398,7 @@ func (r *OperatorConfigReconciler) buildOAuthSecret(name string) *corev1.Secret 
 	}
 }
 
-func (r *OperatorConfigReconciler) buildInternalJWTSecret(name string) (*corev1.Secret, error) {
+func (r *OperatorConfigReconciler) buildInternalJWTSecret(name, namespace string) (*corev1.Secret, error) {
 	signingKey, err := generateRandomToken(32)
 	if err != nil {
 		return nil, err
@@ -392,7 +424,7 @@ func (r *OperatorConfigReconciler) buildInternalJWTSecret(name string) (*corev1.
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: operatorNamespace,
+			Namespace: namespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/name":      "automotive-dev-operator",
 				"app.kubernetes.io/component": "build-api",
@@ -422,11 +454,11 @@ func generateRandomToken(length int) (string, error) {
 	return string(bytes), nil
 }
 
-func (r *OperatorConfigReconciler) buildBuildControllerDeployment() *appsv1.Deployment {
+func (r *OperatorConfigReconciler) buildBuildControllerDeployment(namespace string) *appsv1.Deployment {
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      buildControllerName,
-			Namespace: operatorNamespace,
+			Namespace: namespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/name":      "automotive-dev-operator",
 				"app.kubernetes.io/component": "build-controller",
@@ -468,6 +500,10 @@ func (r *OperatorConfigReconciler) buildBuildControllerDeployment() *appsv1.Depl
 								{
 									Name:  "OPERATOR_IMAGE",
 									Value: getOperatorImage(),
+								},
+								{
+									Name:  "WATCH_NAMESPACE",
+									Value: namespace,
 								},
 							},
 							Ports: []corev1.ContainerPort{
@@ -521,11 +557,11 @@ func (r *OperatorConfigReconciler) buildBuildControllerDeployment() *appsv1.Depl
 	}
 }
 
-func (r *OperatorConfigReconciler) buildBuildControllerServiceAccount() *corev1.ServiceAccount {
+func (r *OperatorConfigReconciler) buildBuildControllerServiceAccount(namespace string) *corev1.ServiceAccount {
 	return &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      buildControllerName,
-			Namespace: operatorNamespace,
+			Namespace: namespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/name":      "automotive-dev-operator",
 				"app.kubernetes.io/component": "build-controller",
@@ -677,7 +713,7 @@ func (r *OperatorConfigReconciler) buildBuildControllerClusterRole() *rbacv1.Clu
 	}
 }
 
-func (r *OperatorConfigReconciler) buildBuildControllerClusterRoleBinding() *rbacv1.ClusterRoleBinding {
+func (r *OperatorConfigReconciler) buildBuildControllerClusterRoleBinding(namespace string) *rbacv1.ClusterRoleBinding {
 	return &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: buildControllerName,
@@ -696,17 +732,17 @@ func (r *OperatorConfigReconciler) buildBuildControllerClusterRoleBinding() *rba
 			{
 				Kind:      "ServiceAccount",
 				Name:      buildControllerName,
-				Namespace: operatorNamespace,
+				Namespace: namespace,
 			},
 		},
 	}
 }
 
-func (r *OperatorConfigReconciler) buildBuildControllerLeaderElectionRole() *rbacv1.Role {
+func (r *OperatorConfigReconciler) buildBuildControllerLeaderElectionRole(namespace string) *rbacv1.Role {
 	return &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      buildControllerName + "-leader-election",
-			Namespace: operatorNamespace,
+			Namespace: namespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/name":      "automotive-dev-operator",
 				"app.kubernetes.io/component": "build-controller",
@@ -733,11 +769,11 @@ func (r *OperatorConfigReconciler) buildBuildControllerLeaderElectionRole() *rba
 	}
 }
 
-func (r *OperatorConfigReconciler) buildBuildControllerLeaderElectionRoleBinding() *rbacv1.RoleBinding {
+func (r *OperatorConfigReconciler) buildBuildControllerLeaderElectionRoleBinding(namespace string) *rbacv1.RoleBinding {
 	return &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      buildControllerName + "-leader-election",
-			Namespace: operatorNamespace,
+			Namespace: namespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/name":      "automotive-dev-operator",
 				"app.kubernetes.io/component": "build-controller",
@@ -753,7 +789,7 @@ func (r *OperatorConfigReconciler) buildBuildControllerLeaderElectionRoleBinding
 			{
 				Kind:      "ServiceAccount",
 				Name:      buildControllerName,
-				Namespace: operatorNamespace,
+				Namespace: namespace,
 			},
 		},
 	}
