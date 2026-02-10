@@ -2,12 +2,18 @@ package buildapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"time"
 
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+
+	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	"github.com/gin-gonic/gin"
 	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Dot import is standard for Ginkgo
@@ -92,6 +98,101 @@ var _ = Describe("APIServer", func() {
 
 				Expect(w.Code).To(Equal(http.StatusUnauthorized))
 			}
+		})
+	})
+
+	Context("OperatorConfig Endpoint", func() {
+		var (
+			originalGetClientFromRequestFn func(*gin.Context) (ctrlclient.Client, error)
+			originalLoadOperatorConfigFn   func(context.Context, ctrlclient.Client, string) (*automotivev1alpha1.OperatorConfig, error)
+			originalNamespace              string
+			hasOriginalNamespace           bool
+		)
+
+		BeforeEach(func() {
+			originalGetClientFromRequestFn = getClientFromRequestFn
+			originalLoadOperatorConfigFn = loadOperatorConfigFn
+			originalNamespace, hasOriginalNamespace = os.LookupEnv("BUILD_API_NAMESPACE")
+			Expect(os.Setenv("BUILD_API_NAMESPACE", "default")).To(Succeed())
+		})
+
+		AfterEach(func() {
+			getClientFromRequestFn = originalGetClientFromRequestFn
+			loadOperatorConfigFn = originalLoadOperatorConfigFn
+			if hasOriginalNamespace {
+				Expect(os.Setenv("BUILD_API_NAMESPACE", originalNamespace)).To(Succeed())
+			} else {
+				Expect(os.Unsetenv("BUILD_API_NAMESPACE")).To(Succeed())
+			}
+		})
+
+		It("should return empty operator config when config resource is not found", func() {
+			getClientFromRequestFn = func(_ *gin.Context) (ctrlclient.Client, error) {
+				return nil, nil
+			}
+			loadOperatorConfigFn = func(_ context.Context, _ ctrlclient.Client, _ string) (*automotivev1alpha1.OperatorConfig, error) {
+				return nil, k8serrors.NewNotFound(
+					schema.GroupResource{
+						Group:    "automotive.sdv.cloud.redhat.com",
+						Resource: "operatorconfigs",
+					},
+					"config",
+				)
+			}
+
+			req, err := http.NewRequest(http.MethodGet, "/v1/config", nil)
+			Expect(err).NotTo(HaveOccurred())
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = req
+			c.Set("reqID", "test-req-id")
+
+			server.handleGetOperatorConfig(c)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+			var response OperatorConfigResponse
+			Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+			Expect(response.JumpstarterTargets).To(BeNil())
+		})
+
+		It("should return jumpstarter target mappings when config exists", func() {
+			config := &automotivev1alpha1.OperatorConfig{
+				Spec: automotivev1alpha1.OperatorConfigSpec{
+					Jumpstarter: &automotivev1alpha1.JumpstarterConfig{
+						TargetMappings: map[string]automotivev1alpha1.JumpstarterTargetMapping{
+							"qemu": {
+								Selector: "board-type=qemu",
+							},
+							"j784s4evm": {
+								Selector: "board-type=j784s4evm",
+							},
+						},
+					},
+				},
+			}
+
+			getClientFromRequestFn = func(_ *gin.Context) (ctrlclient.Client, error) {
+				return nil, nil
+			}
+			loadOperatorConfigFn = func(_ context.Context, _ ctrlclient.Client, _ string) (*automotivev1alpha1.OperatorConfig, error) {
+				return config, nil
+			}
+
+			req, err := http.NewRequest(http.MethodGet, "/v1/config", nil)
+			Expect(err).NotTo(HaveOccurred())
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = req
+			c.Set("reqID", "test-req-id")
+
+			server.handleGetOperatorConfig(c)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+			var response OperatorConfigResponse
+			Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+			Expect(response.JumpstarterTargets).To(HaveLen(2))
+			Expect(response.JumpstarterTargets["qemu"]).To(Equal("board-type=qemu"))
+			Expect(response.JumpstarterTargets["j784s4evm"]).To(Equal("board-type=j784s4evm"))
 		})
 	})
 

@@ -212,6 +212,7 @@ func main() {
 	if mode == modeBuild || mode == modeAll {
 		imageBuildReconciler := &imagebuild.ImageBuildReconciler{
 			Client:     mgr.GetClient(),
+			APIReader:  mgr.GetAPIReader(),
 			Scheme:     mgr.GetScheme(),
 			Log:        ctrl.Log.WithName("controllers").WithName("ImageBuild"),
 			RestConfig: mgr.GetConfig(),

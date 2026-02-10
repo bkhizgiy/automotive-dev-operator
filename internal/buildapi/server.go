@@ -66,6 +66,22 @@ const (
 	flashTaskRunLabel = "automotive.sdv.cloud.redhat.com/flash-taskrun"
 )
 
+var getClientFromRequestFn = getClientFromRequest
+var loadOperatorConfigFn = func(
+	ctx context.Context,
+	k8sClient client.Client,
+	namespace string,
+) (*automotivev1alpha1.OperatorConfig, error) {
+	operatorConfig := &automotivev1alpha1.OperatorConfig{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{
+		Namespace: namespace,
+		Name:      "config",
+	}, operatorConfig); err != nil {
+		return nil, err
+	}
+	return operatorConfig, nil
+}
+
 // defaultInternalRegistryURL is an alias for the shared constant.
 const defaultInternalRegistryURL = tasks.DefaultInternalRegistryURL
 
@@ -2389,7 +2405,7 @@ func (a *APIServer) handleGetOperatorConfig(c *gin.Context) {
 
 	a.log.Info("getting operator config", "reqID", reqID)
 
-	k8sClient, err := getClientFromRequest(c)
+	k8sClient, err := getClientFromRequestFn(c)
 	if err != nil {
 		a.log.Error(err, "failed to get k8s client", "reqID", reqID)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create Kubernetes client"})
@@ -2398,13 +2414,7 @@ func (a *APIServer) handleGetOperatorConfig(c *gin.Context) {
 
 	namespace := resolveNamespace()
 
-	// Get the OperatorConfig from the cluster
-	operatorConfig := &automotivev1alpha1.OperatorConfig{}
-	err = k8sClient.Get(ctx, types.NamespacedName{
-		Namespace: namespace,
-		Name:      "config",
-	}, operatorConfig)
-
+	operatorConfig, err := loadOperatorConfigFn(ctx, k8sClient, namespace)
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
 			a.log.Info("OperatorConfig not found; returning empty operator config response", "reqID", reqID, "namespace", namespace)

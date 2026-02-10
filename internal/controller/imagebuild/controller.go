@@ -41,6 +41,7 @@ const (
 //nolint:revive // Name follows Kubebuilder convention for reconcilers
 type ImageBuildReconciler struct {
 	client.Client
+	APIReader  client.Reader
 	Scheme     *runtime.Scheme
 	Log        logr.Logger
 	RestConfig *rest.Config
@@ -422,12 +423,16 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 	}
 
 	clusterRegistryRoute := ""
+	routeReader := r.APIReader
+	if routeReader == nil {
+		routeReader = r.Client
+	}
 	if operatorConfig.Spec.OSBuilds != nil && operatorConfig.Spec.OSBuilds.ClusterRegistryRoute != "" {
 		clusterRegistryRoute = operatorConfig.Spec.OSBuilds.ClusterRegistryRoute
 	} else {
 		route := &routev1.Route{}
 		routeNS := types.NamespacedName{Name: "default-route", Namespace: "openshift-image-registry"}
-		if err := r.Get(ctx, routeNS, route); err == nil {
+		if err := routeReader.Get(ctx, routeNS, route); err == nil {
 			clusterRegistryRoute = route.Spec.Host
 			log.Info("Auto-detected cluster registry route", "route", clusterRegistryRoute)
 		}
@@ -470,15 +475,22 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 			return fmt.Errorf("flash enabled but no Jumpstarter target mapping found for target %q; "+
 				"configure OperatorConfig.spec.jumpstarter.targetMappings[%q] with selector and flashCmd", target, target)
 		}
-		// Resolve the flash image ref — for internal registry builds, translate to external URL
+		// Internal registry references are cluster-internal and not reachable by the flash exporter.
+		// Require an external route and fail fast if unavailable.
+		if imageBuild.Spec.GetUseServiceAccountAuth() && clusterRegistryRoute == "" {
+			return fmt.Errorf(
+				"flash with internal registry requires an external registry route; " +
+					"set OperatorConfig.spec.osBuilds.clusterRegistryRoute or expose openshift-image-registry/default-route",
+			)
+		}
+
+		// Resolve the flash image ref — for internal registry builds, translate to external URL.
 		flashImageRef := imageBuild.Spec.GetExportOCI()
 		flashOCIAuthSecretName = ""
 		if imageBuild.Spec.GetUseServiceAccountAuth() && flashImageRef != "" {
-			if clusterRegistryRoute != "" {
-				flashImageRef = strings.Replace(flashImageRef,
-					tasks.DefaultInternalRegistryURL,
-					clusterRegistryRoute, 1)
-			}
+			flashImageRef = strings.Replace(flashImageRef,
+				tasks.DefaultInternalRegistryURL,
+				clusterRegistryRoute, 1)
 			// Create a Secret with SA token credentials for the flash exporter
 			if r.RestConfig == nil {
 				return fmt.Errorf("RestConfig is nil, cannot create flash OCI credentials")
