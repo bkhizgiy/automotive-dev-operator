@@ -44,3 +44,8 @@ func init() {
 	PushArtifactScript = commonScript + "\n" + pushArtifactScript
 	FlashImageScript = commonScript + "\n" + flashImageScript
 }
+
+//go:embed scripts/sealed_operation.sh
+
+// SealedOperationScript contains the embedded script for AIB sealed operations.
+var SealedOperationScript string
