@@ -535,6 +535,46 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 			if _, err := clientset.CoreV1().Secrets(imageBuild.Namespace).Create(ctx, ociSecret, metav1.CreateOptions{}); err != nil {
 				return fmt.Errorf("failed to create flash OCI auth secret: %w", err)
 			}
+		} else if imageBuild.Spec.SecretRef != "" && flashImageRef != "" {
+			// External registry: read credentials from the registry-auth secret and
+			// create a flash-oci-auth secret with username/password keys that the
+			// flash script expects.
+			registrySecret := &corev1.Secret{}
+			if err := r.Get(ctx, client.ObjectKey{
+				Namespace: imageBuild.Namespace,
+				Name:      imageBuild.Spec.SecretRef,
+			}, registrySecret); err != nil {
+				return fmt.Errorf("failed to read registry secret %q for flash OCI credentials: %w", imageBuild.Spec.SecretRef, err)
+			}
+			regUser := registrySecret.Data["REGISTRY_USERNAME"]
+			regPass := registrySecret.Data["REGISTRY_PASSWORD"]
+			if len(regUser) > 0 && len(regPass) > 0 {
+				flashOCIAuthSecretName = imageBuild.Name + "-flash-oci-auth"
+				ociSecret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      flashOCIAuthSecretName,
+						Namespace: imageBuild.Namespace,
+						Labels: map[string]string{
+							"app.kubernetes.io/managed-by":                  "automotive-dev-operator",
+							"app.kubernetes.io/part-of":                     "automotive-dev",
+							"automotive.sdv.cloud.redhat.com/build-name":    imageBuild.Name,
+							"automotive.sdv.cloud.redhat.com/transient":     "true",
+							"automotive.sdv.cloud.redhat.com/resource-type": "flash-oci-auth",
+						},
+						OwnerReferences: []metav1.OwnerReference{
+							*metav1.NewControllerRef(imageBuild, automotivev1alpha1.GroupVersion.WithKind("ImageBuild")),
+						},
+					},
+					Type: corev1.SecretTypeOpaque,
+					Data: map[string][]byte{
+						"username": regUser,
+						"password": regPass,
+					},
+				}
+				if err := r.Create(ctx, ociSecret); err != nil {
+					return fmt.Errorf("failed to create flash OCI auth secret from registry credentials: %w", err)
+				}
+			}
 		}
 
 		params = append(params,
