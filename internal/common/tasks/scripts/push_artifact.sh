@@ -311,14 +311,6 @@ EOF
 
   echo ""
   echo "=== Multi-layer artifact pushed successfully ==="
-  echo ""
-  echo "After pull, you get:"
-  echo "$file_list" | sed 's/,/\n/g' | while read -r f; do echo "  ./$f"; done
-  echo ""
-  echo "Pull commands:"
-  echo "  All files:      oras pull ${repo_url}"
-  echo "  Single file:    oras pull ${repo_url} --include \"boot_a.simg.gz\""
-  echo "  Inspect:        oras manifest fetch ${repo_url} | jq ."
 
 else
   # Fallback to single-file push (original behavior)
@@ -358,5 +350,4 @@ else
 
   echo ""
   echo "=== Artifact pushed successfully ==="
-  echo "Pull: oras pull ${repo_url}"
 fi

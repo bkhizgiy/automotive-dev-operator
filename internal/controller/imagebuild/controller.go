@@ -532,7 +532,7 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 					"password": []byte(tokenResp.Status.Token),
 				},
 			}
-			if _, err := clientset.CoreV1().Secrets(imageBuild.Namespace).Create(ctx, ociSecret, metav1.CreateOptions{}); err != nil {
+			if _, err := clientset.CoreV1().Secrets(imageBuild.Namespace).Create(ctx, ociSecret, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
 				return fmt.Errorf("failed to create flash OCI auth secret: %w", err)
 			}
 		} else if imageBuild.Spec.SecretRef != "" && flashImageRef != "" {
@@ -548,7 +548,9 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 			}
 			regUser := registrySecret.Data["REGISTRY_USERNAME"]
 			regPass := registrySecret.Data["REGISTRY_PASSWORD"]
-			if len(regUser) > 0 && len(regPass) > 0 {
+			hasUser := len(regUser) > 0
+			hasPass := len(regPass) > 0
+			if hasUser && hasPass {
 				flashOCIAuthSecretName = imageBuild.Name + "-flash-oci-auth"
 				ociSecret := &corev1.Secret{
 					ObjectMeta: metav1.ObjectMeta{
@@ -571,9 +573,16 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 						"password": regPass,
 					},
 				}
-				if err := r.Create(ctx, ociSecret); err != nil {
+				if err := r.Create(ctx, ociSecret); err != nil && !errors.IsAlreadyExists(err) {
 					return fmt.Errorf("failed to create flash OCI auth secret from registry credentials: %w", err)
 				}
+			} else if hasUser || hasPass {
+				missing := "REGISTRY_PASSWORD"
+				if !hasUser {
+					missing = "REGISTRY_USERNAME"
+				}
+				log.Info("Partial registry credentials in secret, skipping flash OCI auth",
+					"secret", imageBuild.Spec.SecretRef, "missing", missing)
 			}
 		}
 
