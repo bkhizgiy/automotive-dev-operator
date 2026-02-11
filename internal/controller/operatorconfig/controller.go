@@ -579,8 +579,8 @@ func (r *OperatorConfigReconciler) deployOSBuilds(
 		tasks.GenerateBuildAutomotiveImageTask(config.Namespace, buildConfig, ""),
 		tasks.GeneratePushArtifactRegistryTask(config.Namespace),
 		tasks.GenerateFlashTask(config.Namespace),
-		tasks.GenerateSealedTask(config.Namespace),
 	}
+	tektonTasks = append(tektonTasks, tasks.GenerateSealedTasks(config.Namespace)...)
 
 	for _, task := range tektonTasks {
 		task.Labels["automotive.sdv.cloud.redhat.com/managed-by"] = config.Name
@@ -764,7 +764,10 @@ func (r *OperatorConfigReconciler) cleanupOSBuilds(ctx context.Context, config *
 	r.Log.Info("Target defaults ConfigMap deleted")
 
 	// Delete Tekton tasks
-	taskNames := []string{"build-automotive-image", "push-artifact-registry", "prepare-builder", "flash-image", "sealed-operation"}
+	taskNames := []string{
+		"build-automotive-image", "push-artifact-registry", "prepare-builder", "flash-image",
+		"sealed-prepare-reseal", "sealed-reseal", "sealed-extract-for-signing", "sealed-inject-signed",
+	}
 	for _, taskName := range taskNames {
 		task := &tektonv1.Task{}
 		task.Name = taskName
