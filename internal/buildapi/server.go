@@ -1462,6 +1462,9 @@ func listBuilds(c *gin.Context) {
 		return
 	}
 
+	// Resolve external route once for translating internal registry URLs
+	externalRoute, _ := getExternalRegistryRoute(ctx, k8sClient, namespace)
+
 	resp := make([]BuildListItem, 0, len(list.Items))
 	for _, b := range list.Items {
 		var startStr, compStr string
@@ -1471,6 +1474,18 @@ func listBuilds(c *gin.Context) {
 		if b.Status.CompletionTime != nil {
 			compStr = b.Status.CompletionTime.Format(time.RFC3339)
 		}
+
+		containerImage := b.Spec.GetContainerPush()
+		diskImage := b.Spec.GetExportOCI()
+		if b.Spec.GetUseServiceAccountAuth() && externalRoute != "" {
+			if containerImage != "" {
+				containerImage = translateToExternalURL(containerImage, externalRoute)
+			}
+			if diskImage != "" {
+				diskImage = translateToExternalURL(diskImage, externalRoute)
+			}
+		}
+
 		resp = append(resp, BuildListItem{
 			Name:           b.Name,
 			Phase:          b.Status.Phase,
@@ -1479,8 +1494,8 @@ func listBuilds(c *gin.Context) {
 			CreatedAt:      b.CreationTimestamp.Format(time.RFC3339),
 			StartTime:      startStr,
 			CompletionTime: compStr,
-			ContainerImage: b.Spec.GetContainerPush(),
-			DiskImage:      b.Spec.GetExportOCI(),
+			ContainerImage: containerImage,
+			DiskImage:      diskImage,
 		})
 	}
 	writeJSON(c, http.StatusOK, resp)
