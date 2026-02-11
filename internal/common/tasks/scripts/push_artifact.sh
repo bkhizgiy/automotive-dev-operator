@@ -175,6 +175,7 @@ target="$(params.target)"
 arch="$(params.arch)"
 
 config_file="/etc/partition-config/partition-rules.yaml"
+default_partitions=""
 if [ -f "$config_file" ]; then
   # Use yq to extract included partitions for target (using bracket notation for safety)
   default_partitions=$(yq eval ".targets[\"${target}\"].include[]" "$config_file" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
@@ -182,15 +183,18 @@ if [ -f "$config_file" ]; then
   if [ -n "$default_partitions" ]; then
     echo "Default partitions for target '$target': $default_partitions"
   else
-    default_partitions="boot_a,system_a,system_b"
-    echo "No default partitions configured for target '$target', using fallback: $default_partitions"
+    echo "No default partitions configured for target '$target', skipping default-partitions annotation"
   fi
 else
-  default_partitions="boot_a,system_a,system_b"
-  echo "No partition configuration found, using fallback: $default_partitions"
+  echo "No partition configuration found, skipping default-partitions annotation"
 fi
 
-default_partitions_escaped=$(json_escape "$default_partitions")
+default_partitions_annotation=""
+if [ -n "$default_partitions" ]; then
+  default_partitions_escaped=$(json_escape "$default_partitions")
+  default_partitions_annotation=",
+    \"automotive.sdv.cloud.redhat.com/default-partitions\": \"${default_partitions_escaped}\""
+fi
 
 cd /workspace/shared
 
@@ -279,8 +283,7 @@ if [ -d "${parts_dir}" ] && [ -n "$(ls -A "${parts_dir}" 2>/dev/null)" ]; then
     "automotive.sdv.cloud.redhat.com/parts": "${file_list}",
     "automotive.sdv.cloud.redhat.com/distro": "${distro}",
     "automotive.sdv.cloud.redhat.com/target": "${target}",
-    "automotive.sdv.cloud.redhat.com/arch": "${arch}",
-    "automotive.sdv.cloud.redhat.com/default-partitions": "${default_partitions_escaped}"
+    "automotive.sdv.cloud.redhat.com/arch": "${arch}"${default_partitions_annotation}
   },
   ${layer_annotations_json}
 }
