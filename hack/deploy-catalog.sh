@@ -12,22 +12,31 @@ Commands:
   build       Build and push images only (no install)
   help        Show this help message
 
+Flags:
+  -y, --yes        Skip confirmation prompt
+  --keep-config    Save and restore OperatorConfig during redeploy
+
 Examples:
   $0              # Full redeploy (most common)
   $0 uninstall    # Just uninstall
   $0 build        # Just build images
   $0 -y           # Full redeploy, skip confirmation
+  $0 -y --keep-config  # Redeploy preserving OperatorConfig
 EOF
     exit 0
 }
 
 # Parse command and flags
 SKIP_CONFIRM=false
+KEEP_CONFIG=false
 COMMAND=""
 for arg in "$@"; do
     case "$arg" in
         -y|--yes)
             SKIP_CONFIRM=true
+            ;;
+        --keep-config)
+            KEEP_CONFIG=true
             ;;
         help|-h|--help)
             show_help
@@ -105,6 +114,14 @@ uninstall_operator() {
     echo "=========================================="
     echo "Uninstalling existing operator"
     echo "=========================================="
+
+    # Save OperatorConfig if --keep-config was specified
+    if [ "$KEEP_CONFIG" = true ]; then
+        echo "Saving OperatorConfig CRs..."
+        SAVED_CONFIG=$(mktemp /tmp/operatorconfig-XXXXXX.yaml)
+        oc get operatorconfig -n ${NAMESPACE} -o yaml > "$SAVED_CONFIG" 2>/dev/null || true
+        echo "  Saved to $SAVED_CONFIG"
+    fi
 
     echo "Removing finalizers from OperatorConfig CRs..."
     for oc_name in $(oc get operatorconfig -n ${NAMESPACE} -o name 2>/dev/null); do
@@ -404,8 +421,15 @@ if [ "$COMMAND" = "redeploy" ]; then
     done
 
     echo ""
-    echo "Creating sample OperatorConfig..."
-    oc apply -f config/samples/automotive_v1_operatorconfig.yaml
+    if [ "$KEEP_CONFIG" = true ] && [ -n "${SAVED_CONFIG:-}" ] && [ -s "$SAVED_CONFIG" ]; then
+        echo "Restoring saved OperatorConfig..."
+        # Strip resourceVersion/uid/creationTimestamp so apply works cleanly
+        yq eval 'del(.items[].metadata.resourceVersion, .items[].metadata.uid, .items[].metadata.creationTimestamp, .items[].metadata.generation, .items[].metadata.managedFields, .items[].status)' "$SAVED_CONFIG" | oc apply -f -
+        rm -f "$SAVED_CONFIG"
+    else
+        echo "Creating sample OperatorConfig..."
+        oc apply -f config/samples/automotive_v1_operatorconfig.yaml
+    fi
 
     echo ""
     echo "=========================================="
