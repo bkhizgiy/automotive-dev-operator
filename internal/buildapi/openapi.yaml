@@ -191,7 +191,7 @@ components:
             type: string
         useInternalRegistry:
           type: boolean
-          description: Push to OpenShift internal registry (mutually exclusive with containerPush, exportOci, registryCredentials)
+          description: Push disk images to OpenShift internal registry (mutually exclusive with exportOci; can be combined with containerPush for hybrid builds)
         internalRegistryImageName:
           type: string
           description: Override image name for internal registry (default is build name)

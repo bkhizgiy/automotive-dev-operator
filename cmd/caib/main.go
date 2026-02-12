@@ -526,7 +526,7 @@ Example:
 	buildCmd.Flags().StringVarP(&architecture, "arch", "a", getDefaultArch(), "architecture (amd64, arm64)")
 	buildCmd.Flags().StringVar(&containerPush, "push", "", "push bootc container to registry (optional if --disk is used)")
 	buildCmd.Flags().BoolVar(&buildDiskImage, "disk", false, "also build disk image from container")
-	buildCmd.Flags().StringVarP(&outputDir, "output", "o", "", "download disk image to file from registry (implies --disk; requires --push-disk)")
+	buildCmd.Flags().StringVarP(&outputDir, "output", "o", "", "download disk image to file from registry (implies --disk; requires --push-disk or --internal-registry)")
 	buildCmd.Flags().StringVar(
 		&diskFormat, "format", "", "disk image format (qcow2, raw, simg); inferred from output filename if not set",
 	)
@@ -696,8 +696,8 @@ func validateBootcBuildFlags() {
 	}
 
 	if useInternalRegistry {
-		if containerPush != "" || exportOCI != "" {
-			handleError(fmt.Errorf("--internal-registry cannot be used with --push or --push-disk"))
+		if exportOCI != "" {
+			handleError(fmt.Errorf("--internal-registry cannot be used with --push-disk"))
 		}
 	}
 
@@ -716,14 +716,19 @@ func validateBootcBuildFlags() {
 	}
 }
 
-// applyRegistryCredentialsToRequest sets registry credentials on the build request
-// when not using the internal registry
+// applyRegistryCredentialsToRequest sets registry credentials on the build request.
+// When --internal-registry is combined with --push, both are configured so the
+// container is pushed externally while the disk image uses the internal registry.
 func applyRegistryCredentialsToRequest(req *buildapitypes.BuildRequest) {
 	if useInternalRegistry {
 		req.UseInternalRegistry = true
 		req.InternalRegistryImageName = internalRegistryImageName
 		req.InternalRegistryTag = internalRegistryTag
-		return
+		if containerPush == "" {
+			return
+		}
+		// Hybrid: fall through to also set external registry credentials
+		// for the container push.
 	}
 
 	effectiveRegistryURL, registryUsername, registryPassword := extractRegistryCredentials(containerPush, exportOCI)
@@ -782,14 +787,18 @@ func displayBuildResults(ctx context.Context, api *buildapiclient.Client, buildN
 			fmt.Printf("Disk image: %s\n", st.DiskImage)
 		}
 		if st.RegistryToken != "" {
-			credsFile, err := writeRegistryCredentialsFile(st.RegistryToken)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to write registry credentials file: %v\n", err)
-				fmt.Printf("\nRegistry credentials (valid ~4 hours):\n")
-				fmt.Printf("  Username: serviceaccount\n")
-				fmt.Printf("  Token:    %s\n", st.RegistryToken)
+			if outputDir != "" && st.DiskImage != "" {
+				downloadOCIArtifactIfRequested(outputDir, st.DiskImage, "serviceaccount", st.RegistryToken)
 			} else {
-				fmt.Printf("\nRegistry credentials written to: %s (valid ~4 hours)\n", credsFile)
+				credsFile, err := writeRegistryCredentialsFile(st.RegistryToken)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to write registry credentials file: %v\n", err)
+					fmt.Printf("\nRegistry credentials (valid ~4 hours):\n")
+					fmt.Printf("  Username: serviceaccount\n")
+					fmt.Printf("  Token:    %s\n", st.RegistryToken)
+				} else {
+					fmt.Printf("\nRegistry credentials written to: %s (valid ~4 hours)\n", credsFile)
+				}
 			}
 		}
 	} else {
@@ -2127,11 +2136,19 @@ func runDownload(_ *cobra.Command, args []string) {
 		handleError(fmt.Errorf("build %s has no disk image artifact to download (no OCI export was configured)", downloadBuildName))
 	}
 
-	// Extract registry credentials from environment
-	effectiveRegistryURL, registryUsername, registryPassword := extractRegistryCredentials(ociRef, "")
-
-	if err := validateRegistryCredentials(effectiveRegistryURL, registryUsername, registryPassword); err != nil {
-		handleError(err)
+	// Use API-minted token if available (internal registry builds),
+	// otherwise fall back to environment credentials.
+	registryUsername := ""
+	registryPassword := ""
+	if st.RegistryToken != "" {
+		registryUsername = "serviceaccount"
+		registryPassword = st.RegistryToken
+	} else {
+		var effectiveRegistryURL string
+		effectiveRegistryURL, registryUsername, registryPassword = extractRegistryCredentials(ociRef, "")
+		if err := validateRegistryCredentials(effectiveRegistryURL, registryUsername, registryPassword); err != nil {
+			handleError(err)
+		}
 	}
 
 	fmt.Printf("Downloading disk image from %s\n", ociRef)
