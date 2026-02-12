@@ -857,7 +857,7 @@ func createRegistrySecret(
 		return "", nil
 	}
 
-	secretName := fmt.Sprintf("%s-registry-auth", buildName)
+	secretName := fmt.Sprintf("%s-external-registry-auth", buildName)
 	secretData := make(map[string][]byte)
 
 	switch creds.AuthType {

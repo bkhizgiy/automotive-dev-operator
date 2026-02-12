@@ -335,11 +335,11 @@ func validateOutputRequiresPush(output, pushRef, flagName string) {
 	}
 }
 
-func downloadOCIArtifactIfRequested(output, exportOCI, registryUsername, registryPassword string) {
+func downloadOCIArtifactIfRequested(output, exportOCI, registryUsername, registryPassword string, insecureSkipTLS bool) {
 	if output == "" {
 		return
 	}
-	if err := pullOCIArtifact(exportOCI, output, registryUsername, registryPassword); err != nil {
+	if err := pullOCIArtifact(exportOCI, output, registryUsername, registryPassword, insecureSkipTLS); err != nil {
 		handleError(fmt.Errorf("failed to download OCI artifact: %w", err))
 	}
 }
@@ -788,7 +788,7 @@ func displayBuildResults(ctx context.Context, api *buildapiclient.Client, buildN
 		}
 		if st.RegistryToken != "" {
 			if outputDir != "" && st.DiskImage != "" {
-				downloadOCIArtifactIfRequested(outputDir, st.DiskImage, "serviceaccount", st.RegistryToken)
+				downloadOCIArtifactIfRequested(outputDir, st.DiskImage, "serviceaccount", st.RegistryToken, insecureSkipTLS)
 			} else {
 				credsFile, err := writeRegistryCredentialsFile(st.RegistryToken)
 				if err != nil {
@@ -809,7 +809,7 @@ func displayBuildResults(ctx context.Context, api *buildapiclient.Client, buildN
 			fmt.Printf("Disk image pushed to: %s\n", exportOCI)
 		}
 		_, registryUsername, registryPassword := extractRegistryCredentials(containerPush, exportOCI)
-		downloadOCIArtifactIfRequested(outputDir, exportOCI, registryUsername, registryPassword)
+		downloadOCIArtifactIfRequested(outputDir, exportOCI, registryUsername, registryPassword, insecureSkipTLS)
 	}
 }
 
@@ -981,7 +981,7 @@ func runDisk(_ *cobra.Command, args []string) {
 	displayBuildResults(ctx, api, resp.Name)
 }
 
-func pullOCIArtifact(ociRef, destPath, username, password string) error {
+func pullOCIArtifact(ociRef, destPath, username, password string, insecureSkipTLS bool) error {
 	fmt.Printf("Pulling OCI artifact %s to %s\n", ociRef, destPath)
 
 	// Ensure output directory exists
@@ -1009,6 +1009,12 @@ func pullOCIArtifact(ociRef, destPath, username, password string) error {
 		// - $XDG_RUNTIME_DIR/containers/auth.json
 		// - /run/containers/$UID/auth.json
 		// - $HOME/.config/containers/auth.json
+	}
+
+	// Configure TLS verification
+	if insecureSkipTLS {
+		systemCtx.OCIInsecureSkipTLSVerify = insecureSkipTLS
+		systemCtx.DockerInsecureSkipTLSVerify = types.OptionalBoolTrue
 	}
 
 	// Set up policy context (allow all)
@@ -2152,7 +2158,7 @@ func runDownload(_ *cobra.Command, args []string) {
 	}
 
 	fmt.Printf("Downloading disk image from %s\n", ociRef)
-	if err := pullOCIArtifact(ociRef, outputDir, registryUsername, registryPassword); err != nil {
+	if err := pullOCIArtifact(ociRef, outputDir, registryUsername, registryPassword, insecureSkipTLS); err != nil {
 		handleError(fmt.Errorf("download failed: %w", err))
 	}
 }
