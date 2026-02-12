@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path"
@@ -24,7 +25,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	apiserverv1beta1 "k8s.io/apiserver/pkg/apis/apiserver/v1beta1"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
@@ -62,6 +65,181 @@ const (
 	// Flash TaskRun constants
 	flashTaskRunLabel = "automotive.sdv.cloud.redhat.com/flash-taskrun"
 )
+
+var getClientFromRequestFn = getClientFromRequest
+var loadOperatorConfigFn = func(
+	ctx context.Context,
+	k8sClient client.Client,
+	namespace string,
+) (*automotivev1alpha1.OperatorConfig, error) {
+	operatorConfig := &automotivev1alpha1.OperatorConfig{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{
+		Namespace: namespace,
+		Name:      "config",
+	}, operatorConfig); err != nil {
+		return nil, err
+	}
+	return operatorConfig, nil
+}
+
+// defaultInternalRegistryURL is an alias for the shared constant.
+const defaultInternalRegistryURL = tasks.DefaultInternalRegistryURL
+
+func generateRegistryImageRef(host, namespace, imageName, tag string) string {
+	return fmt.Sprintf("%s/%s/%s:%s", host, namespace, imageName, tag)
+}
+
+func translateToExternalURL(internalURL, externalRouteHost string) string {
+	return strings.Replace(internalURL, defaultInternalRegistryURL, externalRouteHost, 1)
+}
+
+func getExternalRegistryRoute(ctx context.Context, k8sClient client.Client, namespace string) (string, error) {
+	operatorConfig := &automotivev1alpha1.OperatorConfig{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "config", Namespace: namespace}, operatorConfig); err != nil {
+		if !k8serrors.IsNotFound(err) {
+			return "", fmt.Errorf("error reading OperatorConfig: %w", err)
+		}
+		// OperatorConfig not found, fall through to auto-detection
+	} else if operatorConfig.Spec.OSBuilds != nil && operatorConfig.Spec.OSBuilds.ClusterRegistryRoute != "" {
+		return operatorConfig.Spec.OSBuilds.ClusterRegistryRoute, nil
+	}
+
+	// Auto-detect from OpenShift Route
+	route := &unstructured.Unstructured{}
+	route.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "route.openshift.io",
+		Version: "v1",
+		Kind:    "Route",
+	})
+	if err := k8sClient.Get(ctx, types.NamespacedName{
+		Name:      "default-route",
+		Namespace: "openshift-image-registry",
+	}, route); err != nil {
+		return "", fmt.Errorf("cannot determine external registry route: set clusterRegistryRoute in OperatorConfig or expose default-route in openshift-image-registry")
+	}
+
+	host, _, _ := unstructured.NestedString(route.Object, "spec", "host")
+	if host == "" {
+		return "", fmt.Errorf("default-route exists but has no host")
+	}
+	return host, nil
+}
+
+func createInternalRegistrySecret(ctx context.Context, restCfg *rest.Config, namespace, buildName string) (string, error) {
+	clientset, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		return "", fmt.Errorf("error creating clientset: %w", err)
+	}
+
+	// Request a 4-hour token for the pipeline SA (covers build + push duration)
+	expSeconds := int64(4 * 3600)
+	tokenReq := &authnv1.TokenRequest{
+		Spec: authnv1.TokenRequestSpec{
+			ExpirationSeconds: &expSeconds,
+		},
+	}
+	tokenResp, err := clientset.CoreV1().ServiceAccounts(namespace).
+		CreateToken(ctx, "pipeline", tokenReq, metav1.CreateOptions{})
+	if err != nil {
+		return "", fmt.Errorf("error creating SA token: %w", err)
+	}
+
+	// Build dockerconfigjson
+	auth := base64.StdEncoding.EncodeToString([]byte("serviceaccount:" + tokenResp.Status.Token))
+	dockerConfig := fmt.Sprintf(`{"auths":{"%s":{"auth":"%s"}}}`, defaultInternalRegistryURL, auth)
+
+	secretName := buildName + "-registry-auth"
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by":                  "build-api",
+				"app.kubernetes.io/part-of":                     "automotive-dev",
+				"automotive.sdv.cloud.redhat.com/resource-type": "registry-auth",
+				"automotive.sdv.cloud.redhat.com/build-name":    buildName,
+				"automotive.sdv.cloud.redhat.com/transient":     "true",
+			},
+		},
+		Type: corev1.SecretTypeDockerConfigJson,
+		Data: map[string][]byte{
+			".dockerconfigjson": []byte(dockerConfig),
+		},
+	}
+
+	if _, err := clientset.CoreV1().Secrets(namespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
+		return "", fmt.Errorf("error creating internal registry secret: %w", err)
+	}
+	return secretName, nil
+}
+
+// ensureImageStream creates an ImageStream if it doesn't already exist.
+// The OpenShift internal registry requires an ImageStream before oras can push to it.
+func ensureImageStream(ctx context.Context, k8sClient client.Client, namespace, name string) error {
+	is := &unstructured.Unstructured{}
+	is.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "image.openshift.io",
+		Version: "v1",
+		Kind:    "ImageStream",
+	})
+
+	// Check if it already exists
+	err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, is)
+	if err == nil {
+		return nil // already exists
+	}
+	if !k8serrors.IsNotFound(err) {
+		return fmt.Errorf("error checking ImageStream %s: %w", name, err)
+	}
+
+	// Create it
+	newIS := &unstructured.Unstructured{}
+	newIS.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "image.openshift.io",
+		Version: "v1",
+		Kind:    "ImageStream",
+	})
+	newIS.SetName(name)
+	newIS.SetNamespace(namespace)
+	newIS.SetLabels(map[string]string{
+		"app.kubernetes.io/managed-by":              "build-api",
+		"app.kubernetes.io/part-of":                 "automotive-dev",
+		"automotive.sdv.cloud.redhat.com/transient": "true",
+	})
+
+	if err := k8sClient.Create(ctx, newIS); err != nil {
+		if k8serrors.IsAlreadyExists(err) {
+			return nil
+		}
+		return fmt.Errorf("error creating ImageStream %s: %w", name, err)
+	}
+	return nil
+}
+
+// mintRegistryToken creates a fresh short-lived token for the pipeline SA
+// so the caller can pull images from the internal registry.
+func (a *APIServer) mintRegistryToken(ctx context.Context, c *gin.Context, namespace string) (string, error) {
+	restCfg, err := getRESTConfigFromRequest(c)
+	if err != nil {
+		return "", fmt.Errorf("error getting REST config for token mint: %w", err)
+	}
+	clientset, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		return "", fmt.Errorf("error creating clientset for token mint: %w", err)
+	}
+	expSeconds := int64(4 * 3600)
+	tokenReq := &authnv1.TokenRequest{
+		Spec: authnv1.TokenRequestSpec{
+			ExpirationSeconds: &expSeconds,
+		},
+	}
+	tokenResp, err := clientset.CoreV1().ServiceAccounts(namespace).
+		CreateToken(ctx, "pipeline", tokenReq, metav1.CreateOptions{})
+	if err != nil {
+		return "", fmt.Errorf("error creating token for SA pipeline in %s: %w", namespace, err)
+	}
+	return tokenResp.Status.Token, nil
+}
 
 // APILimits holds configurable limits for the API server
 type APILimits struct {
@@ -188,7 +366,7 @@ func LoadLimitsFromConfig(cfg *automotivev1alpha1.BuildAPIConfig) APILimits {
 }
 
 // safeFilename validates that a filename is safe for use in shell commands
-// It only allows alphanumeric characters, dots, hyphens, underscores, and single forward slashes for paths
+// It only allows alphanumeric characters, dots, hyphens, underscores, at signs, and single forward slashes for paths
 func safeFilename(filename string) bool {
 	if filename == "" {
 		return false
@@ -202,7 +380,7 @@ func safeFilename(filename string) bool {
 			'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
 			'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
 			'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-			'.', '-', '_', '/':
+			'.', '-', '_', '/', '@':
 			// Safe characters
 			continue
 		default:
@@ -300,6 +478,12 @@ func (a *APIServer) createRouter() *gin.Engine {
 			flashGroup.GET("/:name/logs", a.handleFlashLogs)
 		}
 
+		configGroup := v1.Group("/config")
+		configGroup.Use(a.authMiddleware())
+		{
+			configGroup.GET("", a.handleGetOperatorConfig)
+		}
+
 		// Register catalog routes with authentication
 		catalogClient, err := a.getCatalogClient()
 		if err != nil {
@@ -393,7 +577,7 @@ func (a *APIServer) handleListBuilds(c *gin.Context) {
 func (a *APIServer) handleGetBuild(c *gin.Context) {
 	name := c.Param("name")
 	a.log.Info("get build", "build", name, "reqID", c.GetString("reqID"))
-	getBuild(c, name)
+	a.getBuild(c, name)
 }
 
 func (a *APIServer) handleStreamLogs(c *gin.Context) {
@@ -683,7 +867,7 @@ func createRegistrySecret(
 		return "", nil
 	}
 
-	secretName := fmt.Sprintf("%s-registry-auth", buildName)
+	secretName := fmt.Sprintf("%s-external-registry-auth", buildName)
 	secretData := make(map[string][]byte)
 
 	switch creds.AuthType {
@@ -999,13 +1183,131 @@ func setupBuildSecrets(
 	return envSecretRef, pushSecretName, nil
 }
 
+// resolveRegistryForBuild handles registry setup for both internal and external registry builds.
+// It returns envSecretRef, pushSecretName, and an error (non-nil means the response was already written).
+func (a *APIServer) resolveRegistryForBuild(
+	ctx context.Context, c *gin.Context, k8sClient client.Client,
+	namespace string, req *BuildRequest,
+) (string, string, error) {
+	if req.UseInternalRegistry {
+		_, pushSecretName, err := a.setupInternalRegistryBuild(ctx, c, k8sClient, namespace, req)
+		if err != nil {
+			return "", "", err
+		}
+
+		// Hybrid: container pushed to external registry, disk to internal.
+		// Create external registry secret for the container push workspace.
+		if req.ContainerPush != "" && req.RegistryCredentials != nil && req.RegistryCredentials.Enabled {
+			envSecretRef, err := createRegistrySecret(ctx, k8sClient, namespace, req.Name, req.RegistryCredentials)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return "", "", err
+			}
+			return envSecretRef, pushSecretName, nil
+		}
+
+		return pushSecretName, pushSecretName, nil
+	}
+
+	envSecretRef, pushSecretName, err := setupBuildSecrets(ctx, k8sClient, namespace, req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return "", "", err
+	}
+	return envSecretRef, pushSecretName, nil
+}
+
+// setupInternalRegistryBuild validates and configures internal registry push,
+// returning ("", pushSecretName, nil) on success.
+func (a *APIServer) setupInternalRegistryBuild(
+	ctx context.Context, c *gin.Context, k8sClient client.Client,
+	namespace string, req *BuildRequest,
+) (string, string, error) {
+	// Validate: internal registry handles the disk push, so exportOci must not be set.
+	// containerPush (and registryCredentials) MAY be set for hybrid builds where
+	// the bootc container is pushed to an external registry.
+	if req.ExportOCI != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "useInternalRegistry cannot be used with exportOci"})
+		return "", "", fmt.Errorf("validation error")
+	}
+	// Resolve external route (validates registry is reachable)
+	if _, err := getExternalRegistryRoute(ctx, k8sClient, namespace); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return "", "", err
+	}
+
+	// Generate image name and tag
+	imageName := req.InternalRegistryImageName
+	if imageName == "" {
+		imageName = req.Name
+	}
+	tag := req.InternalRegistryTag
+	if tag == "" {
+		tag = req.Name
+	}
+
+	// Set concrete URLs based on build mode.
+	// When ContainerPush is already set (hybrid: external container push),
+	// keep it and only generate internal URLs for what's missing.
+	externalContainerPush := req.ContainerPush != ""
+	if req.Mode.IsBootc() {
+		if !externalContainerPush {
+			req.ContainerPush = generateRegistryImageRef(defaultInternalRegistryURL, namespace, imageName, tag)
+		}
+		// Flash requires a disk image
+		if req.FlashEnabled && !req.BuildDiskImage {
+			req.BuildDiskImage = true
+		}
+		if req.BuildDiskImage {
+			req.ExportOCI = generateRegistryImageRef(defaultInternalRegistryURL, namespace, imageName+"-disk", tag)
+		}
+	} else {
+		// Traditional/disk modes: push disk image as OCI artifact
+		req.ExportOCI = generateRegistryImageRef(defaultInternalRegistryURL, namespace, imageName, tag)
+	}
+
+	// Pre-create ImageStream(s) for internal registry pushes only
+	var imageStreams []string
+	if !externalContainerPush {
+		imageStreams = append(imageStreams, imageName)
+	}
+	if req.Mode.IsBootc() && req.BuildDiskImage {
+		imageStreams = append(imageStreams, imageName+"-disk")
+	}
+	if !req.Mode.IsBootc() {
+		imageStreams = append(imageStreams, imageName)
+	}
+	for _, isName := range imageStreams {
+		if err := ensureImageStream(ctx, k8sClient, namespace, isName); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error creating ImageStream: %v", err)})
+			return "", "", err
+		}
+	}
+
+	// Create auth secret from SA token
+	restCfg, err := getRESTConfigFromRequest(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error getting REST config: %v", err)})
+		return "", "", err
+	}
+	secretName, err := createInternalRegistrySecret(ctx, restCfg, namespace, req.Name)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return "", "", err
+	}
+	// Return as both envSecretRef (for pipeline registry-auth workspace + WhenExpression)
+	// and pushSecretName (for push credential binding)
+	return secretName, secretName, nil
+}
+
 // buildExportSpec creates ExportSpec configuration from build request
 func buildExportSpec(req *BuildRequest) *automotivev1alpha1.ExportSpec {
 	export := &automotivev1alpha1.ExportSpec{
-		Format:         string(req.ExportFormat),
-		Compression:    req.Compression,
-		BuildDiskImage: req.BuildDiskImage,
-		Container:      req.ContainerPush,
+		Format:                string(req.ExportFormat),
+		Compression:           req.Compression,
+		BuildDiskImage:        req.BuildDiskImage,
+		Container:             req.ContainerPush,
+		UseServiceAccountAuth: req.UseInternalRegistry,
 	}
 
 	// Set disk export if OCI URL is specified
@@ -1085,9 +1387,8 @@ func (a *APIServer) createBuild(c *gin.Context) {
 		"automotive.sdv.cloud.redhat.com/architecture": string(req.Architecture),
 	}
 
-	envSecretRef, pushSecretName, err := setupBuildSecrets(ctx, k8sClient, namespace, &req)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	envSecretRef, pushSecretName, apiErr := a.resolveRegistryForBuild(ctx, c, k8sClient, namespace, &req)
+	if apiErr != nil {
 		return
 	}
 
@@ -1195,6 +1496,9 @@ func listBuilds(c *gin.Context) {
 		return
 	}
 
+	// Resolve external route once for translating internal registry URLs
+	externalRoute, _ := getExternalRegistryRoute(ctx, k8sClient, namespace)
+
 	resp := make([]BuildListItem, 0, len(list.Items))
 	for _, b := range list.Items {
 		var startStr, compStr string
@@ -1204,6 +1508,18 @@ func listBuilds(c *gin.Context) {
 		if b.Status.CompletionTime != nil {
 			compStr = b.Status.CompletionTime.Format(time.RFC3339)
 		}
+
+		containerImage := b.Spec.GetContainerPush()
+		diskImage := b.Spec.GetExportOCI()
+		if b.Spec.GetUseServiceAccountAuth() && externalRoute != "" {
+			if containerImage != "" {
+				containerImage = translateToExternalURL(containerImage, externalRoute)
+			}
+			if diskImage != "" {
+				diskImage = translateToExternalURL(diskImage, externalRoute)
+			}
+		}
+
 		resp = append(resp, BuildListItem{
 			Name:           b.Name,
 			Phase:          b.Status.Phase,
@@ -1212,12 +1528,14 @@ func listBuilds(c *gin.Context) {
 			CreatedAt:      b.CreationTimestamp.Format(time.RFC3339),
 			StartTime:      startStr,
 			CompletionTime: compStr,
+			ContainerImage: containerImage,
+			DiskImage:      diskImage,
 		})
 	}
 	writeJSON(c, http.StatusOK, resp)
 }
 
-func getBuild(c *gin.Context, name string) {
+func (a *APIServer) getBuild(c *gin.Context, name string) {
 	namespace := resolveNamespace()
 	k8sClient, err := getClientFromRequest(c)
 	if err != nil {
@@ -1236,6 +1554,25 @@ func getBuild(c *gin.Context, name string) {
 		return
 	}
 
+	containerImage := build.Spec.GetContainerPush()
+	diskImage := build.Spec.GetExportOCI()
+	var warning string
+
+	if build.Spec.GetUseServiceAccountAuth() {
+		externalRoute, err := getExternalRegistryRoute(ctx, k8sClient, namespace)
+		if err != nil {
+			a.log.Error(err, "failed to resolve external registry route, returning internal URLs", "build", name)
+			warning = fmt.Sprintf("external registry route lookup failed: %v; returning internal URLs", err)
+		} else if externalRoute != "" {
+			if containerImage != "" {
+				containerImage = translateToExternalURL(containerImage, externalRoute)
+			}
+			if diskImage != "" {
+				diskImage = translateToExternalURL(diskImage, externalRoute)
+			}
+		}
+	}
+
 	// For completed builds, check if Jumpstarter is available and get target mapping
 	var jumpstarterInfo *JumpstarterInfo
 	if build.Status.Phase == "Completed" {
@@ -1251,11 +1588,11 @@ func getBuild(c *gin.Context, name string) {
 					if mapping, ok := operatorConfig.Spec.Jumpstarter.TargetMappings[build.Spec.GetTarget()]; ok {
 						jumpstarterInfo.ExporterSelector = mapping.Selector
 						flashCmd := mapping.FlashCmd
-						// Replace placeholders in flash command
+						// Replace placeholders in flash command using translated URLs
 						if flashCmd != "" {
-							imageURI := build.Spec.GetExportOCI()
+							imageURI := diskImage
 							if imageURI == "" {
-								imageURI = build.Spec.GetContainerPush()
+								imageURI = containerImage
 							}
 							if imageURI != "" {
 								flashCmd = strings.ReplaceAll(flashCmd, "{image_uri}", imageURI)
@@ -1265,6 +1602,23 @@ func getBuild(c *gin.Context, name string) {
 						jumpstarterInfo.FlashCmd = flashCmd
 					}
 				}
+			}
+		}
+	}
+
+	// Mint a fresh registry token only for completed/failed internal registry builds
+	var registryToken string
+	if build.Spec.GetUseServiceAccountAuth() &&
+		(build.Status.Phase == phaseCompleted || build.Status.Phase == phaseFailed) {
+		var tokenErr error
+		registryToken, tokenErr = a.mintRegistryToken(ctx, c, namespace)
+		if tokenErr != nil {
+			a.log.Error(tokenErr, "failed to mint registry token", "build", name)
+			tokenWarning := fmt.Sprintf("failed to mint registry token: %v", tokenErr)
+			if warning != "" {
+				warning = warning + "; " + tokenWarning
+			} else {
+				warning = tokenWarning
 			}
 		}
 	}
@@ -1286,7 +1640,27 @@ func getBuild(c *gin.Context, name string) {
 			}
 			return ""
 		}(),
-		Jumpstarter: jumpstarterInfo,
+		ContainerImage: containerImage,
+		DiskImage:      diskImage,
+		RegistryToken:  registryToken,
+		Warning:        warning,
+		Jumpstarter:    jumpstarterInfo,
+		Parameters: &BuildParameters{
+			Architecture:           build.Spec.Architecture,
+			Distro:                 build.Spec.GetDistro(),
+			Target:                 build.Spec.GetTarget(),
+			Mode:                   build.Spec.GetMode(),
+			ExportFormat:           build.Spec.GetExportFormat(),
+			Compression:            build.Spec.GetCompression(),
+			StorageClass:           build.Spec.StorageClass,
+			AutomotiveImageBuilder: build.Spec.GetAIBImage(),
+			BuilderImage:           build.Spec.GetBuilderImage(),
+			ContainerRef:           build.Spec.GetContainerRef(),
+			BuildDiskImage:         build.Spec.GetBuildDiskImage(),
+			FlashEnabled:           build.Spec.IsFlashEnabled(),
+			FlashLeaseDuration:     build.Spec.GetFlashLeaseDuration(),
+			UseServiceAccountAuth:  build.Spec.GetUseServiceAccountAuth(),
+		},
 	})
 }
 
@@ -1369,6 +1743,101 @@ func getBuildTemplate(c *gin.Context, name string) {
 	})
 }
 
+// uploadContext holds the context needed for file upload operations.
+type uploadContext struct {
+	restCfg   *rest.Config
+	namespace string
+	podName   string
+	container string
+	limits    *APILimits
+}
+
+// processFilePartResult contains the result of processing a single file part.
+type processFilePartResult struct {
+	bytesWritten int64
+}
+
+// validateDestPath checks if the destination path is safe for upload.
+func validateDestPath(dest string) (string, error) {
+	if dest == "" {
+		return "", fmt.Errorf("missing destination filename")
+	}
+	if !safeFilename(dest) {
+		return "", fmt.Errorf("invalid destination filename: %s", dest)
+	}
+	cleanDest := path.Clean(dest)
+	if strings.HasPrefix(cleanDest, "..") || strings.HasPrefix(cleanDest, "/") {
+		return "", fmt.Errorf("invalid destination path: %s", dest)
+	}
+	return cleanDest, nil
+}
+
+// processFilePart handles a single file part from the multipart upload.
+func processFilePart(part *multipart.Part, pendingPath string, uctx *uploadContext) (processFilePartResult, error) {
+	dest := pendingPath
+	if dest == "" {
+		dest = strings.TrimSpace(part.FileName())
+	}
+
+	cleanDest, err := validateDestPath(dest)
+	if err != nil {
+		return processFilePartResult{}, err
+	}
+
+	tmp, err := os.CreateTemp("", "upload-*")
+	if err != nil {
+		return processFilePartResult{}, err
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		if closeErr := tmp.Close(); closeErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close temp file: %v\n", closeErr)
+		}
+	}()
+	defer func() {
+		if removeErr := os.Remove(tmpName); removeErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to remove temp file: %v\n", removeErr)
+		}
+	}()
+
+	limitedReader := io.LimitReader(part, uctx.limits.MaxUploadFileSize+1)
+	n, err := io.Copy(tmp, limitedReader)
+	if err != nil {
+		return processFilePartResult{}, err
+	}
+	if n > uctx.limits.MaxUploadFileSize {
+		return processFilePartResult{}, fmt.Errorf("file %s exceeds maximum size (%d bytes)", dest, uctx.limits.MaxUploadFileSize)
+	}
+
+	destPath := "/workspace/shared/" + cleanDest
+	if err := copyFileToPod(uctx.restCfg, uctx.namespace, uctx.podName, uctx.container, tmpName, destPath); err != nil {
+		return processFilePartResult{}, fmt.Errorf("stream to pod failed: %w", err)
+	}
+
+	return processFilePartResult{bytesWritten: n}, nil
+}
+
+// findRunningUploadPod finds a running upload pod for the given build.
+func findRunningUploadPod(ctx context.Context, k8sClient client.Client, namespace, buildName string) (*corev1.Pod, error) {
+	podList := &corev1.PodList{}
+	if err := k8sClient.List(ctx, podList,
+		client.InNamespace(namespace),
+		client.MatchingLabels{
+			"automotive.sdv.cloud.redhat.com/imagebuild-name": buildName,
+			"app.kubernetes.io/name":                          "upload-pod",
+		},
+	); err != nil {
+		return nil, fmt.Errorf("error listing upload pods: %w", err)
+	}
+	for i := range podList.Items {
+		p := &podList.Items[i]
+		if p.Status.Phase == corev1.PodRunning {
+			return p, nil
+		}
+	}
+	return nil, nil
+}
+
 func (a *APIServer) uploadFiles(c *gin.Context, name string) {
 	namespace := resolveNamespace()
 
@@ -1388,25 +1857,10 @@ func (a *APIServer) uploadFiles(c *gin.Context, name string) {
 		return
 	}
 
-	// Find upload pod
-	podList := &corev1.PodList{}
-	if err := k8sClient.List(c.Request.Context(), podList,
-		client.InNamespace(namespace),
-		client.MatchingLabels{
-			"automotive.sdv.cloud.redhat.com/imagebuild-name": name,
-			"app.kubernetes.io/name":                          "upload-pod",
-		},
-	); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error listing upload pods: %v", err)})
+	uploadPod, err := findRunningUploadPod(c.Request.Context(), k8sClient, namespace, name)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
-	}
-	var uploadPod *corev1.Pod
-	for i := range podList.Items {
-		p := &podList.Items[i]
-		if p.Status.Phase == corev1.PodRunning {
-			uploadPod = p
-			break
-		}
 	}
 	if uploadPod == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "upload pod not ready"})
@@ -1431,7 +1885,16 @@ func (a *APIServer) uploadFiles(c *gin.Context, name string) {
 		return
 	}
 
+	uctx := &uploadContext{
+		restCfg:   restCfg,
+		namespace: namespace,
+		podName:   uploadPod.Name,
+		container: uploadPod.Spec.Containers[0].Name,
+		limits:    &a.limits,
+	}
+
 	var totalBytesUploaded int64
+	var pendingPath string
 	for {
 		part, err := reader.NextPart()
 		if err == io.EOF {
@@ -1441,69 +1904,33 @@ func (a *APIServer) uploadFiles(c *gin.Context, name string) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("read part: %v", err)})
 			return
 		}
+
+		// Handle "path" field - stores the destination path for the next file
+		if part.FormName() == "path" {
+			pathBytes, err := io.ReadAll(io.LimitReader(part, 4096))
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("read path: %v", err)})
+				return
+			}
+			pendingPath = strings.TrimSpace(string(pathBytes))
+			continue
+		}
+
 		if part.FormName() != "file" {
 			continue
 		}
-		dest := strings.TrimSpace(part.FileName())
-		if dest == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "missing destination filename"})
-			return
-		}
 
-		// Validate filename for security - prevent command injection
-		if !safeFilename(dest) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid destination filename: %s", dest)})
-			return
-		}
-
-		cleanDest := path.Clean(dest)
-		if strings.HasPrefix(cleanDest, "..") || strings.HasPrefix(cleanDest, "/") {
-			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid destination path: %s", dest)})
-			return
-		}
-
-		tmp, err := os.CreateTemp("", "upload-*")
+		result, err := processFilePart(part, pendingPath, uctx)
+		pendingPath = ""
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 
-		tmpName := tmp.Name()
-		defer func() {
-			if err := tmp.Close(); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to close temp file: %v\n", err)
-			}
-		}()
-		defer func() {
-			if err := os.Remove(tmpName); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to remove temp file: %v\n", err)
-			}
-		}()
-
-		limitedReader := io.LimitReader(part, a.limits.MaxUploadFileSize+1)
-		n, err := io.Copy(tmp, limitedReader)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		if n > a.limits.MaxUploadFileSize {
-			errMsg := fmt.Sprintf("file %s exceeds maximum size (%d bytes)", dest, a.limits.MaxUploadFileSize)
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": errMsg})
-			return
-		}
-
-		totalBytesUploaded += n
+		totalBytesUploaded += result.bytesWritten
 		if totalBytesUploaded > a.limits.MaxTotalUploadSize {
 			errMsg := fmt.Sprintf("total upload size exceeds maximum (%d bytes)", a.limits.MaxTotalUploadSize)
 			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": errMsg})
-			return
-		}
-
-		destPath := "/workspace/shared/" + cleanDest
-		if err := copyFileToPod(
-			restCfg, namespace, uploadPod.Name, uploadPod.Spec.Containers[0].Name, tmpName, destPath,
-		); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("stream to pod failed: %v", err)})
 			return
 		}
 	}
@@ -2108,6 +2535,46 @@ func (a *APIServer) handleGetAuthConfig(c *gin.Context) {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
+	c.JSON(http.StatusOK, response)
+}
+
+func (a *APIServer) handleGetOperatorConfig(c *gin.Context) {
+	ctx := c.Request.Context()
+	reqID, _ := c.Get("reqID")
+
+	a.log.Info("getting operator config", "reqID", reqID)
+
+	k8sClient, err := getClientFromRequestFn(c)
+	if err != nil {
+		a.log.Error(err, "failed to get k8s client", "reqID", reqID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create Kubernetes client"})
+		return
+	}
+
+	namespace := resolveNamespace()
+
+	operatorConfig, err := loadOperatorConfigFn(ctx, k8sClient, namespace)
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			a.log.Info("OperatorConfig not found; returning empty operator config response", "reqID", reqID, "namespace", namespace)
+			c.JSON(http.StatusOK, OperatorConfigResponse{})
+			return
+		}
+		a.log.Error(err, "failed to get OperatorConfig", "reqID", reqID, "namespace", namespace)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get operator configuration"})
+		return
+	}
+
+	// Build the response with Jumpstarter target mappings
+	response := OperatorConfigResponse{}
+
+	if operatorConfig.Spec.Jumpstarter != nil && len(operatorConfig.Spec.Jumpstarter.TargetMappings) > 0 {
+		response.JumpstarterTargets = make(map[string]string)
+		for target, mapping := range operatorConfig.Spec.Jumpstarter.TargetMappings {
+			response.JumpstarterTargets[target] = mapping.Selector
+		}
+	}
+
 	c.JSON(http.StatusOK, response)
 }
 

@@ -103,17 +103,17 @@ var _ = Describe("controller", Ordered, func() {
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
-			By("deploying the controller-manager")
+			By("deploying the operator")
 			cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectimage))
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
-			By("validating that the controller-manager pod is running as expected")
+			By("validating that the operator pod is running as expected")
 			verifyControllerUp := func() error {
 				// Get pod name
 
 				cmd = exec.Command("kubectl", "get",
-					"pods", "-l", "control-plane=controller-manager",
+					"pods", "-l", "control-plane=operator",
 					"-o", "go-template={{ range .items }}"+
 						"{{ if not .metadata.deletionTimestamp }}"+
 						"{{ .metadata.name }}"+
@@ -128,7 +128,7 @@ var _ = Describe("controller", Ordered, func() {
 					return fmt.Errorf("expect 1 controller pods running, but got %d", len(podNames))
 				}
 				controllerPodName = podNames[0]
-				ExpectWithOffset(2, controllerPodName).Should(ContainSubstring("controller-manager"))
+				ExpectWithOffset(2, controllerPodName).Should(ContainSubstring("operator"))
 
 				// Validate pod status
 				cmd = exec.Command("kubectl", "get",
@@ -159,7 +159,7 @@ var _ = Describe("controller", Ordered, func() {
 				tasks := string(output)
 				if !contains(tasks, "build-automotive-image") {
 					// Collect controller logs for debugging
-					logCmd := exec.Command("kubectl", "logs", "-n", namespace, "-l", "control-plane=controller-manager", "--tail=50")
+					logCmd := exec.Command("kubectl", "logs", "-n", namespace, "-l", "control-plane=operator", "--tail=50")
 					logs, _ := utils.Run(logCmd)
 					return fmt.Errorf("build-automotive-image task not found, got: %s\nController logs:\n%s", tasks, string(logs))
 				}
@@ -395,15 +395,15 @@ var _ = Describe("OIDC Authentication", Ordered, func() {
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred())
 
-		By("deploying the controller-manager")
+		By("deploying the operator")
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectimage))
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred())
 
-		By("validating that the controller-manager pod is running")
+		By("validating that the operator pod is running")
 		verifyControllerUp := func() error {
 			cmd = exec.Command("kubectl", "get",
-				"pods", "-l", "control-plane=controller-manager",
+				"pods", "-l", "control-plane=operator",
 				"-o", "go-template={{ range .items }}"+
 					"{{ if not .metadata.deletionTimestamp }}"+
 					"{{ .metadata.name }}"+

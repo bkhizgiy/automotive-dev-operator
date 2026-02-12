@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -15,7 +16,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/containers/image/v5/copy"
@@ -35,9 +38,10 @@ import (
 )
 
 const (
-	archAMD64   = "amd64"
-	archARM64   = "arm64"
-	phaseFailed = "Failed"
+	archAMD64      = "amd64"
+	archARM64      = "arm64"
+	phaseCompleted = "Completed"
+	phaseFailed    = "Failed"
 )
 
 // getDefaultArch returns the current system architecture in caib format
@@ -56,6 +60,7 @@ var (
 	serverURL              string
 	manifest               string
 	buildName              string
+	showOutputFormat       string
 	distro                 string
 	target                 string
 	architecture           string
@@ -87,7 +92,28 @@ var (
 	flashName         string
 	exporterSelector  string
 	leaseDuration     string
+
+	// Internal registry options
+	useInternalRegistry       bool
+	internalRegistryImageName string
+	internalRegistryTag       string
+
+	// TLS options
+	insecureSkipTLS bool
 )
+
+// envBool parses a boolean from environment variable
+func envBool(key string) bool {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return false
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false
+	}
+	return b
+}
 
 // createBuildAPIClient creates a build API client with authentication token from flags or kubeconfig
 // It will attempt OIDC re-authentication if token is missing or expired
@@ -98,7 +124,7 @@ func createBuildAPIClient(serverURL string, authToken *string) (*buildapiclient.
 
 	// If no explicit token, try OIDC if config is available
 	if !explicitToken {
-		token, didAuth, err := auth.GetTokenWithReauth(ctx, serverURL, "")
+		token, didAuth, err := auth.GetTokenWithReauth(ctx, serverURL, "", insecureSkipTLS)
 		if err != nil {
 			// OIDC is configured but failed - don't silently fall back to kubeconfig
 			// This indicates a real authentication failure that should be reported
@@ -139,6 +165,9 @@ func createBuildAPIClient(serverURL string, authToken *string) (*buildapiclient.
 	}
 
 	// Configure TLS
+	if insecureSkipTLS {
+		opts = append(opts, buildapiclient.WithInsecureTLS())
+	}
 	// Check for custom CA certificate
 	if caCertFile := os.Getenv("SSL_CERT_FILE"); caCertFile != "" {
 		opts = append(opts, buildapiclient.WithCACertificate(caCertFile))
@@ -170,7 +199,7 @@ func executeWithReauth(serverURL string, authToken *string, fn func(*buildapicli
 	// Auth error (401) - try re-authentication; token may be rejected, not necessarily expired
 	fmt.Println("Authentication failed (401), re-authenticating...")
 
-	newToken, _, err := auth.GetTokenWithReauth(ctx, serverURL, *authToken)
+	newToken, _, err := auth.GetTokenWithReauth(ctx, serverURL, *authToken, insecureSkipTLS)
 	if err != nil {
 		return fmt.Errorf("re-authentication failed: %w", err)
 	}
@@ -217,7 +246,38 @@ func executeWithReauth(serverURL string, authToken *string, fn func(*buildapicli
 	return err
 }
 
-// extractRegistryCredentials extracts registry URL and returns registry URL and credentials from env vars
+// writeRegistryCredentialsFile writes registry credentials to a mode-0600 temp file and returns its path.
+func writeRegistryCredentialsFile(token string) (string, error) {
+	creds, err := json.Marshal(map[string]string{
+		"username": "serviceaccount",
+		"token":    token,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	f, err := os.CreateTemp("", "caib-registry-creds-*.json")
+	if err != nil {
+		return "", err
+	}
+	name := f.Name()
+
+	if _, err := f.Write(creds); err != nil {
+		_ = f.Close()
+		_ = os.Remove(name)
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(name)
+		return "", err
+	}
+	if err := os.Chmod(name, 0600); err != nil {
+		_ = os.Remove(name)
+		return "", err
+	}
+	return name, nil
+}
+
 func extractRegistryCredentials(primaryRef, secondaryRef string) (string, string, string) {
 	// Get credentials from environment variables only
 	username := os.Getenv("REGISTRY_USERNAME")
@@ -275,11 +335,11 @@ func validateOutputRequiresPush(output, pushRef, flagName string) {
 	}
 }
 
-func downloadOCIArtifactIfRequested(output, exportOCI, registryUsername, registryPassword string) {
+func downloadOCIArtifactIfRequested(output, exportOCI, registryUsername, registryPassword string, insecureSkipTLS bool) {
 	if output == "" {
 		return
 	}
-	if err := pullOCIArtifact(exportOCI, output, registryUsername, registryPassword); err != nil {
+	if err := pullOCIArtifact(exportOCI, output, registryUsername, registryPassword, insecureSkipTLS); err != nil {
 		handleError(fmt.Errorf("failed to download OCI artifact: %w", err))
 	}
 }
@@ -292,6 +352,14 @@ func main() {
 
 	rootCmd.InitDefaultVersionFlag()
 	rootCmd.SetVersionTemplate("caib version: {{.Version}}\n")
+
+	// Global flags
+	rootCmd.PersistentFlags().BoolVar(
+		&insecureSkipTLS,
+		"insecure",
+		envBool("CAIB_INSECURE"),
+		"skip TLS certificate verification (insecure, for testing only; env: CAIB_INSECURE)",
+	)
 
 	// Main build command (bootc - the default, future-focused approach)
 	buildCmd := &cobra.Command{
@@ -402,6 +470,40 @@ Examples:
 		Run:   runList,
 	}
 
+	showCmd := &cobra.Command{
+		Use:   "show <build-name>",
+		Short: "Show detailed information for an ImageBuild",
+		Long: `Show retrieves detailed status and output fields for a single ImageBuild.
+
+Examples:
+  # Show details in table format
+  caib show my-build
+
+  # Show details as JSON
+  caib show my-build -o json`,
+		Args: cobra.ExactArgs(1),
+		Run:  runShow,
+	}
+
+	downloadCmd := &cobra.Command{
+		Use:   "download <build-name>",
+		Short: "Download disk image artifact from a completed build",
+		Long: `Download retrieves the disk image artifact from a completed build.
+
+The build must have pushed a disk image to an OCI registry (via --push-disk
+or --push on disk/build-dev commands). The artifact is pulled from the
+registry to a local file.
+
+Examples:
+  # Download disk image from a completed build
+  caib download my-build -o ./disk.qcow2
+
+  # Download to a directory (multi-layer artifacts extract here)
+  caib download my-build -o ./output/`,
+		Args: cobra.ExactArgs(1),
+		Run:  runDownload,
+	}
+
 	loginCmd := &cobra.Command{
 		Use:   "login [server-url]",
 		Short: "Save server endpoint and authenticate for subsequent commands",
@@ -424,12 +526,12 @@ Example:
 	buildCmd.Flags().StringVarP(&architecture, "arch", "a", getDefaultArch(), "architecture (amd64, arm64)")
 	buildCmd.Flags().StringVar(&containerPush, "push", "", "push bootc container to registry (optional if --disk is used)")
 	buildCmd.Flags().BoolVar(&buildDiskImage, "disk", false, "also build disk image from container")
-	buildCmd.Flags().StringVarP(&outputDir, "output", "o", "", "download disk image to file from registry (implies --disk; requires --push-disk)")
+	buildCmd.Flags().StringVarP(&outputDir, "output", "o", "", "download disk image to file from registry (implies --disk; requires --push-disk or --internal-registry)")
 	buildCmd.Flags().StringVar(
 		&diskFormat, "format", "", "disk image format (qcow2, raw, simg); inferred from output filename if not set",
 	)
 	buildCmd.Flags().StringVar(&compressionAlgo, "compress", "gzip", "compression algorithm (gzip, lz4, xz)")
-	buildCmd.Flags().StringVar(&exportOCI, "push-disk", "", "push disk image as OCI artifact to registry")
+	buildCmd.Flags().StringVar(&exportOCI, "push-disk", "", "push disk image as OCI artifact to registry (implies --disk)")
 	buildCmd.Flags().StringVar(
 		&automotiveImageBuilder, "aib-image",
 		"quay.io/centos-sig-automotive/automotive-image-builder:latest", "AIB container image",
@@ -446,6 +548,10 @@ Example:
 	buildCmd.Flags().BoolVar(&flashAfterBuild, "flash", false, "flash the image to device after build completes")
 	buildCmd.Flags().StringVar(&jumpstarterClient, "client", "", "path to Jumpstarter client config file (required for --flash)")
 	buildCmd.Flags().StringVar(&leaseDuration, "lease", "03:00:00", "device lease duration for flash (HH:MM:SS)")
+	// Internal registry options
+	buildCmd.Flags().BoolVar(&useInternalRegistry, "internal-registry", false, "push to OpenShift internal registry")
+	buildCmd.Flags().StringVar(&internalRegistryImageName, "image-name", "", "override image name for internal registry (default: build name)")
+	buildCmd.Flags().StringVar(&internalRegistryTag, "image-tag", "", "tag for internal registry image (default: build name)")
 
 	listCmd.Flags().StringVar(
 		&serverURL, "server", config.DefaultServer(), "REST API server base URL (e.g. https://api.example)",
@@ -453,6 +559,16 @@ Example:
 	listCmd.Flags().StringVar(
 		&authToken, "token", os.Getenv("CAIB_TOKEN"),
 		"Bearer token for authentication (e.g., OpenShift access token)",
+	)
+	showCmd.Flags().StringVar(
+		&serverURL, "server", config.DefaultServer(), "REST API server base URL (e.g. https://api.example)",
+	)
+	showCmd.Flags().StringVar(
+		&authToken, "token", os.Getenv("CAIB_TOKEN"),
+		"Bearer token for authentication (e.g., OpenShift access token)",
+	)
+	showCmd.Flags().StringVarP(
+		&showOutputFormat, "output", "o", "table", "Output format (table, json, yaml)",
 	)
 
 	// disk command flags (create disk from existing container)
@@ -481,6 +597,10 @@ Example:
 	diskCmd.Flags().BoolVar(&flashAfterBuild, "flash", false, "flash the image to device after build completes")
 	diskCmd.Flags().StringVar(&jumpstarterClient, "client", "", "path to Jumpstarter client config file (required for --flash)")
 	diskCmd.Flags().StringVar(&leaseDuration, "lease", "03:00:00", "device lease duration for flash (HH:MM:SS)")
+	// Internal registry options
+	diskCmd.Flags().BoolVar(&useInternalRegistry, "internal-registry", false, "push to OpenShift internal registry")
+	diskCmd.Flags().StringVar(&internalRegistryImageName, "image-name", "", "override image name for internal registry (default: build name)")
+	diskCmd.Flags().StringVar(&internalRegistryTag, "image-tag", "", "tag for internal registry image (default: build name)")
 
 	// build-dev command flags (traditional ostree/package builds)
 	buildDevCmd.Flags().StringVar(&serverURL, "server", config.DefaultServer(), "REST API server base URL")
@@ -508,6 +628,15 @@ Example:
 	buildDevCmd.Flags().BoolVar(&flashAfterBuild, "flash", false, "flash the image to device after build completes")
 	buildDevCmd.Flags().StringVar(&jumpstarterClient, "client", "", "path to Jumpstarter client config file (required for --flash)")
 	buildDevCmd.Flags().StringVar(&leaseDuration, "lease", "03:00:00", "device lease duration for flash (HH:MM:SS)")
+	// Internal registry options
+	buildDevCmd.Flags().BoolVar(&useInternalRegistry, "internal-registry", false, "push to OpenShift internal registry")
+	buildDevCmd.Flags().StringVar(&internalRegistryImageName, "image-name", "", "override image name for internal registry (default: build name)")
+	buildDevCmd.Flags().StringVar(&internalRegistryTag, "image-tag", "", "tag for internal registry image (default: build name)")
+
+	// download command flags
+	downloadCmd.Flags().StringVar(&serverURL, "server", config.DefaultServer(), "REST API server base URL")
+	downloadCmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication")
+	downloadCmd.Flags().StringVarP(&outputDir, "output", "o", "", "destination file or directory for the artifact")
 
 	// flash command flags
 	flashCmd.Flags().StringVar(&serverURL, "server", config.DefaultServer(), "REST API server base URL")
@@ -522,7 +651,7 @@ Example:
 	_ = flashCmd.MarkFlagRequired("client")
 
 	// Add all commands
-	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, flashCmd, loginCmd, catalog.NewCatalogCmd())
+	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, showCmd, downloadCmd, flashCmd, loginCmd, catalog.NewCatalogCmd())
 	// Add deprecated aliases for backwards compatibility
 	rootCmd.AddCommand(buildBootcAliasCmd, buildLegacyAliasCmd, buildTraditionalAliasCmd)
 
@@ -548,7 +677,7 @@ func runLogin(_ *cobra.Command, args []string) {
 	fmt.Printf("Server saved: %s\n", server)
 
 	ctx := context.Background()
-	token, didAuth, err := auth.GetTokenWithReauth(ctx, server, "")
+	token, didAuth, err := auth.GetTokenWithReauth(ctx, server, "", insecureSkipTLS)
 	if err != nil {
 		fmt.Printf("Warning: authentication failed (you may need --token or kubeconfig for API calls): %v\n", err)
 		return
@@ -560,41 +689,146 @@ func runLogin(_ *cobra.Command, args []string) {
 	}
 }
 
+// validateBootcBuildFlags validates flag combinations for the build command
+func validateBootcBuildFlags() {
+	if serverURL == "" {
+		handleError(fmt.Errorf("--server is required (or set CAIB_SERVER, or run 'caib login <server-url>')"))
+	}
+
+	if useInternalRegistry {
+		if exportOCI != "" {
+			handleError(fmt.Errorf("--internal-registry cannot be used with --push-disk"))
+		}
+	}
+
+	if outputDir != "" && !buildDiskImage {
+		buildDiskImage = true
+	}
+	if exportOCI != "" && !buildDiskImage {
+		buildDiskImage = true
+	}
+	if !useInternalRegistry {
+		validateOutputRequiresPush(outputDir, exportOCI, "--push-disk")
+	}
+
+	if containerPush == "" && !buildDiskImage && !useInternalRegistry {
+		handleError(fmt.Errorf(
+			"--push is required when not building a disk image " +
+				"(use --disk or --output to create a disk image without pushing the container)",
+		))
+	}
+}
+
+// applyRegistryCredentialsToRequest sets registry credentials on the build request.
+// When --internal-registry is combined with --push, both are configured so the
+// container is pushed externally while the disk image uses the internal registry.
+func applyRegistryCredentialsToRequest(req *buildapitypes.BuildRequest) {
+	if useInternalRegistry {
+		req.UseInternalRegistry = true
+		req.InternalRegistryImageName = internalRegistryImageName
+		req.InternalRegistryTag = internalRegistryTag
+		if containerPush == "" {
+			return
+		}
+		// Hybrid: fall through to also set external registry credentials
+		// for the container push.
+	}
+
+	effectiveRegistryURL, registryUsername, registryPassword := extractRegistryCredentials(containerPush, exportOCI)
+	if err := validateRegistryCredentials(effectiveRegistryURL, registryUsername, registryPassword); err != nil {
+		handleError(err)
+	}
+	if effectiveRegistryURL != "" && registryUsername != "" && registryPassword != "" {
+		req.RegistryCredentials = &buildapitypes.RegistryCredentials{
+			Enabled:     true,
+			AuthType:    "username-password",
+			RegistryURL: effectiveRegistryURL,
+			Username:    registryUsername,
+			Password:    registryPassword,
+		}
+	}
+}
+
+// validateFlashTargetMapping validates that the selected target has a Jumpstarter mapping.
+func validateFlashTargetMapping(ctx context.Context, api *buildapiclient.Client, target string) {
+	config, err := api.GetOperatorConfig(ctx)
+	if err != nil {
+		handleError(fmt.Errorf("failed to get operator configuration for Jumpstarter validation: %w", err))
+	}
+
+	if len(config.JumpstarterTargets) == 0 {
+		handleError(fmt.Errorf("flash enabled but no Jumpstarter target mappings configured in operator"))
+	}
+
+	if _, exists := config.JumpstarterTargets[target]; !exists {
+		availableTargets := make([]string, 0, len(config.JumpstarterTargets))
+		for t := range config.JumpstarterTargets {
+			availableTargets = append(availableTargets, t)
+		}
+		handleError(
+			fmt.Errorf(
+				"flash enabled but no Jumpstarter target mapping found for target %q. Available targets: %v",
+				target,
+				availableTargets,
+			),
+		)
+	}
+}
+
+// displayBuildResults shows push locations after build completion
+func displayBuildResults(ctx context.Context, api *buildapiclient.Client, buildName string) {
+	if useInternalRegistry {
+		st, err := api.GetBuild(ctx, buildName)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to get build results for %s: %v\n", buildName, err)
+			return
+		}
+		if st.ContainerImage != "" {
+			fmt.Printf("Container image: %s\n", st.ContainerImage)
+		}
+		if st.DiskImage != "" {
+			fmt.Printf("Disk image: %s\n", st.DiskImage)
+		}
+		if st.RegistryToken != "" {
+			if outputDir != "" && st.DiskImage != "" {
+				downloadOCIArtifactIfRequested(outputDir, st.DiskImage, "serviceaccount", st.RegistryToken, insecureSkipTLS)
+			} else {
+				credsFile, err := writeRegistryCredentialsFile(st.RegistryToken)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to write registry credentials file: %v\n", err)
+					fmt.Printf("\nRegistry credentials (valid ~4 hours):\n")
+					fmt.Printf("  Username: serviceaccount\n")
+					fmt.Printf("  Token:    %s\n", st.RegistryToken)
+				} else {
+					fmt.Printf("\nRegistry credentials written to: %s (valid ~4 hours)\n", credsFile)
+				}
+			}
+		}
+	} else {
+		if containerPush != "" {
+			fmt.Printf("Container image pushed to: %s\n", containerPush)
+		}
+		if exportOCI != "" {
+			fmt.Printf("Disk image pushed to: %s\n", exportOCI)
+		}
+		_, registryUsername, registryPassword := extractRegistryCredentials(containerPush, exportOCI)
+		downloadOCIArtifactIfRequested(outputDir, exportOCI, registryUsername, registryPassword, insecureSkipTLS)
+	}
+}
+
 // runBuild handles the main 'build' command (bootc builds)
 func runBuild(_ *cobra.Command, args []string) {
 	ctx := context.Background()
 	manifest = args[0]
 
-	if serverURL == "" {
-		handleError(fmt.Errorf("--server is required (or set CAIB_SERVER, or run 'caib login <server-url>')"))
-	}
-	validateOutputRequiresPush(outputDir, exportOCI, "--push")
+	validateBootcBuildFlags()
 
-	// Auto-generate build name if not provided
 	if buildName == "" {
 		base := strings.TrimSuffix(filepath.Base(manifest), ".aib.yml")
 		base = strings.TrimSuffix(base, ".yml")
 		buildName = fmt.Sprintf("%s-%s", base, time.Now().Format("20060102-150405"))
 		fmt.Printf("Auto-generated build name: %s\n", buildName)
 	}
-
-	// Validate: if --output is specified, --disk must also be specified
-	if outputDir != "" && !buildDiskImage {
-		buildDiskImage = true // imply --disk when --output is specified
-	}
-	validateOutputRequiresPush(outputDir, exportOCI, "--push-disk")
-
-	// Validate: --push is required unless we're building a disk image
-	// (disk image becomes the output, so container push is optional)
-	if containerPush == "" && !buildDiskImage {
-		err := fmt.Errorf(
-			"--push is required when not building a disk image " +
-				"(use --disk or --output to create a disk image without pushing the container)",
-		)
-		handleError(err)
-	}
-
-	// Note: diskFormat can be empty - AIB will default to raw (or infer from output filename extension)
 
 	api, err := createBuildAPIClient(serverURL, &authToken)
 	if err != nil {
@@ -604,14 +838,6 @@ func runBuild(_ *cobra.Command, args []string) {
 	manifestBytes, err := os.ReadFile(manifest)
 	if err != nil {
 		handleError(fmt.Errorf("error reading manifest: %w", err))
-	}
-
-	// Extract registry URL and credentials
-	effectiveRegistryURL, registryUsername, registryPassword := extractRegistryCredentials(containerPush, exportOCI)
-
-	// Validate credentials (error on partial credentials)
-	if err := validateRegistryCredentials(effectiveRegistryURL, registryUsername, registryPassword); err != nil {
-		handleError(err)
 	}
 
 	req := buildapitypes.BuildRequest{
@@ -634,15 +860,17 @@ func runBuild(_ *cobra.Command, args []string) {
 		BuilderImage:           builderImage,
 	}
 
+	applyRegistryCredentialsToRequest(&req)
+
 	// Add flash configuration if enabled
 	if flashAfterBuild {
-		// Flash requires a disk image pushed to a registry
-		if exportOCI == "" {
+		if exportOCI == "" && !useInternalRegistry {
 			handleError(fmt.Errorf("cannot enable --flash without exporting a disk image (--push-disk)"))
 		}
 		if jumpstarterClient == "" {
 			handleError(fmt.Errorf("--flash requires --client to specify Jumpstarter client config file"))
 		}
+		validateFlashTargetMapping(ctx, api, target)
 		clientConfigBytes, err := os.ReadFile(jumpstarterClient)
 		if err != nil {
 			handleError(fmt.Errorf("failed to read Jumpstarter client config: %w", err))
@@ -650,16 +878,6 @@ func runBuild(_ *cobra.Command, args []string) {
 		req.FlashEnabled = true
 		req.FlashClientConfig = base64.StdEncoding.EncodeToString(clientConfigBytes)
 		req.FlashLeaseDuration = leaseDuration
-	}
-
-	if effectiveRegistryURL != "" && registryUsername != "" && registryPassword != "" {
-		req.RegistryCredentials = &buildapitypes.RegistryCredentials{
-			Enabled:     true,
-			AuthType:    "username-password",
-			RegistryURL: effectiveRegistryURL,
-			Username:    registryUsername,
-			Password:    registryPassword,
-		}
 	}
 
 	resp, err := api.CreateBuild(ctx, req)
@@ -681,19 +899,7 @@ func runBuild(_ *cobra.Command, args []string) {
 		waitForBuildCompletion(ctx, api, resp.Name)
 	}
 
-	// Show push locations after successful build completion
-	if containerPush != "" {
-		fmt.Printf("Container image pushed to: %s\n", containerPush)
-	}
-	if exportOCI != "" {
-		fmt.Printf("Disk image pushed to: %s\n", exportOCI)
-	}
-
-	downloadOCIArtifactIfRequested(outputDir, exportOCI, registryUsername, registryPassword)
-
-	// Note: When flashAfterBuild is enabled, flash config is sent with the build request
-	// and the controller handles flashing after push. The waitForBuildCompletion above
-	// will wait until the full pipeline (including flash) completes.
+	displayBuildResults(ctx, api, resp.Name)
 }
 
 func runDisk(_ *cobra.Command, args []string) {
@@ -704,15 +910,20 @@ func runDisk(_ *cobra.Command, args []string) {
 		handleError(fmt.Errorf("--server is required (or set CAIB_SERVER, or run 'caib login <server-url>')"))
 	}
 
-	// Validate: need either --output or --push
-	if outputDir == "" && exportOCI == "" {
-		handleError(fmt.Errorf("either --output or --push is required"))
+	if useInternalRegistry {
+		if exportOCI != "" {
+			handleError(fmt.Errorf("--internal-registry cannot be used with --push"))
+		}
+	} else {
+		// Validate: need either --output or --push
+		if outputDir == "" && exportOCI == "" {
+			handleError(fmt.Errorf("either --output or --push is required"))
+		}
+		validateOutputRequiresPush(outputDir, exportOCI, "--push")
 	}
-	validateOutputRequiresPush(outputDir, exportOCI, "--push")
 
 	// Auto-generate build name if not provided
 	if buildName == "" {
-		// Extract image name from container ref for the build name
 		parts := strings.Split(containerRef, "/")
 		imagePart := parts[len(parts)-1]
 		imagePart = strings.Split(imagePart, ":")[0] // remove tag
@@ -722,14 +933,6 @@ func runDisk(_ *cobra.Command, args []string) {
 
 	api, err := createBuildAPIClient(serverURL, &authToken)
 	if err != nil {
-		handleError(err)
-	}
-
-	// Extract registry URL and credentials
-	effectiveRegistryURL, registryUsername, registryPassword := extractRegistryCredentials(containerRef, exportOCI)
-
-	// Validate credentials (error on partial credentials)
-	if err := validateRegistryCredentials(effectiveRegistryURL, registryUsername, registryPassword); err != nil {
 		handleError(err)
 	}
 
@@ -748,15 +951,17 @@ func runDisk(_ *cobra.Command, args []string) {
 		ExportOCI:              exportOCI,
 	}
 
+	applyRegistryCredentialsToRequest(&req)
+
 	// Add flash configuration if enabled
 	if flashAfterBuild {
-		// Flash requires a disk image pushed to a registry
-		if exportOCI == "" {
+		if exportOCI == "" && !useInternalRegistry {
 			handleError(fmt.Errorf("cannot enable --flash without exporting a disk image (--push)"))
 		}
 		if jumpstarterClient == "" {
 			handleError(fmt.Errorf("--flash requires --client to specify Jumpstarter client config file"))
 		}
+		validateFlashTargetMapping(ctx, api, target)
 		clientConfigBytes, err := os.ReadFile(jumpstarterClient)
 		if err != nil {
 			handleError(fmt.Errorf("failed to read Jumpstarter client config: %w", err))
@@ -764,16 +969,6 @@ func runDisk(_ *cobra.Command, args []string) {
 		req.FlashEnabled = true
 		req.FlashClientConfig = base64.StdEncoding.EncodeToString(clientConfigBytes)
 		req.FlashLeaseDuration = leaseDuration
-	}
-
-	if effectiveRegistryURL != "" && registryUsername != "" && registryPassword != "" {
-		req.RegistryCredentials = &buildapitypes.RegistryCredentials{
-			Enabled:     true,
-			AuthType:    "username-password",
-			RegistryURL: effectiveRegistryURL,
-			Username:    registryUsername,
-			Password:    registryPassword,
-		}
 	}
 
 	resp, err := api.CreateBuild(ctx, req)
@@ -786,19 +981,10 @@ func runDisk(_ *cobra.Command, args []string) {
 		waitForBuildCompletion(ctx, api, resp.Name)
 	}
 
-	// Show push location after successful build completion
-	if exportOCI != "" {
-		fmt.Printf("Disk image pushed to: %s\n", exportOCI)
-	}
-
-	downloadOCIArtifactIfRequested(outputDir, exportOCI, registryUsername, registryPassword)
-
-	// Note: When flashAfterBuild is enabled, flash config is sent with the build request
-	// and the controller handles flashing after push. The waitForBuildCompletion above
-	// will wait until the full pipeline (including flash) completes.
+	displayBuildResults(ctx, api, resp.Name)
 }
 
-func pullOCIArtifact(ociRef, destPath, username, password string) error {
+func pullOCIArtifact(ociRef, destPath, username, password string, insecureSkipTLS bool) error {
 	fmt.Printf("Pulling OCI artifact %s to %s\n", ociRef, destPath)
 
 	// Ensure output directory exists
@@ -826,6 +1012,12 @@ func pullOCIArtifact(ociRef, destPath, username, password string) error {
 		// - $XDG_RUNTIME_DIR/containers/auth.json
 		// - /run/containers/$UID/auth.json
 		// - $HOME/.config/containers/auth.json
+	}
+
+	// Configure TLS verification
+	if insecureSkipTLS {
+		systemCtx.OCIInsecureSkipTLSVerify = insecureSkipTLS
+		systemCtx.DockerInsecureSkipTLSVerify = types.OptionalBoolTrue
 	}
 
 	// Set up policy context (allow all)
@@ -1103,7 +1295,14 @@ func runBuildDev(_ *cobra.Command, args []string) {
 	if serverURL == "" {
 		handleError(fmt.Errorf("--server is required (or set CAIB_SERVER, or run 'caib login <server-url>')"))
 	}
-	validateOutputRequiresPush(outputDir, exportOCI, "--push")
+
+	if useInternalRegistry {
+		if exportOCI != "" {
+			handleError(fmt.Errorf("--internal-registry cannot be used with --push"))
+		}
+	} else {
+		validateOutputRequiresPush(outputDir, exportOCI, "--push")
+	}
 
 	// Auto-generate build name if not provided
 	if buildName == "" {
@@ -1134,14 +1333,6 @@ func runBuildDev(_ *cobra.Command, args []string) {
 		handleError(fmt.Errorf("invalid --mode %q (expected: %q or %q)", mode, buildapitypes.ModeImage, buildapitypes.ModePackage))
 	}
 
-	// Extract registry URL and credentials
-	effectiveRegistryURL, registryUsername, registryPassword := extractRegistryCredentials("", exportOCI)
-
-	// Validate credentials (error on partial credentials)
-	if err := validateRegistryCredentials(effectiveRegistryURL, registryUsername, registryPassword); err != nil {
-		handleError(err)
-	}
-
 	req := buildapitypes.BuildRequest{
 		Name:                   buildName,
 		Manifest:               string(manifestBytes),
@@ -1159,15 +1350,18 @@ func runBuildDev(_ *cobra.Command, args []string) {
 		ExportOCI:              exportOCI,
 	}
 
+	applyRegistryCredentialsToRequest(&req)
+
 	// Add flash configuration if enabled
 	if flashAfterBuild {
-		// Flash requires a disk image pushed to a registry
-		if exportOCI == "" {
+		if exportOCI == "" && !useInternalRegistry {
 			handleError(fmt.Errorf("cannot enable --flash without exporting a disk image (--push)"))
 		}
 		if jumpstarterClient == "" {
 			handleError(fmt.Errorf("--flash requires --client to specify Jumpstarter client config file"))
 		}
+		validateFlashTargetMapping(ctx, api, target)
+
 		clientConfigBytes, err := os.ReadFile(jumpstarterClient)
 		if err != nil {
 			handleError(fmt.Errorf("failed to read Jumpstarter client config: %w", err))
@@ -1175,16 +1369,6 @@ func runBuildDev(_ *cobra.Command, args []string) {
 		req.FlashEnabled = true
 		req.FlashClientConfig = base64.StdEncoding.EncodeToString(clientConfigBytes)
 		req.FlashLeaseDuration = leaseDuration
-	}
-
-	if effectiveRegistryURL != "" && registryUsername != "" && registryPassword != "" {
-		req.RegistryCredentials = &buildapitypes.RegistryCredentials{
-			Enabled:     true,
-			AuthType:    "username-password",
-			RegistryURL: effectiveRegistryURL,
-			Username:    registryUsername,
-			Password:    registryPassword,
-		}
 	}
 
 	resp, err := api.CreateBuild(ctx, req)
@@ -1205,11 +1389,8 @@ func runBuildDev(_ *cobra.Command, args []string) {
 	if waitForBuild || followLogs || outputDir != "" || flashAfterBuild {
 		waitForBuildCompletion(ctx, api, resp.Name)
 	}
-	downloadOCIArtifactIfRequested(outputDir, exportOCI, registryUsername, registryPassword)
 
-	// Note: When flashAfterBuild is enabled, flash config is sent with the build request
-	// and the controller handles flashing after push. The waitForBuildCompletion above
-	// will wait until the full pipeline (including flash) completes.
+	displayBuildResults(ctx, api, resp.Name)
 }
 
 func handleFileUploads(
@@ -1285,12 +1466,16 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 	pendingWarningShown := false
 	retryLimitWarningShown := false
 
+	logTransport := &http.Transport{
+		ResponseHeaderTimeout: 30 * time.Second,
+		IdleConnTimeout:       2 * time.Minute,
+	}
+	if insecureSkipTLS {
+		logTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
 	logClient := &http.Client{
-		Timeout: 10 * time.Minute,
-		Transport: &http.Transport{
-			ResponseHeaderTimeout: 30 * time.Second,
-			IdleConnTimeout:       2 * time.Minute,
-		},
+		Timeout:   10 * time.Minute,
+		Transport: logTransport,
 	}
 	streamState := &logStreamState{}
 
@@ -1317,7 +1502,7 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 			}
 
 			// Handle terminal build states
-			if st.Phase == "Completed" {
+			if st.Phase == phaseCompleted {
 				flashWasExecuted := strings.Contains(st.Message, "flash")
 				if flashWasExecuted {
 					fmt.Println("\n" + strings.Repeat("=", 50))
@@ -1738,9 +1923,246 @@ func runList(_ *cobra.Command, _ []string) {
 		fmt.Println("No ImageBuilds found")
 		return
 	}
-	fmt.Printf("%-20s %-12s %-20s %-20s %-20s\n", "NAME", "STATUS", "MESSAGE", "CREATED", "ARTIFACT")
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	defer func() {
+		if err := w.Flush(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to flush output: %v\n", err)
+		}
+	}()
+
+	if _, err := fmt.Fprintln(w, "NAME\tSTATUS\tAGE\tREQUESTED BY\tARTIFACT"); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to write header: %v\n", err)
+		return
+	}
 	for _, it := range items {
-		fmt.Printf("%-20s %-12s %-20s %-20s %-20s\n", it.Name, it.Phase, it.Message, it.CreatedAt, "")
+		artifact := it.DiskImage
+		if artifact == "" {
+			artifact = it.ContainerImage
+		}
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", it.Name, it.Phase, formatAge(it.CreatedAt), it.RequestedBy, artifact); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to write row: %v\n", err)
+		}
+	}
+}
+
+func runShow(_ *cobra.Command, args []string) {
+	ctx := context.Background()
+	showBuildName := args[0]
+
+	if strings.TrimSpace(serverURL) == "" {
+		handleError(fmt.Errorf("--server is required (or set CAIB_SERVER, or run 'caib login <server-url>')"))
+	}
+
+	var st *buildapitypes.BuildResponse
+	err := executeWithReauth(serverURL, &authToken, func(api *buildapiclient.Client) error {
+		var err error
+		st, err = api.GetBuild(ctx, showBuildName)
+		return err
+	})
+	if err != nil {
+		handleError(fmt.Errorf("error getting ImageBuild %s: %w", showBuildName, err))
+	}
+
+	// Backward-compatible fallback for older API servers that do not yet include response parameters.
+	if st.Parameters == nil {
+		_ = executeWithReauth(serverURL, &authToken, func(api *buildapiclient.Client) error {
+			tpl, err := api.GetBuildTemplate(ctx, showBuildName)
+			if err != nil {
+				return err
+			}
+			st.Parameters = buildParametersFromTemplate(tpl)
+			return nil
+		})
+	}
+
+	switch strings.ToLower(showOutputFormat) {
+	case "json":
+		out, err := json.MarshalIndent(st, "", "  ")
+		if err != nil {
+			handleError(fmt.Errorf("error rendering JSON output: %w", err))
+		}
+		fmt.Println(string(out))
+	case "yaml", "yml":
+		out, err := yaml.Marshal(st)
+		if err != nil {
+			handleError(fmt.Errorf("error rendering YAML output: %w", err))
+		}
+		fmt.Print(string(out))
+	case "table":
+		printBuildDetails(st)
+	default:
+		handleError(fmt.Errorf("invalid output format %q (supported: table, json, yaml)", showOutputFormat))
+	}
+}
+
+func buildParametersFromTemplate(tpl *buildapitypes.BuildTemplateResponse) *buildapitypes.BuildParameters {
+	if tpl == nil {
+		return nil
+	}
+
+	params := &buildapitypes.BuildParameters{
+		Architecture:           string(tpl.Architecture),
+		Distro:                 string(tpl.Distro),
+		Target:                 string(tpl.Target),
+		Mode:                   string(tpl.Mode),
+		ExportFormat:           string(tpl.ExportFormat),
+		Compression:            tpl.Compression,
+		StorageClass:           tpl.StorageClass,
+		AutomotiveImageBuilder: tpl.AutomotiveImageBuilder,
+		BuilderImage:           tpl.BuilderImage,
+		ContainerRef:           tpl.ContainerRef,
+		BuildDiskImage:         tpl.BuildDiskImage,
+		FlashEnabled:           tpl.FlashEnabled,
+		FlashLeaseDuration:     tpl.FlashLeaseDuration,
+		UseServiceAccountAuth:  tpl.UseInternalRegistry,
+	}
+
+	if strings.TrimSpace(params.Architecture) == "" &&
+		strings.TrimSpace(params.Distro) == "" &&
+		strings.TrimSpace(params.Target) == "" &&
+		strings.TrimSpace(params.Mode) == "" &&
+		strings.TrimSpace(params.ExportFormat) == "" &&
+		strings.TrimSpace(params.Compression) == "" &&
+		strings.TrimSpace(params.StorageClass) == "" &&
+		strings.TrimSpace(params.AutomotiveImageBuilder) == "" &&
+		strings.TrimSpace(params.BuilderImage) == "" &&
+		strings.TrimSpace(params.ContainerRef) == "" &&
+		strings.TrimSpace(params.FlashLeaseDuration) == "" &&
+		!params.BuildDiskImage &&
+		!params.FlashEnabled &&
+		!params.UseServiceAccountAuth {
+		return nil
+	}
+
+	return params
+}
+
+func printBuildDetails(st *buildapitypes.BuildResponse) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	defer func() {
+		if err := w.Flush(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to flush output: %v\n", err)
+		}
+	}()
+
+	rows := [][2]string{
+		{"Name", st.Name},
+		{"Phase", st.Phase},
+		{"Message", st.Message},
+		{"Requested By", valueOrDash(st.RequestedBy)},
+		{"Start Time", valueOrDash(st.StartTime)},
+		{"Completion Time", valueOrDash(st.CompletionTime)},
+		{"Container Image", valueOrDash(st.ContainerImage)},
+		{"Disk Image", valueOrDash(st.DiskImage)},
+		{"Warning", valueOrDash(st.Warning)},
+	}
+
+	if st.Parameters != nil {
+		rows = append(rows,
+			[2]string{"Architecture", valueOrDash(st.Parameters.Architecture)},
+			[2]string{"Distro", valueOrDash(st.Parameters.Distro)},
+			[2]string{"Target", valueOrDash(st.Parameters.Target)},
+			[2]string{"Mode", valueOrDash(st.Parameters.Mode)},
+			[2]string{"Export Format", valueOrDash(st.Parameters.ExportFormat)},
+			[2]string{"Compression", valueOrDash(st.Parameters.Compression)},
+			[2]string{"Storage Class", valueOrDash(st.Parameters.StorageClass)},
+			[2]string{"AIB Image", valueOrDash(st.Parameters.AutomotiveImageBuilder)},
+			[2]string{"Builder Image", valueOrDash(st.Parameters.BuilderImage)},
+		)
+	}
+
+	if st.Jumpstarter != nil {
+		rows = append(rows,
+			[2]string{"Jumpstarter Available", fmt.Sprintf("%t", st.Jumpstarter.Available)},
+			[2]string{"Jumpstarter Exporter", valueOrDash(st.Jumpstarter.ExporterSelector)},
+			[2]string{"Jumpstarter Flash Cmd", valueOrDash(st.Jumpstarter.FlashCmd)},
+			[2]string{"Jumpstarter Lease ID", valueOrDash(st.Jumpstarter.LeaseID)},
+		)
+	}
+
+	for _, row := range rows {
+		if _, err := fmt.Fprintf(w, "%s\t%s\n", row[0], row[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to write output row: %v\n", err)
+			return
+		}
+	}
+}
+
+func valueOrDash(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "-"
+	}
+	return v
+}
+
+func formatAge(rfcTime string) string {
+	t, err := time.Parse(time.RFC3339, rfcTime)
+	if err != nil {
+		return rfcTime
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
+
+func runDownload(_ *cobra.Command, args []string) {
+	ctx := context.Background()
+	downloadBuildName := args[0]
+
+	if serverURL == "" {
+		handleError(fmt.Errorf("--server is required (or set CAIB_SERVER, or run 'caib login <server-url>')"))
+	}
+
+	if outputDir == "" {
+		handleError(fmt.Errorf("--output / -o is required"))
+	}
+
+	var st *buildapitypes.BuildResponse
+	err := executeWithReauth(serverURL, &authToken, func(api *buildapiclient.Client) error {
+		var err error
+		st, err = api.GetBuild(ctx, downloadBuildName)
+		return err
+	})
+	if err != nil {
+		handleError(fmt.Errorf("error getting build %s: %w", downloadBuildName, err))
+	}
+
+	if st.Phase != phaseCompleted {
+		handleError(fmt.Errorf("build %s is not completed (phase: %s), cannot download artifacts", downloadBuildName, st.Phase))
+	}
+
+	ociRef := st.DiskImage
+	if ociRef == "" {
+		handleError(fmt.Errorf("build %s has no disk image artifact to download (no OCI export was configured)", downloadBuildName))
+	}
+
+	// Use API-minted token if available (internal registry builds),
+	// otherwise fall back to environment credentials.
+	registryUsername := ""
+	registryPassword := ""
+	if st.RegistryToken != "" {
+		registryUsername = "serviceaccount"
+		registryPassword = st.RegistryToken
+	} else {
+		var effectiveRegistryURL string
+		effectiveRegistryURL, registryUsername, registryPassword = extractRegistryCredentials(ociRef, "")
+		if err := validateRegistryCredentials(effectiveRegistryURL, registryUsername, registryPassword); err != nil {
+			handleError(err)
+		}
+	}
+
+	fmt.Printf("Downloading disk image from %s\n", ociRef)
+	if err := pullOCIArtifact(ociRef, outputDir, registryUsername, registryPassword, insecureSkipTLS); err != nil {
+		handleError(fmt.Errorf("download failed: %w", err))
 	}
 }
 
@@ -1880,12 +2302,16 @@ func waitForFlashCompletion(ctx context.Context, api *buildapiclient.Client, nam
 	var lastPhase, lastMessage string
 	pendingWarningShown := false
 
+	flashLogTransport := &http.Transport{
+		ResponseHeaderTimeout: 30 * time.Second,
+		IdleConnTimeout:       2 * time.Minute,
+	}
+	if insecureSkipTLS {
+		flashLogTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
 	logClient := &http.Client{
-		Timeout: 10 * time.Minute,
-		Transport: &http.Transport{
-			ResponseHeaderTimeout: 30 * time.Second,
-			IdleConnTimeout:       2 * time.Minute,
-		},
+		Timeout:   10 * time.Minute,
+		Transport: flashLogTransport,
 	}
 	streamState := &logStreamState{}
 
@@ -1912,7 +2338,7 @@ func waitForFlashCompletion(ctx context.Context, api *buildapiclient.Client, nam
 			}
 
 			// Handle terminal states
-			if st.Phase == "Completed" {
+			if st.Phase == phaseCompleted {
 				fmt.Println("Flash completed successfully!")
 				return
 			}

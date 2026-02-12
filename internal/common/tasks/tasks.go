@@ -15,11 +15,15 @@ import (
 // BuildConfig defines configuration options for build operations
 // This is an internal type used for task generation
 type BuildConfig struct {
-	UseMemoryVolumes bool
-	MemoryVolumeSize string
-	PVCSize          string
-	RuntimeClassName string
+	UseMemoryVolumes          bool
+	UseMemoryContainerStorage bool
+	MemoryVolumeSize          string
+	PVCSize                   string
+	RuntimeClassName          string
 }
+
+// DefaultInternalRegistryURL is the standard in-cluster URL for the OpenShift internal image registry.
+const DefaultInternalRegistryURL = "image-registry.openshift-image-registry.svc:5000"
 
 // AutomotiveImageBuilder is the default container image for the automotive image builder.
 const AutomotiveImageBuilder = "quay.io/centos-sig-automotive/automotive-image-builder:1.0.0"
@@ -87,7 +91,7 @@ func GeneratePushArtifactRegistryTask(namespace string) *tektonv1.Task {
 			Steps: []tektonv1.Step{
 				{
 					Name:  "push-artifact",
-					Image: "ghcr.io/oras-project/oras:v1.2.0",
+					Image: "quay.io/konflux-ci/yq:latest",
 					Env: []corev1.EnvVar{
 						{
 							Name:  "DOCKER_CONFIG",
@@ -102,6 +106,11 @@ func GeneratePushArtifactRegistryTask(namespace string) *tektonv1.Task {
 							MountPath: "/docker-config/config.json",
 							SubPath:   ".dockerconfigjson",
 						},
+						{
+							Name:      "partition-config",
+							MountPath: "/etc/partition-config",
+							ReadOnly:  true,
+						},
 					},
 				},
 			},
@@ -111,6 +120,17 @@ func GeneratePushArtifactRegistryTask(namespace string) *tektonv1.Task {
 					VolumeSource: corev1.VolumeSource{
 						Secret: &corev1.SecretVolumeSource{
 							SecretName: "$(params.secret-ref)",
+						},
+					},
+				},
+				{
+					Name: "partition-config",
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "aib-partition-config",
+							},
+							Optional: ptr.To(true),
 						},
 					},
 				},
@@ -348,17 +368,13 @@ func GenerateBuildAutomotiveImageTask(namespace string, buildConfig *BuildConfig
 				{
 					Name: "run-dir",
 					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{
-							Medium: corev1.StorageMediumMemory, // tmpfs supports xattrs for SELinux
-						},
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
 					},
 				},
 				{
 					Name: "container-storage",
 					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{
-							Medium: corev1.StorageMediumMemory, // tmpfs supports xattrs for SELinux
-						},
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
 					},
 				},
 				{
@@ -383,6 +399,28 @@ func GenerateBuildAutomotiveImageTask(namespace string, buildConfig *BuildConfig
 				}
 
 				if buildConfig.MemoryVolumeSize != "" {
+					sizeLimit := resource.MustParse(buildConfig.MemoryVolumeSize)
+					vol.EmptyDir.SizeLimit = &sizeLimit
+				}
+			}
+		}
+	}
+
+	// Configure container storage volumes based on UseMemoryContainerStorage
+	// Default to disk storage; set UseMemoryContainerStorage=true to use memory-backed volumes
+	useMemoryContainerStorage := false
+	if buildConfig != nil {
+		useMemoryContainerStorage = buildConfig.UseMemoryContainerStorage
+	}
+	if useMemoryContainerStorage {
+		for i := range task.Spec.Volumes {
+			vol := &task.Spec.Volumes[i]
+
+			if vol.Name == "container-storage" || vol.Name == "run-dir" {
+				vol.EmptyDir = &corev1.EmptyDirVolumeSource{
+					Medium: corev1.StorageMediumMemory, // tmpfs supports xattrs for SELinux
+				}
+				if buildConfig != nil && buildConfig.MemoryVolumeSize != "" {
 					sizeLimit := resource.MustParse(buildConfig.MemoryVolumeSize)
 					vol.EmptyDir.SizeLimit = &sizeLimit
 				}
@@ -604,6 +642,7 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 				{Name: "shared-workspace"},
 				{Name: "manifest-config-workspace"},
 				{Name: "registry-auth", Optional: true},
+				{Name: "flash-oci-auth", Optional: true},
 				{Name: "jumpstarter-client", Optional: true},
 			},
 			Results: []tektonv1.PipelineResult{
@@ -998,6 +1037,7 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 					},
 					Workspaces: []tektonv1.WorkspacePipelineTaskBinding{
 						{Name: "jumpstarter-client", Workspace: "jumpstarter-client"},
+						{Name: "flash-oci-auth", Workspace: "flash-oci-auth"},
 					},
 					// Flash runs after push-disk-artifact (if it ran) or build-image
 					RunAfter: []string{"push-disk-artifact"},
@@ -1039,8 +1079,8 @@ func buildEnvFrom(envSecretRef string) []corev1.EnvFromSource {
 }
 
 // GeneratePrepareBuilderTask creates a Tekton Task that checks for/builds the aib-build helper container
-func GeneratePrepareBuilderTask(namespace string) *tektonv1.Task {
-	return &tektonv1.Task{
+func GeneratePrepareBuilderTask(namespace string, buildConfig *BuildConfig) *tektonv1.Task {
+	task := &tektonv1.Task{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "tekton.dev/v1",
 			Kind:       "Task",
@@ -1171,30 +1211,48 @@ func GeneratePrepareBuilderTask(namespace string) *tektonv1.Task {
 				{
 					Name: "container-storage",
 					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{
-							Medium: corev1.StorageMediumMemory,
-						},
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
 					},
 				},
 				{
 					Name: "run-osbuild",
 					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{
-							Medium: corev1.StorageMediumMemory,
-						},
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
 					},
 				},
 				{
 					Name: "var-tmp",
 					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{
-							Medium: corev1.StorageMediumMemory,
-						},
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
 					},
 				},
 			},
 		},
 	}
+
+	// Configure container storage volumes based on UseMemoryContainerStorage
+	// Default to disk storage; set UseMemoryContainerStorage=true to use memory-backed volumes
+	useMemoryContainerStorage := false
+	if buildConfig != nil {
+		useMemoryContainerStorage = buildConfig.UseMemoryContainerStorage
+	}
+	if useMemoryContainerStorage {
+		for i := range task.Spec.Volumes {
+			vol := &task.Spec.Volumes[i]
+
+			if vol.Name == "container-storage" || vol.Name == "run-osbuild" || vol.Name == "var-tmp" {
+				vol.EmptyDir = &corev1.EmptyDirVolumeSource{
+					Medium: corev1.StorageMediumMemory, // tmpfs supports xattrs for SELinux
+				}
+				if buildConfig != nil && buildConfig.MemoryVolumeSize != "" {
+					sizeLimit := resource.MustParse(buildConfig.MemoryVolumeSize)
+					vol.EmptyDir.SizeLimit = &sizeLimit
+				}
+			}
+		}
+	}
+
+	return task
 }
 
 // GenerateFlashTask creates a Tekton Task for flashing images to hardware via Jumpstarter
@@ -1266,6 +1324,12 @@ func GenerateFlashTask(namespace string) *tektonv1.Task {
 					MountPath:   "/workspace/jumpstarter-client",
 					Optional:    true,
 				},
+				{
+					Name:        "flash-oci-auth",
+					Description: "Workspace containing OCI credentials (username, password) for flash image pull",
+					MountPath:   "/workspace/flash-oci-auth",
+					Optional:    true,
+				},
 			},
 			Steps: []tektonv1.Step{
 				{
@@ -1291,6 +1355,10 @@ func GenerateFlashTask(namespace string) *tektonv1.Task {
 						{
 							Name:  "JMP_CLIENT_CONFIG",
 							Value: "/workspace/jumpstarter-client/client.yaml",
+						},
+						{
+							Name:  "FLASH_OCI_AUTH_PATH",
+							Value: "/workspace/flash-oci-auth",
 						},
 						{
 							Name:  "RESULTS_LEASE_ID_PATH",

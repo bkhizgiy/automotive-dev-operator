@@ -29,16 +29,6 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Cache Go modules
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
-
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -88,8 +78,8 @@ jobs:
       - name: Collect logs on failure
         if: failure()
         run: |
-          echo "=== Controller Manager Logs ==="
-          kubectl logs -n automotive-dev-operator-system -l control-plane=controller-manager --tail=100
+          echo "=== Operator Logs ==="
+          kubectl logs -n automotive-dev-operator-system -l control-plane=operator --tail=100
           echo "=== All Pods in operator namespace ==="
           kubectl get pods -n automotive-dev-operator-system -o wide
           echo "=== Events ==="

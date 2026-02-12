@@ -2,7 +2,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: ado-manager-role
+  name: manager-role
 rules:
 - apiGroups:
   - ""
@@ -41,6 +41,7 @@ rules:
   - ""
   resources:
   - pods/exec
+  - serviceaccounts/token
   verbs:
   - create
 - apiGroups:
@@ -105,6 +106,13 @@ rules:
   - patch
   - update
 - apiGroups:
+  - image.openshift.io
+  resources:
+  - imagestreams
+  verbs:
+  - create
+  - get
+- apiGroups:
   - networking.k8s.io
   resources:
   - ingresses
@@ -122,6 +130,7 @@ rules:
   - clusterrolebindings
   - clusterroles
   - rolebindings
+  - roles
   verbs:
   - create
   - delete
@@ -141,19 +150,6 @@ rules:
   - list
   - patch
   - update
-  - watch
-- apiGroups:
-  - security.openshift.io
-  resources:
-  - securitycontextconstraints
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - use
   - watch
 - apiGroups:
   - tekton.dev

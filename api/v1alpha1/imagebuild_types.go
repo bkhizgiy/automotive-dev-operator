@@ -120,6 +120,10 @@ type ExportSpec struct {
 	// Container is the OCI registry URL to push the bootc container image
 	Container string `json:"container,omitempty"`
 
+	// UseServiceAccountAuth indicates the build should authenticate to the registry
+	// using a service account token instead of explicit credentials
+	UseServiceAccountAuth bool `json:"useServiceAccountAuth,omitempty"`
+
 	// Disk contains configuration for disk image export
 	Disk *DiskExport `json:"disk,omitempty"`
 }
@@ -320,6 +324,11 @@ func (s *ImageBuildSpec) GetExportOCI() string {
 		return s.Export.Disk.OCI
 	}
 	return ""
+}
+
+// GetUseServiceAccountAuth returns whether service account auth is enabled for registry push
+func (s *ImageBuildSpec) GetUseServiceAccountAuth() bool {
+	return s.Export != nil && s.Export.UseServiceAccountAuth
 }
 
 // HasDiskExport returns true if any disk export is configured

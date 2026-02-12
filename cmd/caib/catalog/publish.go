@@ -58,7 +58,7 @@ type publishRequest struct {
 	Tags                []string `json:"tags,omitempty"`
 }
 
-func runPublish(_ *cobra.Command, args []string) error {
+func runPublish(cmd *cobra.Command, args []string) error {
 	imageBuildName := args[0]
 
 	server := serverURL
@@ -104,7 +104,7 @@ func runPublish(_ *cobra.Command, args []string) error {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	client := &http.Client{}
+	client := newHTTPClient(getInsecureSkipTLS(cmd))
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to make request: %w", err)

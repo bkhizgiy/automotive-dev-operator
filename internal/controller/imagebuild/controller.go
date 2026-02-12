@@ -4,6 +4,7 @@ package imagebuild
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
@@ -12,12 +13,15 @@ import (
 	routev1 "github.com/openshift/api/route/v1"
 	pod "github.com/tektoncd/pipeline/pkg/apis/pipeline/pod"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
+	authnv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	kuberneteslib "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -37,8 +41,10 @@ const (
 //nolint:revive // Name follows Kubebuilder convention for reconcilers
 type ImageBuildReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Log    logr.Logger
+	APIReader  client.Reader
+	Scheme     *runtime.Scheme
+	Log        logr.Logger
+	RestConfig *rest.Config
 }
 
 // +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=imagebuilds,verbs=get;list;watch;create;update;patch;delete
@@ -49,9 +55,8 @@ type ImageBuildReconciler struct {
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=security.openshift.io,resources=securitycontextconstraints,verbs=get;list;watch;create;update;patch;delete;use
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings;clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=serviceaccounts/token,verbs=create
+// +kubebuilder:rbac:groups=image.openshift.io,resources=imagestreams,verbs=get;create
 // +kubebuilder:rbac:groups=tekton.dev,resources=tasks;pipelines;pipelineruns;taskruns,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods/exec,verbs=create
@@ -418,12 +423,16 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 	}
 
 	clusterRegistryRoute := ""
+	routeReader := r.APIReader
+	if routeReader == nil {
+		routeReader = r.Client
+	}
 	if operatorConfig.Spec.OSBuilds != nil && operatorConfig.Spec.OSBuilds.ClusterRegistryRoute != "" {
 		clusterRegistryRoute = operatorConfig.Spec.OSBuilds.ClusterRegistryRoute
 	} else {
 		route := &routev1.Route{}
 		routeNS := types.NamespacedName{Name: "default-route", Namespace: "openshift-image-registry"}
-		if err := r.Get(ctx, routeNS, route); err == nil {
+		if err := routeReader.Get(ctx, routeNS, route); err == nil {
 			clusterRegistryRoute = route.Spec.Host
 			log.Info("Auto-detected cluster registry route", "route", clusterRegistryRoute)
 		}
@@ -453,7 +462,7 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 	}
 
 	// Add flash params if flash is enabled
-	var flashExporterSelector, flashCmd string
+	var flashExporterSelector, flashCmd, flashOCIAuthSecretName string
 	if imageBuild.Spec.IsFlashEnabled() {
 		target := imageBuild.Spec.GetTarget()
 		if operatorConfig.Spec.Jumpstarter != nil {
@@ -466,6 +475,117 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 			return fmt.Errorf("flash enabled but no Jumpstarter target mapping found for target %q; "+
 				"configure OperatorConfig.spec.jumpstarter.targetMappings[%q] with selector and flashCmd", target, target)
 		}
+		// Internal registry references are cluster-internal and not reachable by the flash exporter.
+		// Require an external route and fail fast if unavailable.
+		if imageBuild.Spec.GetUseServiceAccountAuth() && clusterRegistryRoute == "" {
+			return fmt.Errorf(
+				"flash with internal registry requires an external registry route; " +
+					"set OperatorConfig.spec.osBuilds.clusterRegistryRoute or expose openshift-image-registry/default-route",
+			)
+		}
+
+		// Resolve the flash image ref — for internal registry builds, translate to external URL.
+		flashImageRef := imageBuild.Spec.GetExportOCI()
+		flashOCIAuthSecretName = ""
+		if imageBuild.Spec.GetUseServiceAccountAuth() && flashImageRef != "" {
+			flashImageRef = strings.Replace(flashImageRef,
+				tasks.DefaultInternalRegistryURL,
+				clusterRegistryRoute, 1)
+			// Create a Secret with SA token credentials for the flash exporter
+			if r.RestConfig == nil {
+				return fmt.Errorf("RestConfig is nil, cannot create flash OCI credentials")
+			}
+			clientset, err := kuberneteslib.NewForConfig(r.RestConfig)
+			if err != nil {
+				return fmt.Errorf("failed to create clientset for flash OCI credentials: %w", err)
+			}
+			expSeconds := int64(4 * 3600)
+			tokenReq := &authnv1.TokenRequest{
+				Spec: authnv1.TokenRequestSpec{
+					ExpirationSeconds: &expSeconds,
+				},
+			}
+			tokenResp, err := clientset.CoreV1().ServiceAccounts(imageBuild.Namespace).
+				CreateToken(ctx, "pipeline", tokenReq, metav1.CreateOptions{})
+			if err != nil {
+				return fmt.Errorf("failed to create SA token for flash OCI credentials: %w", err)
+			}
+			flashOCIAuthSecretName = imageBuild.Name + "-flash-oci-auth"
+			ociSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      flashOCIAuthSecretName,
+					Namespace: imageBuild.Namespace,
+					Labels: map[string]string{
+						"app.kubernetes.io/managed-by":                  "automotive-dev-operator",
+						"app.kubernetes.io/part-of":                     "automotive-dev",
+						"automotive.sdv.cloud.redhat.com/build-name":    imageBuild.Name,
+						"automotive.sdv.cloud.redhat.com/transient":     "true",
+						"automotive.sdv.cloud.redhat.com/resource-type": "flash-oci-auth",
+					},
+					OwnerReferences: []metav1.OwnerReference{
+						*metav1.NewControllerRef(imageBuild, automotivev1alpha1.GroupVersion.WithKind("ImageBuild")),
+					},
+				},
+				Type: corev1.SecretTypeOpaque,
+				Data: map[string][]byte{
+					"username": []byte("serviceaccount"),
+					"password": []byte(tokenResp.Status.Token),
+				},
+			}
+			if _, err := clientset.CoreV1().Secrets(imageBuild.Namespace).Create(ctx, ociSecret, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
+				return fmt.Errorf("failed to create flash OCI auth secret: %w", err)
+			}
+		} else if imageBuild.Spec.SecretRef != "" && flashImageRef != "" {
+			// External registry: read credentials from the registry-auth secret and
+			// create a flash-oci-auth secret with username/password keys that the
+			// flash script expects.
+			registrySecret := &corev1.Secret{}
+			if err := r.Get(ctx, client.ObjectKey{
+				Namespace: imageBuild.Namespace,
+				Name:      imageBuild.Spec.SecretRef,
+			}, registrySecret); err != nil {
+				return fmt.Errorf("failed to read registry secret %q for flash OCI credentials: %w", imageBuild.Spec.SecretRef, err)
+			}
+			regUser := registrySecret.Data["REGISTRY_USERNAME"]
+			regPass := registrySecret.Data["REGISTRY_PASSWORD"]
+			hasUser := len(regUser) > 0
+			hasPass := len(regPass) > 0
+			if hasUser && hasPass {
+				flashOCIAuthSecretName = imageBuild.Name + "-flash-oci-auth"
+				ociSecret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      flashOCIAuthSecretName,
+						Namespace: imageBuild.Namespace,
+						Labels: map[string]string{
+							"app.kubernetes.io/managed-by":                  "automotive-dev-operator",
+							"app.kubernetes.io/part-of":                     "automotive-dev",
+							"automotive.sdv.cloud.redhat.com/build-name":    imageBuild.Name,
+							"automotive.sdv.cloud.redhat.com/transient":     "true",
+							"automotive.sdv.cloud.redhat.com/resource-type": "flash-oci-auth",
+						},
+						OwnerReferences: []metav1.OwnerReference{
+							*metav1.NewControllerRef(imageBuild, automotivev1alpha1.GroupVersion.WithKind("ImageBuild")),
+						},
+					},
+					Type: corev1.SecretTypeOpaque,
+					Data: map[string][]byte{
+						"username": regUser,
+						"password": regPass,
+					},
+				}
+				if err := r.Create(ctx, ociSecret); err != nil && !errors.IsAlreadyExists(err) {
+					return fmt.Errorf("failed to create flash OCI auth secret from registry credentials: %w", err)
+				}
+			} else if hasUser || hasPass {
+				missing := "REGISTRY_PASSWORD"
+				if !hasUser {
+					missing = "REGISTRY_USERNAME"
+				}
+				log.Info("Partial registry credentials in secret, skipping flash OCI auth",
+					"secret", imageBuild.Spec.SecretRef, "missing", missing)
+			}
+		}
+
 		params = append(params,
 			tektonv1.Param{
 				Name:  "flash-enabled",
@@ -473,7 +593,7 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 			},
 			tektonv1.Param{
 				Name:  "flash-image-ref",
-				Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: imageBuild.Spec.GetExportOCI()},
+				Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: flashImageRef},
 			},
 			tektonv1.Param{
 				Name:  "flash-exporter-selector",
@@ -492,6 +612,7 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 				Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: operatorConfig.Spec.Jumpstarter.GetJumpstarterImage()},
 			},
 		)
+
 	}
 
 	// Determine the shared-workspace binding:
@@ -561,6 +682,14 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 				SecretName: imageBuild.Spec.GetFlashClientConfigSecretRef(),
 			},
 		})
+		if flashOCIAuthSecretName != "" {
+			pipelineWorkspaces = append(pipelineWorkspaces, tektonv1.WorkspaceBinding{
+				Name: "flash-oci-auth",
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: flashOCIAuthSecretName,
+				},
+			})
+		}
 	}
 
 	nodeAffinity := &corev1.NodeAffinity{

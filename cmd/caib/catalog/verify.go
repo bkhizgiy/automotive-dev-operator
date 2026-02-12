@@ -51,7 +51,7 @@ type verifyResponse struct {
 	Triggered bool   `json:"triggered"`
 }
 
-func runVerify(_ *cobra.Command, args []string) error {
+func runVerify(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
 	server := serverURL
@@ -84,7 +84,7 @@ func runVerify(_ *cobra.Command, args []string) error {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	client := &http.Client{}
+	client := newHTTPClient(getInsecureSkipTLS(cmd))
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to make request: %w", err)

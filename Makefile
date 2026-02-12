@@ -99,7 +99,7 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) rbac:roleName=ado-manager-role crd webhook paths="./api/..." paths="./internal/controller/..." output:crd:artifacts:config=config/crd/bases
+	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./api/..." paths="./internal/controller/..." output:crd:artifacts:config=config/crd/bases
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -346,7 +346,7 @@ catalog-update: ## Update catalog configuration with current bundle image
 
 .PHONY: build-caib
 build-caib: ## Build the caib tool
-	go build -ldflags "-X main.version=$(VERSION)" -o bin/caib cmd/caib/main.go
+	go build -tags containers_image_openpgp -ldflags "-X main.version=$(VERSION)" -o bin/caib cmd/caib/main.go
 
 .PHONY: build-api-server
 build-api-server: ## Build the api server
@@ -371,6 +371,9 @@ community-operators-bundle: bundle ## Prepare bundle for community-operators-pro
 	@mkdir -p community-operators-prod/operators/automotive-dev-operator/$(VERSION)/metadata
 	@cp -r bundle/manifests/* community-operators-prod/operators/automotive-dev-operator/$(VERSION)/manifests/
 	@cp -r bundle/metadata/* community-operators-prod/operators/automotive-dev-operator/$(VERSION)/metadata/
+	@if ! grep -q 'com.redhat.openshift.versions' community-operators-prod/operators/automotive-dev-operator/$(VERSION)/metadata/annotations.yaml; then \
+		echo '  com.redhat.openshift.versions: v4.18-v4.21' >> community-operators-prod/operators/automotive-dev-operator/$(VERSION)/metadata/annotations.yaml; \
+	fi
 	@if [ ! -f community-operators-prod/operators/automotive-dev-operator/ci.yaml ]; then \
 		echo "updateGraph: semver-mode" > community-operators-prod/operators/automotive-dev-operator/ci.yaml; \
 		echo "Created ci.yaml with default updateGraph: semver-mode"; \

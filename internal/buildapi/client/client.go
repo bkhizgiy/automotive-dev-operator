@@ -167,9 +167,9 @@ func (c *Client) GetBuild(ctx context.Context, name string) (*buildapi.BuildResp
 	return &out, nil
 }
 
-// ListBuilds retrieves a list of all builds from the API server.
-func (c *Client) ListBuilds(ctx context.Context) ([]buildapi.BuildListItem, error) {
-	endpoint := c.resolve("/v1/builds")
+// GetBuildTemplate retrieves a build template reconstructed from ImageBuild inputs.
+func (c *Client) GetBuildTemplate(ctx context.Context, name string) (*buildapi.BuildTemplateResponse, error) {
+	endpoint := c.resolve(path.Join("/v1/builds", url.PathEscape(name), "template"))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -188,10 +188,19 @@ func (c *Client) ListBuilds(ctx context.Context) ([]buildapi.BuildListItem, erro
 	}()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("list builds failed: %s: %s", resp.Status, string(b))
+		return nil, fmt.Errorf("get build template failed: %s: %s", resp.Status, string(b))
 	}
-	var out []buildapi.BuildListItem
+	var out buildapi.BuildTemplateResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListBuilds retrieves a list of all builds from the API server.
+func (c *Client) ListBuilds(ctx context.Context) ([]buildapi.BuildListItem, error) {
+	var out []buildapi.BuildListItem
+	if err := c.listJSON(ctx, c.resolve("/v1/builds"), "list builds", &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -277,17 +286,25 @@ func (c *Client) GetFlash(ctx context.Context, name string) (*buildapi.FlashResp
 
 // ListFlash retrieves a list of all flash jobs from the API server.
 func (c *Client) ListFlash(ctx context.Context) ([]buildapi.FlashListItem, error) {
-	endpoint := c.resolve("/v1/flash")
+	var out []buildapi.FlashListItem
+	if err := c.listJSON(ctx, c.resolve("/v1/flash"), "list flash", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// listJSON performs a list-style GET request and decodes a JSON array response into out.
+func (c *Client) listJSON(ctx context.Context, endpoint, operation string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if c.authToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.authToken)
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
@@ -296,13 +313,12 @@ func (c *Client) ListFlash(ctx context.Context) ([]buildapi.FlashListItem, error
 	}()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("list flash failed: %s: %s", resp.Status, string(b))
+		return fmt.Errorf("%s failed: %s: %s", operation, resp.Status, string(b))
 	}
-	var out []buildapi.FlashListItem
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return err
 	}
-	return out, nil
+	return nil
 }
 
 // Upload represents a file to upload to the build API.
@@ -333,6 +349,12 @@ func (c *Client) UploadFiles(ctx context.Context, name string, files []Upload) e
 		go func() {
 			defer close(done)
 			for _, f := range files {
+				// Write destination path as a separate field since Go's Part.FileName()
+				// strips directory paths per RFC 7578
+				if err := mw.WriteField("path", f.DestPath); err != nil {
+					_ = pw.CloseWithError(err)
+					return
+				}
 				file, err := os.Open(f.SourcePath)
 				if err != nil {
 					_ = pw.CloseWithError(err)
@@ -384,4 +406,34 @@ func (c *Client) UploadFiles(ctx context.Context, name string, files []Upload) e
 		return fmt.Errorf("upload failed: %s: %s", resp.Status, string(b))
 	}
 	return nil
+}
+
+// GetOperatorConfig retrieves the operator configuration for CLI validation.
+func (c *Client) GetOperatorConfig(ctx context.Context) (*buildapi.OperatorConfigResponse, error) {
+	endpoint := c.resolve("/v1/config")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
+		}
+	}()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("get config failed: %s: %s", resp.Status, string(b))
+	}
+	var config buildapi.OperatorConfigResponse
+	if err := json.NewDecoder(resp.Body).Decode(&config); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+	return &config, nil
 }

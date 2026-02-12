@@ -132,6 +132,11 @@ type BuildRequest struct {
 	ExportOCI      string `json:"exportOci,omitempty"`      // Registry URL to push disk as OCI artifact
 	BuilderImage   string `json:"builderImage,omitempty"`   // Custom builder image
 
+	// Internal registry push configuration
+	UseInternalRegistry       bool   `json:"useInternalRegistry,omitempty"`       // Push to OpenShift internal registry
+	InternalRegistryImageName string `json:"internalRegistryImageName,omitempty"` // Override image name (default: build name)
+	InternalRegistryTag       string `json:"internalRegistryTag,omitempty"`       // Tag for internal registry image (default: build name)
+
 	// Flash configuration for Jumpstarter device flashing after build
 	FlashEnabled       bool   `json:"flashEnabled,omitempty"`       // Enable flashing after build
 	FlashClientConfig  string `json:"flashClientConfig,omitempty"`  // Base64-encoded Jumpstarter client config
@@ -208,7 +213,30 @@ type BuildResponse struct {
 	RequestedBy    string           `json:"requestedBy,omitempty"`
 	StartTime      string           `json:"startTime,omitempty"`
 	CompletionTime string           `json:"completionTime,omitempty"`
+	ContainerImage string           `json:"containerImage,omitempty"`
+	DiskImage      string           `json:"diskImage,omitempty"`
+	RegistryToken  string           `json:"registryToken,omitempty"`
+	Warning        string           `json:"warning,omitempty"`
 	Jumpstarter    *JumpstarterInfo `json:"jumpstarter,omitempty"`
+	Parameters     *BuildParameters `json:"parameters,omitempty"`
+}
+
+// BuildParameters describes the key input parameters that produced an ImageBuild.
+type BuildParameters struct {
+	Architecture           string `json:"architecture,omitempty"`
+	Distro                 string `json:"distro,omitempty"`
+	Target                 string `json:"target,omitempty"`
+	Mode                   string `json:"mode,omitempty"`
+	ExportFormat           string `json:"exportFormat,omitempty"`
+	Compression            string `json:"compression,omitempty"`
+	StorageClass           string `json:"storageClass,omitempty"`
+	AutomotiveImageBuilder string `json:"automotiveImageBuilder,omitempty"`
+	BuilderImage           string `json:"builderImage,omitempty"`
+	ContainerRef           string `json:"containerRef,omitempty"`
+	BuildDiskImage         bool   `json:"buildDiskImage,omitempty"`
+	FlashEnabled           bool   `json:"flashEnabled,omitempty"`
+	FlashLeaseDuration     string `json:"flashLeaseDuration,omitempty"`
+	UseServiceAccountAuth  bool   `json:"useServiceAccountAuth,omitempty"`
 }
 
 // BuildListItem represents a build in the list API
@@ -220,6 +248,14 @@ type BuildListItem struct {
 	CreatedAt      string `json:"createdAt"`
 	StartTime      string `json:"startTime,omitempty"`
 	CompletionTime string `json:"completionTime,omitempty"`
+	ContainerImage string `json:"containerImage,omitempty"`
+	DiskImage      string `json:"diskImage,omitempty"`
+}
+
+// OperatorConfigResponse returns relevant operator configuration for CLI validation
+type OperatorConfigResponse struct {
+	// JumpstarterTargets contains the target mappings for Jumpstarter flashing
+	JumpstarterTargets map[string]string `json:"jumpstarterTargets,omitempty"`
 }
 
 type (

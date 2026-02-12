@@ -16,28 +16,54 @@ Examples:
   $0              # Full redeploy (most common)
   $0 uninstall    # Just uninstall
   $0 build        # Just build images
+  $0 -y           # Full redeploy, skip confirmation
 EOF
     exit 0
 }
 
-# Parse command (default: full redeploy)
-COMMAND="${1:-redeploy}"
-case "$COMMAND" in
-    help|-h|--help)
-        show_help
-        ;;
-    uninstall|build|redeploy)
-        ;;
-    *)
-        echo "Unknown command: $COMMAND"
-        echo "Run '$0 help' for usage"
-        exit 1
-        ;;
-esac
+# Parse command and flags
+SKIP_CONFIRM=false
+COMMAND=""
+for arg in "$@"; do
+    case "$arg" in
+        -y|--yes)
+            SKIP_CONFIRM=true
+            ;;
+        help|-h|--help)
+            show_help
+            ;;
+        uninstall|build|redeploy)
+            COMMAND="$arg"
+            ;;
+        *)
+            echo "Unknown argument: $arg"
+            echo "Run '$0 help' for usage"
+            exit 1
+            ;;
+    esac
+done
+COMMAND="${COMMAND:-redeploy}"
+
+# Confirm before destructive operations (redeploy, uninstall)
+if [ "$COMMAND" != "build" ] && [ "$SKIP_CONFIRM" = false ]; then
+    CLUSTER_URL=$(oc whoami --show-server 2>/dev/null || echo "unknown")
+    CLUSTER_USER=$(oc whoami 2>/dev/null || echo "unknown")
+    echo ""
+    echo "  Cluster: ${CLUSTER_URL}"
+    echo "  User:    ${CLUSTER_USER}"
+    echo "  Action:  ${COMMAND}"
+    echo ""
+    read -r -p "Proceed? [y/N] " response
+    if [[ ! "$response" =~ ^[Yy]$ ]]; then
+        echo "Aborted."
+        exit 0
+    fi
+fi
 
 # Configuration
 VERSION=${VERSION:-0.0.1}
 NAMESPACE=${NAMESPACE:-automotive-dev-operator-system}
+CATALOG_NAME=${CATALOG_NAME:-automotive-dev-operator-catalog}
 
 # Detect OpenShift internal registry
 echo "Detecting OpenShift internal registry..."
@@ -72,7 +98,7 @@ OPERATOR_TAG="latest"
 OPERATOR_IMG="${REGISTRY}/${NAMESPACE}/automotive-dev-operator:${OPERATOR_TAG}"
 
 BUNDLE_IMG="${REGISTRY}/${CATALOG_NAMESPACE}/automotive-dev-operator-bundle:v${VERSION}"
-CATALOG_IMG="${REGISTRY}/${CATALOG_NAMESPACE}/automotive-dev-operator-catalog:v${VERSION}"
+CATALOG_IMG="${REGISTRY}/${CATALOG_NAMESPACE}/${CATALOG_NAME}:v${VERSION}"
 CONTAINER_TOOL=${CONTAINER_TOOL:-podman}
 
 uninstall_operator() {
@@ -102,19 +128,28 @@ uninstall_operator() {
     oc delete installplan -n ${NAMESPACE} --all --ignore-not-found=true 2>/dev/null || true
 
     echo "Deleting operator-managed resources..."
-    oc delete deployment ado-build-api ado-controller-manager -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
+    oc delete deployment ado-build-api ado-operator -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
     oc delete service ado-build-api -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
     oc delete route ado-build-api -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
-    oc delete serviceaccount ado-controller-manager -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
+    oc delete serviceaccount ado-operator -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
     oc delete secret ado-oauth-secrets -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
 
+    echo "Deleting build controller resources..."
+    oc delete deployment ado-build-controller -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
+    oc delete serviceaccount ado-build-controller -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
+    oc delete clusterrole ado-build-controller --ignore-not-found=true 2>/dev/null || true
+    oc delete clusterrolebinding ado-build-controller --ignore-not-found=true 2>/dev/null || true
+    oc delete role ado-build-controller-leader-election -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
+    oc delete rolebinding ado-build-controller-leader-election -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
+
     echo "Waiting for operator pods to terminate..."
-    oc wait --for=delete pod -l control-plane=controller-manager -n ${NAMESPACE} --timeout=60s 2>/dev/null || true
+    oc wait --for=delete pod -l control-plane=operator -n ${NAMESPACE} --timeout=60s 2>/dev/null || true
+    oc wait --for=delete pod -l app.kubernetes.io/component=build-controller -n ${NAMESPACE} --timeout=60s 2>/dev/null || true
 
     echo "Deleting CatalogSource to force catalog refresh..."
-    oc delete catalogsource automotive-dev-operator-catalog -n ${CATALOG_NAMESPACE} --ignore-not-found=true
+    oc delete catalogsource ${CATALOG_NAME} -n ${CATALOG_NAMESPACE} --ignore-not-found=true
     echo "Waiting for catalog pod to terminate..."
-    oc wait --for=delete pod -l olm.catalogSource=automotive-dev-operator-catalog -n ${CATALOG_NAMESPACE} --timeout=60s 2>/dev/null || true
+    oc wait --for=delete pod -l olm.catalogSource=${CATALOG_NAME} -n ${CATALOG_NAMESPACE} --timeout=60s 2>/dev/null || true
 
     echo "Operator uninstall complete."
     echo ""
@@ -282,8 +317,10 @@ ${CONTAINER_TOOL} push ${CATALOG_IMG} --tls-verify=false
 
 echo ""
 echo "Updating CatalogSource manifest..."
-CATALOG_IMG_INTERNAL="image-registry.openshift-image-registry.svc:5000/${CATALOG_NAMESPACE}/automotive-dev-operator-catalog:v${VERSION}"
+CATALOG_IMG_INTERNAL="image-registry.openshift-image-registry.svc:5000/${CATALOG_NAMESPACE}/${CATALOG_NAME}:v${VERSION}"
 sed -i.bak "s|image:.*|image: ${CATALOG_IMG_INTERNAL}|g" catalogsource.yaml
+# Update metadata.name by pattern so repeated runs with different CATALOG_NAME keep working.
+sed -i.bak "/^metadata:/,/^spec:/ s|^  name:.*|  name: ${CATALOG_NAME}|g" catalogsource.yaml
 rm -f catalogsource.yaml.bak
 
 echo ""
@@ -311,7 +348,7 @@ if [ "$COMMAND" = "redeploy" ]; then
     echo ""
     echo "Waiting for catalog pod to be ready..."
     for i in {1..60}; do
-        CATALOG_POD=$(oc get pods -n ${CATALOG_NAMESPACE} -l olm.catalogSource=automotive-dev-operator-catalog -o name 2>/dev/null || echo "")
+        CATALOG_POD=$(oc get pods -n ${CATALOG_NAMESPACE} -l olm.catalogSource=${CATALOG_NAME} -o name 2>/dev/null || echo "")
         if [ -n "$CATALOG_POD" ]; then
             oc wait --for=condition=Ready ${CATALOG_POD} -n ${CATALOG_NAMESPACE} --timeout=120s && break
         fi
@@ -350,8 +387,8 @@ if [ "$COMMAND" = "redeploy" ]; then
     echo ""
     echo "Waiting for operator deployment to be available..."
     for i in {1..30}; do
-        if oc get deployment ado-controller-manager -n ${NAMESPACE} &>/dev/null; then
-            oc wait --for=condition=Available deployment/ado-controller-manager -n ${NAMESPACE} --timeout=300s && break
+        if oc get deployment ado-operator -n ${NAMESPACE} &>/dev/null; then
+            oc wait --for=condition=Available deployment/ado-operator -n ${NAMESPACE} --timeout=300s && break
         fi
         echo "  Deployment not yet created, checking pod status..."
         oc get pods -n ${NAMESPACE} 2>/dev/null | grep -v "^NAME" || true

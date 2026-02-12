@@ -90,7 +90,7 @@ type targetInfo struct {
 	Verified bool   `json:"verified"`
 }
 
-func runAdd(_ *cobra.Command, args []string) error {
+func runAdd(cmd *cobra.Command, args []string) error {
 	name := args[0]
 	registryURL := args[1]
 
@@ -147,7 +147,7 @@ func runAdd(_ *cobra.Command, args []string) error {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	client := &http.Client{}
+	client := newHTTPClient(getInsecureSkipTLS(cmd))
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to make request: %w", err)

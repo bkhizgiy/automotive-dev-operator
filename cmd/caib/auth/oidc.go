@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -43,13 +44,14 @@ type OIDCConfig struct {
 
 // OIDCAuth handles OIDC authentication flow and token management.
 type OIDCAuth struct {
-	config     OIDCConfig
-	tokenCache *TokenCache
-	cachePath  string
+	config          OIDCConfig
+	tokenCache      *TokenCache
+	cachePath       string
+	insecureSkipTLS bool
 }
 
 // NewOIDCAuth creates a new OIDC authenticator instance.
-func NewOIDCAuth(issuerURL, clientID string, scopes []string) *OIDCAuth {
+func NewOIDCAuth(issuerURL, clientID string, scopes []string, insecureSkipTLS bool) *OIDCAuth {
 	if issuerURL == "" || clientID == "" {
 		return nil
 	}
@@ -70,7 +72,8 @@ func NewOIDCAuth(issuerURL, clientID string, scopes []string) *OIDCAuth {
 			ClientID:  clientID,
 			Scopes:    scopes,
 		},
-		cachePath: cachePath,
+		cachePath:       cachePath,
+		insecureSkipTLS: insecureSkipTLS,
 	}
 }
 
@@ -275,7 +278,9 @@ func (a *OIDCAuth) exchangeCodeForToken(ctx context.Context, tokenEndpoint, code
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	transport := &http.Transport{}
-	// Use default TLS settings
+	if a.insecureSkipTLS {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
 
 	client := &http.Client{
 		Timeout:   30 * time.Second,
@@ -323,7 +328,9 @@ type DiscoveryDocument struct {
 
 func (a *OIDCAuth) getDiscovery(discoveryURL string) (*DiscoveryDocument, error) {
 	transport := &http.Transport{}
-	// Use default TLS settings
+	if a.insecureSkipTLS {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
 
 	client := &http.Client{
 		Timeout:   10 * time.Second,
