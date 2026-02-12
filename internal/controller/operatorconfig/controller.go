@@ -571,7 +571,11 @@ func (r *OperatorConfigReconciler) createOrUpdatePartitionConfig(ctx context.Con
 		Data: map[string]string{
 			"partition-rules.yaml": `targets:
   ridesx4:
-    include: ["system_a", "system_b", "boot_a"]
+    include: ["system_a", "system_b", "boot_a", "boot_b"]
+  ridesx4_scmi:
+    include: ["system_a", "system_b", "boot_a", "boot_b"]
+  ride4_sa8775p_sx_r3:
+    include: ["system_a", "system_b", "boot_a", "boot_b"]
 `,
 		},
 	}

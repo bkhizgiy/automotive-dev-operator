@@ -209,6 +209,21 @@ echo ""
 if [ -d "${parts_dir}" ] && [ -n "$(ls -A "${parts_dir}" 2>/dev/null)" ]; then
   echo "Found parts directory: ${parts_dir}"
   echo "Using multi-layer push for individual partition files"
+
+  # For ride4/ridesx4 targets, duplicate boot_a as boot_b so both partitions get flashed
+  case "$target" in
+    ride4*|ridesx4*)
+      for boot_a_file in "${parts_dir}"/boot_a.*; do
+        [ -f "$boot_a_file" ] || continue
+        boot_b_file=$(echo "$boot_a_file" | sed 's/boot_a/boot_b/')
+        if [ ! -f "$boot_b_file" ]; then
+          echo "Duplicating $(basename "$boot_a_file") as $(basename "$boot_b_file") for target $target"
+          cp "$boot_a_file" "$boot_b_file"
+        fi
+      done
+      ;;
+  esac
+
   ls -la "${parts_dir}/"
 
   cd "${parts_dir}"
