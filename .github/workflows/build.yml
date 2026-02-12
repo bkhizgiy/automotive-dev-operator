@@ -262,7 +262,7 @@ jobs:
     create-release:
         permissions:
             contents: write
-        needs: [build-caib-arm64, build-caib-amd64, build-caib-darwin-arm64, retag-on-release, build-bundle]
+        needs: [build-caib-arm64, build-caib-amd64, build-caib-darwin-arm64]
         runs-on: ubuntu-latest
         if: startsWith(github.ref, 'refs/tags/')
         steps:
