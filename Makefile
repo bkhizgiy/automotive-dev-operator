@@ -346,7 +346,7 @@ catalog-update: ## Update catalog configuration with current bundle image
 
 .PHONY: build-caib
 build-caib: ## Build the caib tool
-	go build -ldflags "-X main.version=$(VERSION)" -o bin/caib cmd/caib/main.go
+	go build -tags containers_image_openpgp -ldflags "-X main.version=$(VERSION)" -o bin/caib cmd/caib/main.go
 
 .PHONY: build-api-server
 build-api-server: ## Build the api server
