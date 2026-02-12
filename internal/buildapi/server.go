@@ -2359,7 +2359,8 @@ func (a *APIServer) authenticateRequest(c *gin.Context) (string, string, *authEr
 	return "", "", a.buildAuthFailureError(authAttempts, oidcError, res.Status.Error)
 }
 
-// buildAuthFailureError constructs a detailed error message explaining authentication failure
+// buildAuthFailureError constructs a sanitized error message explaining authentication failure.
+// Raw error details are logged server-side and not exposed to the client.
 func (a *APIServer) buildAuthFailureError(authAttempts []string, oidcError error, tokenReviewError string) *authError {
 	// Check if OIDC was attempted
 	oidcAttempted := false
@@ -2370,18 +2371,19 @@ func (a *APIServer) buildAuthFailureError(authAttempts []string, oidcError error
 		}
 	}
 
+	// Log full error details server-side for debugging
+	if tokenReviewError != "" {
+		a.log.Info("TokenReview authentication failed", "error", tokenReviewError)
+	}
+	if oidcError != nil {
+		a.log.Info("OIDC authentication failed", "error", oidcError.Error())
+	}
+
 	// only TokenReview was tried (no OIDC configured)
 	if !oidcAttempted {
-		details := "Token validation failed. "
-		if tokenReviewError != "" {
-			details += tokenReviewError + " "
-		} else {
-			details += "The token may be expired or invalid. "
-		}
-		details += "Try 'oc login' to refresh your session, then use 'oc whoami -t' for a fresh token."
 		return &authError{
 			Reason:  "invalid_token",
-			Details: details,
+			Details: "Token validation failed. The token may be expired or invalid. Try 'oc login' to refresh your session, then use 'oc whoami -t' for a fresh token.",
 		}
 	}
 
@@ -2390,16 +2392,15 @@ func (a *APIServer) buildAuthFailureError(authAttempts []string, oidcError error
 	details.WriteString("Authentication failed. OIDC is configured on this cluster. ")
 
 	if oidcError != nil {
-		details.WriteString(fmt.Sprintf("OIDC error: %v. ", oidcError))
+		details.WriteString("OIDC: token validation failed. ")
 	} else {
 		details.WriteString("OIDC: token not valid for configured issuer. ")
 	}
 
-	details.WriteString("Kubernetes fallback: ")
 	if tokenReviewError != "" {
-		details.WriteString(tokenReviewError + ". ")
+		details.WriteString("Kubernetes fallback: token rejected. ")
 	} else {
-		details.WriteString("token rejected (may be expired or invalid). ")
+		details.WriteString("Kubernetes fallback: token rejected (may be expired or invalid). ")
 	}
 
 	details.WriteString("If using OIDC, ensure you have a valid OIDC token. Otherwise, try 'oc login' to refresh your session.")
