@@ -531,7 +531,7 @@ Example:
 		&diskFormat, "format", "", "disk image format (qcow2, raw, simg); inferred from output filename if not set",
 	)
 	buildCmd.Flags().StringVar(&compressionAlgo, "compress", "gzip", "compression algorithm (gzip, lz4, xz)")
-	buildCmd.Flags().StringVar(&exportOCI, "push-disk", "", "push disk image as OCI artifact to registry")
+	buildCmd.Flags().StringVar(&exportOCI, "push-disk", "", "push disk image as OCI artifact to registry (implies --disk)")
 	buildCmd.Flags().StringVar(
 		&automotiveImageBuilder, "aib-image",
 		"quay.io/centos-sig-automotive/automotive-image-builder:latest", "AIB container image",
@@ -702,6 +702,9 @@ func validateBootcBuildFlags() {
 	}
 
 	if outputDir != "" && !buildDiskImage {
+		buildDiskImage = true
+	}
+	if exportOCI != "" && !buildDiskImage {
 		buildDiskImage = true
 	}
 	if !useInternalRegistry {
