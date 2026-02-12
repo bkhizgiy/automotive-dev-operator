@@ -857,7 +857,7 @@ func createRegistrySecret(
 		return "", nil
 	}
 
-	secretName := fmt.Sprintf("%s-registry-auth", buildName)
+	secretName := fmt.Sprintf("%s-external-registry-auth", buildName)
 	secretData := make(map[string][]byte)
 
 	switch creds.AuthType {
@@ -1180,7 +1180,23 @@ func (a *APIServer) resolveRegistryForBuild(
 	namespace string, req *BuildRequest,
 ) (string, string, error) {
 	if req.UseInternalRegistry {
-		return a.setupInternalRegistryBuild(ctx, c, k8sClient, namespace, req)
+		_, pushSecretName, err := a.setupInternalRegistryBuild(ctx, c, k8sClient, namespace, req)
+		if err != nil {
+			return "", "", err
+		}
+
+		// Hybrid: container pushed to external registry, disk to internal.
+		// Create external registry secret for the container push workspace.
+		if req.ContainerPush != "" && req.RegistryCredentials != nil && req.RegistryCredentials.Enabled {
+			envSecretRef, err := createRegistrySecret(ctx, k8sClient, namespace, req.Name, req.RegistryCredentials)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return "", "", err
+			}
+			return envSecretRef, pushSecretName, nil
+		}
+
+		return pushSecretName, pushSecretName, nil
 	}
 
 	envSecretRef, pushSecretName, err := setupBuildSecrets(ctx, k8sClient, namespace, req)
@@ -1197,13 +1213,11 @@ func (a *APIServer) setupInternalRegistryBuild(
 	ctx context.Context, c *gin.Context, k8sClient client.Client,
 	namespace string, req *BuildRequest,
 ) (string, string, error) {
-	// Validate mutual exclusivity
-	if req.ContainerPush != "" || req.ExportOCI != "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "useInternalRegistry cannot be used with containerPush or exportOci"})
-		return "", "", fmt.Errorf("validation error")
-	}
-	if req.RegistryCredentials != nil && req.RegistryCredentials.Enabled {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "useInternalRegistry cannot be used with registryCredentials"})
+	// Validate: internal registry handles the disk push, so exportOci must not be set.
+	// containerPush (and registryCredentials) MAY be set for hybrid builds where
+	// the bootc container is pushed to an external registry.
+	if req.ExportOCI != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "useInternalRegistry cannot be used with exportOci"})
 		return "", "", fmt.Errorf("validation error")
 	}
 	// Resolve external route (validates registry is reachable)
@@ -1222,10 +1236,14 @@ func (a *APIServer) setupInternalRegistryBuild(
 		tag = req.Name
 	}
 
-	// Set concrete URLs based on build mode
+	// Set concrete URLs based on build mode.
+	// When ContainerPush is already set (hybrid: external container push),
+	// keep it and only generate internal URLs for what's missing.
+	externalContainerPush := req.ContainerPush != ""
 	if req.Mode.IsBootc() {
-		// Bootc: push container, optionally push disk
-		req.ContainerPush = generateRegistryImageRef(defaultInternalRegistryURL, namespace, imageName, tag)
+		if !externalContainerPush {
+			req.ContainerPush = generateRegistryImageRef(defaultInternalRegistryURL, namespace, imageName, tag)
+		}
 		// Flash requires a disk image
 		if req.FlashEnabled && !req.BuildDiskImage {
 			req.BuildDiskImage = true
@@ -1238,10 +1256,16 @@ func (a *APIServer) setupInternalRegistryBuild(
 		req.ExportOCI = generateRegistryImageRef(defaultInternalRegistryURL, namespace, imageName, tag)
 	}
 
-	// Pre-create ImageStream(s) so the OpenShift internal registry accepts oras pushes
-	imageStreams := []string{imageName}
+	// Pre-create ImageStream(s) for internal registry pushes only
+	var imageStreams []string
+	if !externalContainerPush {
+		imageStreams = append(imageStreams, imageName)
+	}
 	if req.Mode.IsBootc() && req.BuildDiskImage {
 		imageStreams = append(imageStreams, imageName+"-disk")
+	}
+	if !req.Mode.IsBootc() {
+		imageStreams = append(imageStreams, imageName)
 	}
 	for _, isName := range imageStreams {
 		if err := ensureImageStream(ctx, k8sClient, namespace, isName); err != nil {

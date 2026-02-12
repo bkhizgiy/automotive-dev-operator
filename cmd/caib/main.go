@@ -335,11 +335,11 @@ func validateOutputRequiresPush(output, pushRef, flagName string) {
 	}
 }
 
-func downloadOCIArtifactIfRequested(output, exportOCI, registryUsername, registryPassword string) {
+func downloadOCIArtifactIfRequested(output, exportOCI, registryUsername, registryPassword string, insecureSkipTLS bool) {
 	if output == "" {
 		return
 	}
-	if err := pullOCIArtifact(exportOCI, output, registryUsername, registryPassword); err != nil {
+	if err := pullOCIArtifact(exportOCI, output, registryUsername, registryPassword, insecureSkipTLS); err != nil {
 		handleError(fmt.Errorf("failed to download OCI artifact: %w", err))
 	}
 }
@@ -526,12 +526,12 @@ Example:
 	buildCmd.Flags().StringVarP(&architecture, "arch", "a", getDefaultArch(), "architecture (amd64, arm64)")
 	buildCmd.Flags().StringVar(&containerPush, "push", "", "push bootc container to registry (optional if --disk is used)")
 	buildCmd.Flags().BoolVar(&buildDiskImage, "disk", false, "also build disk image from container")
-	buildCmd.Flags().StringVarP(&outputDir, "output", "o", "", "download disk image to file from registry (implies --disk; requires --push-disk)")
+	buildCmd.Flags().StringVarP(&outputDir, "output", "o", "", "download disk image to file from registry (implies --disk; requires --push-disk or --internal-registry)")
 	buildCmd.Flags().StringVar(
 		&diskFormat, "format", "", "disk image format (qcow2, raw, simg); inferred from output filename if not set",
 	)
 	buildCmd.Flags().StringVar(&compressionAlgo, "compress", "gzip", "compression algorithm (gzip, lz4, xz)")
-	buildCmd.Flags().StringVar(&exportOCI, "push-disk", "", "push disk image as OCI artifact to registry")
+	buildCmd.Flags().StringVar(&exportOCI, "push-disk", "", "push disk image as OCI artifact to registry (implies --disk)")
 	buildCmd.Flags().StringVar(
 		&automotiveImageBuilder, "aib-image",
 		"quay.io/centos-sig-automotive/automotive-image-builder:latest", "AIB container image",
@@ -696,12 +696,15 @@ func validateBootcBuildFlags() {
 	}
 
 	if useInternalRegistry {
-		if containerPush != "" || exportOCI != "" {
-			handleError(fmt.Errorf("--internal-registry cannot be used with --push or --push-disk"))
+		if exportOCI != "" {
+			handleError(fmt.Errorf("--internal-registry cannot be used with --push-disk"))
 		}
 	}
 
 	if outputDir != "" && !buildDiskImage {
+		buildDiskImage = true
+	}
+	if exportOCI != "" && !buildDiskImage {
 		buildDiskImage = true
 	}
 	if !useInternalRegistry {
@@ -716,14 +719,19 @@ func validateBootcBuildFlags() {
 	}
 }
 
-// applyRegistryCredentialsToRequest sets registry credentials on the build request
-// when not using the internal registry
+// applyRegistryCredentialsToRequest sets registry credentials on the build request.
+// When --internal-registry is combined with --push, both are configured so the
+// container is pushed externally while the disk image uses the internal registry.
 func applyRegistryCredentialsToRequest(req *buildapitypes.BuildRequest) {
 	if useInternalRegistry {
 		req.UseInternalRegistry = true
 		req.InternalRegistryImageName = internalRegistryImageName
 		req.InternalRegistryTag = internalRegistryTag
-		return
+		if containerPush == "" {
+			return
+		}
+		// Hybrid: fall through to also set external registry credentials
+		// for the container push.
 	}
 
 	effectiveRegistryURL, registryUsername, registryPassword := extractRegistryCredentials(containerPush, exportOCI)
@@ -782,14 +790,18 @@ func displayBuildResults(ctx context.Context, api *buildapiclient.Client, buildN
 			fmt.Printf("Disk image: %s\n", st.DiskImage)
 		}
 		if st.RegistryToken != "" {
-			credsFile, err := writeRegistryCredentialsFile(st.RegistryToken)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to write registry credentials file: %v\n", err)
-				fmt.Printf("\nRegistry credentials (valid ~4 hours):\n")
-				fmt.Printf("  Username: serviceaccount\n")
-				fmt.Printf("  Token:    %s\n", st.RegistryToken)
+			if outputDir != "" && st.DiskImage != "" {
+				downloadOCIArtifactIfRequested(outputDir, st.DiskImage, "serviceaccount", st.RegistryToken, insecureSkipTLS)
 			} else {
-				fmt.Printf("\nRegistry credentials written to: %s (valid ~4 hours)\n", credsFile)
+				credsFile, err := writeRegistryCredentialsFile(st.RegistryToken)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to write registry credentials file: %v\n", err)
+					fmt.Printf("\nRegistry credentials (valid ~4 hours):\n")
+					fmt.Printf("  Username: serviceaccount\n")
+					fmt.Printf("  Token:    %s\n", st.RegistryToken)
+				} else {
+					fmt.Printf("\nRegistry credentials written to: %s (valid ~4 hours)\n", credsFile)
+				}
 			}
 		}
 	} else {
@@ -800,7 +812,7 @@ func displayBuildResults(ctx context.Context, api *buildapiclient.Client, buildN
 			fmt.Printf("Disk image pushed to: %s\n", exportOCI)
 		}
 		_, registryUsername, registryPassword := extractRegistryCredentials(containerPush, exportOCI)
-		downloadOCIArtifactIfRequested(outputDir, exportOCI, registryUsername, registryPassword)
+		downloadOCIArtifactIfRequested(outputDir, exportOCI, registryUsername, registryPassword, insecureSkipTLS)
 	}
 }
 
@@ -972,7 +984,7 @@ func runDisk(_ *cobra.Command, args []string) {
 	displayBuildResults(ctx, api, resp.Name)
 }
 
-func pullOCIArtifact(ociRef, destPath, username, password string) error {
+func pullOCIArtifact(ociRef, destPath, username, password string, insecureSkipTLS bool) error {
 	fmt.Printf("Pulling OCI artifact %s to %s\n", ociRef, destPath)
 
 	// Ensure output directory exists
@@ -1000,6 +1012,12 @@ func pullOCIArtifact(ociRef, destPath, username, password string) error {
 		// - $XDG_RUNTIME_DIR/containers/auth.json
 		// - /run/containers/$UID/auth.json
 		// - $HOME/.config/containers/auth.json
+	}
+
+	// Configure TLS verification
+	if insecureSkipTLS {
+		systemCtx.OCIInsecureSkipTLSVerify = insecureSkipTLS
+		systemCtx.DockerInsecureSkipTLSVerify = types.OptionalBoolTrue
 	}
 
 	// Set up policy context (allow all)
@@ -2127,15 +2145,23 @@ func runDownload(_ *cobra.Command, args []string) {
 		handleError(fmt.Errorf("build %s has no disk image artifact to download (no OCI export was configured)", downloadBuildName))
 	}
 
-	// Extract registry credentials from environment
-	effectiveRegistryURL, registryUsername, registryPassword := extractRegistryCredentials(ociRef, "")
-
-	if err := validateRegistryCredentials(effectiveRegistryURL, registryUsername, registryPassword); err != nil {
-		handleError(err)
+	// Use API-minted token if available (internal registry builds),
+	// otherwise fall back to environment credentials.
+	registryUsername := ""
+	registryPassword := ""
+	if st.RegistryToken != "" {
+		registryUsername = "serviceaccount"
+		registryPassword = st.RegistryToken
+	} else {
+		var effectiveRegistryURL string
+		effectiveRegistryURL, registryUsername, registryPassword = extractRegistryCredentials(ociRef, "")
+		if err := validateRegistryCredentials(effectiveRegistryURL, registryUsername, registryPassword); err != nil {
+			handleError(err)
+		}
 	}
 
 	fmt.Printf("Downloading disk image from %s\n", ociRef)
-	if err := pullOCIArtifact(ociRef, outputDir, registryUsername, registryPassword); err != nil {
+	if err := pullOCIArtifact(ociRef, outputDir, registryUsername, registryPassword, insecureSkipTLS); err != nil {
 		handleError(fmt.Errorf("download failed: %w", err))
 	}
 }
