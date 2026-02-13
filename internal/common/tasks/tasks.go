@@ -343,6 +343,11 @@ func GenerateBuildAutomotiveImageTask(namespace string, buildConfig *BuildConfig
 							Name:      "container-storage",
 							MountPath: "/var/lib/containers/storage",
 						},
+						{
+							Name:      "custom-ca",
+							MountPath: "/etc/pki/ca-trust/custom",
+							ReadOnly:  true,
+						},
 					},
 				},
 			},
@@ -382,6 +387,17 @@ func GenerateBuildAutomotiveImageTask(namespace string, buildConfig *BuildConfig
 					VolumeSource: corev1.VolumeSource{
 						HostPath: &corev1.HostPathVolumeSource{
 							Path: "/dev",
+						},
+					},
+				},
+				{
+					Name: "custom-ca",
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "rhivos-ca-bundle",
+							},
+							Optional: ptr.To(true),
 						},
 					},
 				},
@@ -732,6 +748,9 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 								StringVal: "$(params.arch)",
 							},
 						},
+					},
+					Workspaces: []tektonv1.WorkspacePipelineTaskBinding{
+						{Name: "manifest-config-workspace", Workspace: "manifest-config-workspace"},
 					},
 					Timeout: &metav1.Duration{Duration: 30 * time.Minute},
 				},
@@ -1151,6 +1170,14 @@ func GeneratePrepareBuilderTask(namespace string, buildConfig *BuildConfig) *tek
 					},
 				},
 			},
+			Workspaces: []tektonv1.WorkspaceDeclaration{
+				{
+					Name:        "manifest-config-workspace",
+					Description: "Workspace for manifest configuration (custom definitions)",
+					MountPath:   "/workspace/manifest-config",
+					Optional:    true,
+				},
+			},
 			Steps: []tektonv1.Step{
 				{
 					Name:    "prepare-builder",
@@ -1196,6 +1223,11 @@ func GeneratePrepareBuilderTask(namespace string, buildConfig *BuildConfig) *tek
 							Name:      "var-tmp",
 							MountPath: "/var/tmp",
 						},
+						{
+							Name:      "custom-ca",
+							MountPath: "/etc/pki/ca-trust/custom",
+							ReadOnly:  true,
+						},
 					},
 				},
 			},
@@ -1224,6 +1256,17 @@ func GeneratePrepareBuilderTask(namespace string, buildConfig *BuildConfig) *tek
 					Name: "var-tmp",
 					VolumeSource: corev1.VolumeSource{
 						EmptyDir: &corev1.EmptyDirVolumeSource{},
+					},
+				},
+				{
+					Name: "custom-ca",
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "rhivos-ca-bundle",
+							},
+							Optional: ptr.To(true),
+						},
 					},
 				},
 			},

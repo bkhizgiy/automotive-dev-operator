@@ -1,5 +1,25 @@
-#!/bin/sh
+#!/bin/bash
 set -e
+
+validate_arg() {
+  local arg="$1"
+  local name="$2"
+  # Block shell metacharacters that could be used for injection
+  if [[ "$arg" =~ [\;\|\&\$\`\(\)\{\}\<\>\!\\] ]]; then
+    echo "ERROR: Invalid characters in $name: $arg"
+    exit 1
+  fi
+}
+
+validate_custom_def() {
+  local def="$1"
+  # Custom defs should be KEY=VALUE format only
+  if [[ ! "$def" =~ ^[a-zA-Z_][a-zA-Z0-9_]*=.*$ ]]; then
+    echo "ERROR: Invalid custom definition format: $def (expected KEY=VALUE)"
+    exit 1
+  fi
+  validate_arg "$def" "custom definition"
+}
 
 echo "Prepare builder for distro: $DISTRO, arch: $TARGET_ARCH"
 
@@ -82,6 +102,13 @@ fi
 
 echo "Builder image not found, building..."
 
+# Install custom CA certificates if available
+if [ -d /etc/pki/ca-trust/custom ] && ls /etc/pki/ca-trust/custom/*.pem >/dev/null 2>&1; then
+  echo "Installing custom CA certificates..."
+  cp /etc/pki/ca-trust/custom/*.pem /etc/pki/ca-trust/source/anchors/ 2>/dev/null || true
+  update-ca-trust extract 2>/dev/null || true
+fi
+
 # Set up SELinux contexts for osbuild
 osbuildPath="/usr/bin/osbuild"
 storePath="/_build"
@@ -104,8 +131,21 @@ chcon "$installType" "$destPath" || true
 
 mount --bind "$destPath" "$osbuildPath"
 
-echo "Running: aib build-builder --distro $DISTRO"
-aib --verbose build-builder --distro "$DISTRO"
+# Load custom definitions (e.g., distro_baseurl) from manifest config workspace
+declare -a CUSTOM_DEFS_ARGS=()
+CUSTOM_DEFS_FILE="/workspace/manifest-config/custom-definitions.env"
+if [ -f "$CUSTOM_DEFS_FILE" ]; then
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    # Skip empty lines and comments
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    validate_custom_def "$line"
+    CUSTOM_DEFS_ARGS+=("--define" "$line")
+    echo "  Custom definition: $line"
+  done < "$CUSTOM_DEFS_FILE"
+fi
+
+echo "Running: aib build-builder --distro $DISTRO ${CUSTOM_DEFS_ARGS[*]}"
+aib --verbose build-builder --distro "$DISTRO" "${CUSTOM_DEFS_ARGS[@]}"
 
 # Find what image was actually created by aib (it might use distro-target naming)
 echo "Checking for created builder images..."
