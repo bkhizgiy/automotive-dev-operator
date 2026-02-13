@@ -29,10 +29,12 @@ import (
 )
 
 const (
-	finalizerName         = "operatorconfig.automotive.sdv.cloud.redhat.com/finalizer"
-	buildAPIName          = "ado-build-api"
-	phaseFailed           = "Failed"
-	internalJWTSecretName = "ado-build-api-internal-jwt"
+	finalizerName           = "operatorconfig.automotive.sdv.cloud.redhat.com/finalizer"
+	buildAPIName            = "ado-build-api"
+	phaseFailed             = "Failed"
+	internalJWTSecretName   = "ado-build-api-internal-jwt"
+	unmanagedAnnotationKey  = "automotive.sdv.cloud.redhat.com/unmanaged"
+	unmanagedAnnotationTrue = "true"
 )
 
 // isNoMatchError checks if error is "no matches for kind" error (CRD doesn't exist)
@@ -483,6 +485,12 @@ func (r *OperatorConfigReconciler) createOrUpdate(
 		return err
 	}
 
+	// Skip update if resource is marked as unmanaged
+	if annotations := existing.GetAnnotations(); annotations != nil && annotations[unmanagedAnnotationKey] == unmanagedAnnotationTrue {
+		r.Log.Info("Skipping update for unmanaged resource", "name", obj.GetName(), "kind", obj.GetObjectKind().GroupVersionKind().Kind)
+		return nil
+	}
+
 	// Resource exists, update it
 	obj.SetResourceVersion(existing.GetResourceVersion())
 	return r.Update(ctx, obj)
@@ -572,9 +580,19 @@ func (r *OperatorConfigReconciler) createOrUpdatePartitionConfig(ctx context.Con
 			"partition-rules.yaml": `targets:
   ridesx4:
     include: ["system_a", "system_b", "boot_a", "boot_b"]
+  ridesx4_r3:
+    include: ["system_a", "system_b", "boot_a", "boot_b"]
   ridesx4_scmi:
     include: ["system_a", "system_b", "boot_a", "boot_b"]
   ride4_sa8775p_sx_r3:
+    include: ["system_a", "system_b", "boot_a", "boot_b"]
+  ride4_sa8775p_sx:
+    include: ["system_a", "system_b", "boot_a", "boot_b"]
+  ride4_sa8775p_sx_legacy:
+    include: ["system_a", "system_b", "boot_a", "boot_b"]
+  ride4_sa8775p_sx_legacy_r3:
+    include: ["system_a", "system_b", "boot_a", "boot_b"]
+  ride4_sa8650p_sx_r3:
     include: ["system_a", "system_b", "boot_a", "boot_b"]
 `,
 		},
@@ -584,7 +602,17 @@ func (r *OperatorConfigReconciler) createOrUpdatePartitionConfig(ctx context.Con
 		return fmt.Errorf("failed to set controller reference: %w", err)
 	}
 
-	return r.createOrUpdate(ctx, configMap, owner)
+	// Only create the ConfigMap if it doesn't exist; never overwrite user changes
+	existing := &corev1.ConfigMap{}
+	err := r.Get(ctx, client.ObjectKeyFromObject(configMap), existing)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return r.Create(ctx, configMap)
+		}
+		return err
+	}
+
+	return nil
 }
 
 func (r *OperatorConfigReconciler) deployBuildController(ctx context.Context, config *automotivev1alpha1.OperatorConfig) error {
@@ -754,7 +782,7 @@ func (r *OperatorConfigReconciler) createOrUpdateTask(ctx context.Context, task 
 	}
 
 	// Skip update if task is marked as unmanaged
-	if existingTask.Annotations != nil && existingTask.Annotations["automotive.sdv.cloud.redhat.com/unmanaged"] == "true" {
+	if existingTask.Annotations != nil && existingTask.Annotations[unmanagedAnnotationKey] == unmanagedAnnotationTrue {
 		r.Log.Info("Skipping update for unmanaged task", "name", task.Name)
 		return nil
 	}
@@ -774,8 +802,7 @@ func (r *OperatorConfigReconciler) createOrUpdatePipeline(ctx context.Context, p
 	}
 
 	// Skip update if pipeline is marked as unmanaged
-	unmanagedAnnotation := "automotive.sdv.cloud.redhat.com/unmanaged"
-	if existingPipeline.Annotations != nil && existingPipeline.Annotations[unmanagedAnnotation] == "true" {
+	if existingPipeline.Annotations != nil && existingPipeline.Annotations[unmanagedAnnotationKey] == unmanagedAnnotationTrue {
 		r.Log.Info("Skipping update for unmanaged pipeline", "name", pipeline.Name)
 		return nil
 	}
