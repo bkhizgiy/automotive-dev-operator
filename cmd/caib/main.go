@@ -504,6 +504,25 @@ Examples:
 		Run:  runDownload,
 	}
 
+	logsCmd := &cobra.Command{
+		Use:   "logs <build-name>",
+		Short: "Follow logs of an existing build",
+		Long: `Follow the log output of an active or completed build.
+
+This is useful when you kicked off a build and need to reconnect later
+(e.g., after restarting your terminal or computer).
+
+Examples:
+  # Follow logs of an active build
+  caib logs my-build-20250101-120000
+
+  # List builds first, then follow one
+  caib list
+  caib logs <build-name>`,
+		Args: cobra.ExactArgs(1),
+		Run:  runLogs,
+	}
+
 	loginCmd := &cobra.Command{
 		Use:   "login [server-url]",
 		Short: "Save server endpoint and authenticate for subsequent commands",
@@ -633,6 +652,11 @@ Example:
 	buildDevCmd.Flags().StringVar(&internalRegistryImageName, "image-name", "", "override image name for internal registry (default: build name)")
 	buildDevCmd.Flags().StringVar(&internalRegistryTag, "image-tag", "", "tag for internal registry image (default: build name)")
 
+	// logs command flags
+	logsCmd.Flags().StringVar(&serverURL, "server", config.DefaultServer(), "REST API server base URL")
+	logsCmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication")
+	logsCmd.Flags().IntVar(&timeout, "timeout", 60, "timeout in minutes")
+
 	// download command flags
 	downloadCmd.Flags().StringVar(&serverURL, "server", config.DefaultServer(), "REST API server base URL")
 	downloadCmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication")
@@ -651,7 +675,7 @@ Example:
 	_ = flashCmd.MarkFlagRequired("client")
 
 	// Add all commands
-	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, showCmd, downloadCmd, flashCmd, loginCmd, catalog.NewCatalogCmd())
+	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, showCmd, downloadCmd, flashCmd, logsCmd, loginCmd, catalog.NewCatalogCmd())
 	// Add deprecated aliases for backwards compatibility
 	rootCmd.AddCommand(buildBootcAliasCmd, buildLegacyAliasCmd, buildTraditionalAliasCmd)
 
@@ -885,6 +909,7 @@ func runBuild(_ *cobra.Command, args []string) {
 		handleError(err)
 	}
 	fmt.Printf("Build %s accepted: %s - %s\n", resp.Name, resp.Phase, resp.Message)
+	fmt.Printf("To follow this build later: caib logs %s\n", resp.Name)
 
 	// Handle local file uploads if needed
 	localRefs, err := findLocalFileReferences(string(manifestBytes))
@@ -976,6 +1001,7 @@ func runDisk(_ *cobra.Command, args []string) {
 		handleError(err)
 	}
 	fmt.Printf("Build %s accepted: %s - %s\n", resp.Name, resp.Phase, resp.Message)
+	fmt.Printf("To follow this build later: caib logs %s\n", resp.Name)
 
 	if waitForBuild || followLogs || outputDir != "" || flashAfterBuild {
 		waitForBuildCompletion(ctx, api, resp.Name)
@@ -1376,6 +1402,7 @@ func runBuildDev(_ *cobra.Command, args []string) {
 		handleError(err)
 	}
 	fmt.Printf("Build %s accepted: %s - %s\n", resp.Name, resp.Phase, resp.Message)
+	fmt.Printf("To follow this build later: caib logs %s\n", resp.Name)
 
 	// Handle local file uploads if needed
 	localRefs, err := findLocalFileReferences(string(manifestBytes))
@@ -1661,11 +1688,14 @@ func buildLogURL(buildName string, startTime time.Time) string {
 }
 
 func streamLogsToStdout(body io.Reader, state *logStreamState) error {
-	if state.startTime.IsZero() {
+	firstStream := state.startTime.IsZero()
+	if firstStream {
 		state.startTime = time.Now()
 	}
 
-	fmt.Println("Streaming logs...")
+	if firstStream {
+		fmt.Println("Streaming logs...")
+	}
 	state.active = true
 	state.reset()
 
@@ -1675,6 +1705,8 @@ func streamLogsToStdout(body io.Reader, state *logStreamState) error {
 	for scanner.Scan() {
 		line := scanner.Text()
 		fmt.Println(line)
+		// Advance startTime so reconnections only fetch new logs
+		state.startTime = time.Now()
 
 		// Capture lease ID from flash logs
 		// Format: "jmp shell --lease <lease-id>" or "Lease acquired: <lease-id>"
@@ -2087,6 +2119,37 @@ func printBuildDetails(st *buildapitypes.BuildResponse) {
 			return
 		}
 	}
+}
+
+func runLogs(_ *cobra.Command, args []string) {
+	ctx := context.Background()
+	name := args[0]
+
+	if strings.TrimSpace(serverURL) == "" {
+		fmt.Println("Error: --server is required (or set CAIB_SERVER, or run 'caib login <server-url>')")
+		os.Exit(1)
+	}
+
+	api, err := createBuildAPIClient(serverURL, &authToken)
+	if err != nil {
+		handleError(err)
+	}
+
+	// Verify the build exists and show current status
+	st, err := api.GetBuild(ctx, name)
+	if err != nil {
+		handleError(fmt.Errorf("failed to get build: %w", err))
+	}
+	fmt.Printf("Build %s: %s - %s\n", name, st.Phase, st.Message)
+
+	if st.Phase == phaseCompleted || st.Phase == phaseFailed {
+		fmt.Printf("Build already finished (%s). Use 'caib show %s' for details.\n", st.Phase, name)
+		return
+	}
+
+	followLogs = true
+	waitForBuildCompletion(ctx, api, name)
+	displayBuildResults(ctx, api, name)
 }
 
 func valueOrDash(v string) string {
