@@ -3082,7 +3082,10 @@ func createSealedSecrets(ctx context.Context, clientset kubernetes.Interface, na
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      secretName,
 				Namespace: namespace,
-				Labels:    map[string]string{"automotive.sdv.cloud.redhat.com/imagesealed": req.Name},
+				Labels: map[string]string{
+					"automotive.sdv.cloud.redhat.com/imagesealed": req.Name,
+					"automotive.sdv.cloud.redhat.com/transient":   "true",
+				},
 			},
 			Type: corev1.SecretTypeOpaque,
 			Data: map[string][]byte{
@@ -3103,7 +3106,10 @@ func createSealedSecrets(ctx context.Context, clientset kubernetes.Interface, na
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      keySecretName,
 				Namespace: namespace,
-				Labels:    map[string]string{"automotive.sdv.cloud.redhat.com/imagesealed": req.Name},
+				Labels: map[string]string{
+					"automotive.sdv.cloud.redhat.com/imagesealed": req.Name,
+					"automotive.sdv.cloud.redhat.com/transient":   "true",
+				},
 			},
 			Type: corev1.SecretTypeOpaque,
 			Data: map[string][]byte{
@@ -3121,7 +3127,10 @@ func createSealedSecrets(ctx context.Context, clientset kubernetes.Interface, na
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      keyPwSecretName,
 					Namespace: namespace,
-					Labels:    map[string]string{"automotive.sdv.cloud.redhat.com/imagesealed": req.Name},
+					Labels: map[string]string{
+						"automotive.sdv.cloud.redhat.com/imagesealed": req.Name,
+						"automotive.sdv.cloud.redhat.com/transient":   "true",
+					},
 				},
 				Type: corev1.SecretTypeOpaque,
 				Data: map[string][]byte{
@@ -3412,7 +3421,8 @@ func (a *APIServer) streamSealedLogs(c *gin.Context, name string) {
 		if strings.Contains(errMsg, "PodInitializing") || strings.Contains(errMsg, "is waiting to start") || strings.Contains(errMsg, "ContainerCreating") {
 			select {
 			case <-streamCtx.Done():
-				c.JSON(http.StatusGatewayTimeout, gin.H{"error": "timed out waiting for container to start"})
+				fmt.Fprintf(c.Writer, "\n[Error: timed out waiting for container to start]\n") //nolint:errcheck
+				c.Writer.Flush()
 				return
 			case <-time.After(2 * time.Second):
 				continue
@@ -3423,7 +3433,8 @@ func (a *APIServer) streamSealedLogs(c *gin.Context, name string) {
 		return
 	}
 	if stream == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "container did not start in time"})
+		fmt.Fprintf(c.Writer, "\n[Error: container did not start in time]\n") //nolint:errcheck
+		c.Writer.Flush()
 		return
 	}
 	defer func() {
