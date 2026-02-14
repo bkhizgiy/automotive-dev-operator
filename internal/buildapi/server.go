@@ -618,17 +618,18 @@ func getStepContainerNames(pod corev1.Pod) []string {
 	return stepNames
 }
 
-// streamContainerLogs streams logs from a single container
+// streamContainerLogs streams logs from a single container.
+// Returns true if logs were successfully streamed, false if the stream could not be opened.
 func streamContainerLogs(
 	ctx context.Context, c *gin.Context, cs *kubernetes.Clientset,
 	namespace, podName, containerName, taskName string, sinceTime *metav1.Time,
-) {
+) bool {
 	req := cs.CoreV1().Pods(namespace).GetLogs(
 		podName, &corev1.PodLogOptions{Container: containerName, Follow: true, SinceTime: sinceTime},
 	)
 	stream, err := req.Stream(ctx)
 	if err != nil {
-		return
+		return false
 	}
 
 	_, _ = c.Writer.Write([]byte(
@@ -648,15 +649,15 @@ func streamContainerLogs(
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
-			return
+			return true
 		default:
 		}
 		line := scanner.Bytes()
 		if _, writeErr := c.Writer.Write(line); writeErr != nil {
-			return
+			return true
 		}
 		if _, writeErr := c.Writer.Write([]byte("\n")); writeErr != nil {
-			return
+			return true
 		}
 		c.Writer.Flush()
 	}
@@ -667,6 +668,7 @@ func streamContainerLogs(
 		_, _ = c.Writer.Write(errMsg)
 		c.Writer.Flush()
 	}
+	return true
 }
 
 // processPodLogs processes logs for all containers in a pod
@@ -689,10 +691,11 @@ func processPodLogs(
 		if !*hadStream {
 			c.Writer.Flush()
 		}
-		*hadStream = true
 
-		streamContainerLogs(ctx, c, cs, namespace, pod.Name, cName, taskName, sinceTime)
-		streamedContainers[cName] = true
+		if streamContainerLogs(ctx, c, cs, namespace, pod.Name, cName, taskName, sinceTime) {
+			*hadStream = true
+			streamedContainers[cName] = true
+		}
 	}
 }
 
@@ -1485,6 +1488,11 @@ func listBuilds(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error listing builds: %v", err)})
 		return
 	}
+
+	// Sort by creation time, newest first
+	sort.Slice(list.Items, func(i, j int) bool {
+		return list.Items[j].CreationTimestamp.Before(&list.Items[i].CreationTimestamp)
+	})
 
 	// Resolve external route once for translating internal registry URLs
 	externalRoute, _ := getExternalRegistryRoute(ctx, k8sClient, namespace)
@@ -2485,9 +2493,13 @@ func (a *APIServer) handleGetOperatorConfig(c *gin.Context) {
 	response := OperatorConfigResponse{}
 
 	if operatorConfig.Spec.Jumpstarter != nil && len(operatorConfig.Spec.Jumpstarter.TargetMappings) > 0 {
-		response.JumpstarterTargets = make(map[string]string)
+		response.JumpstarterTargets = make(map[string]TargetDefaults)
 		for target, mapping := range operatorConfig.Spec.Jumpstarter.TargetMappings {
-			response.JumpstarterTargets[target] = mapping.Selector
+			response.JumpstarterTargets[target] = TargetDefaults{
+				Selector:     mapping.Selector,
+				Architecture: mapping.Architecture,
+				ExtraArgs:    mapping.ExtraArgs,
+			}
 		}
 	}
 
@@ -2721,6 +2733,11 @@ func (a *APIServer) listFlash(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to list flash TaskRuns: %v", err)})
 		return
 	}
+
+	// Sort by creation time, newest first
+	sort.Slice(taskRunList.Items, func(i, j int) bool {
+		return taskRunList.Items[j].CreationTimestamp.Before(&taskRunList.Items[i].CreationTimestamp)
+	})
 
 	resp := make([]FlashListItem, 0, len(taskRunList.Items))
 	for _, tr := range taskRunList.Items {

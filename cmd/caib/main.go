@@ -504,6 +504,25 @@ Examples:
 		Run:  runDownload,
 	}
 
+	logsCmd := &cobra.Command{
+		Use:   "logs <build-name>",
+		Short: "Follow logs of an existing build",
+		Long: `Follow the log output of an active or completed build.
+
+This is useful when you kicked off a build and need to reconnect later
+(e.g., after restarting your terminal or computer).
+
+Examples:
+  # Follow logs of an active build
+  caib logs my-build-20250101-120000
+
+  # List builds first, then follow one
+  caib list
+  caib logs <build-name>`,
+		Args: cobra.ExactArgs(1),
+		Run:  runLogs,
+	}
+
 	loginCmd := &cobra.Command{
 		Use:   "login [server-url]",
 		Short: "Save server endpoint and authenticate for subsequent commands",
@@ -633,6 +652,11 @@ Example:
 	buildDevCmd.Flags().StringVar(&internalRegistryImageName, "image-name", "", "override image name for internal registry (default: build name)")
 	buildDevCmd.Flags().StringVar(&internalRegistryTag, "image-tag", "", "tag for internal registry image (default: build name)")
 
+	// logs command flags
+	logsCmd.Flags().StringVar(&serverURL, "server", config.DefaultServer(), "REST API server base URL")
+	logsCmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication")
+	logsCmd.Flags().IntVar(&timeout, "timeout", 60, "timeout in minutes")
+
 	// download command flags
 	downloadCmd.Flags().StringVar(&serverURL, "server", config.DefaultServer(), "REST API server base URL")
 	downloadCmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication")
@@ -651,7 +675,7 @@ Example:
 	_ = flashCmd.MarkFlagRequired("client")
 
 	// Add all commands
-	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, showCmd, downloadCmd, flashCmd, loginCmd, catalog.NewCatalogCmd())
+	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, showCmd, downloadCmd, flashCmd, logsCmd, loginCmd, catalog.NewCatalogCmd())
 	// Add deprecated aliases for backwards compatibility
 	rootCmd.AddCommand(buildBootcAliasCmd, buildLegacyAliasCmd, buildTraditionalAliasCmd)
 
@@ -707,6 +731,9 @@ func validateBootcBuildFlags() {
 	if exportOCI != "" && !buildDiskImage {
 		buildDiskImage = true
 	}
+	if flashAfterBuild && !buildDiskImage {
+		buildDiskImage = true
+	}
 	if !useInternalRegistry {
 		validateOutputRequiresPush(outputDir, exportOCI, "--push-disk")
 	}
@@ -749,29 +776,63 @@ func applyRegistryCredentialsToRequest(req *buildapitypes.BuildRequest) {
 	}
 }
 
-// validateFlashTargetMapping validates that the selected target has a Jumpstarter mapping.
-func validateFlashTargetMapping(ctx context.Context, api *buildapiclient.Client, target string) {
+// fetchTargetDefaults fetches the operator config once and returns it.
+// If flash is enabled, it also validates that the target has a Jumpstarter mapping.
+func fetchTargetDefaults(ctx context.Context, api *buildapiclient.Client, target string, validateFlash bool) *buildapitypes.OperatorConfigResponse {
 	config, err := api.GetOperatorConfig(ctx)
 	if err != nil {
+		// Non-fatal for defaults: if we can't reach the config endpoint, just skip defaults
+		if !validateFlash {
+			fmt.Fprintf(os.Stderr, "Warning: could not fetch operator config for target defaults: %v\n", err)
+			return nil
+		}
 		handleError(fmt.Errorf("failed to get operator configuration for Jumpstarter validation: %w", err))
 	}
 
-	if len(config.JumpstarterTargets) == 0 {
-		handleError(fmt.Errorf("flash enabled but no Jumpstarter target mappings configured in operator"))
+	if validateFlash {
+		if len(config.JumpstarterTargets) == 0 {
+			handleError(fmt.Errorf("flash enabled but no Jumpstarter target mappings configured in operator"))
+		}
+
+		if _, exists := config.JumpstarterTargets[target]; !exists {
+			availableTargets := make([]string, 0, len(config.JumpstarterTargets))
+			for t := range config.JumpstarterTargets {
+				availableTargets = append(availableTargets, t)
+			}
+			handleError(
+				fmt.Errorf(
+					"flash enabled but no Jumpstarter target mapping found for target %q. Available targets: %v",
+					target,
+					availableTargets,
+				),
+			)
+		}
 	}
 
-	if _, exists := config.JumpstarterTargets[target]; !exists {
-		availableTargets := make([]string, 0, len(config.JumpstarterTargets))
-		for t := range config.JumpstarterTargets {
-			availableTargets = append(availableTargets, t)
-		}
-		handleError(
-			fmt.Errorf(
-				"flash enabled but no Jumpstarter target mapping found for target %q. Available targets: %v",
-				target,
-				availableTargets,
-			),
-		)
+	return config
+}
+
+// applyTargetDefaults applies architecture and extra-args defaults from the operator config
+// target mapping. CLI flags override mapping defaults when explicitly set.
+func applyTargetDefaults(cmd *cobra.Command, config *buildapitypes.OperatorConfigResponse, req *buildapitypes.BuildRequest) {
+	if config == nil || len(config.JumpstarterTargets) == 0 {
+		return
+	}
+
+	defaults, exists := config.JumpstarterTargets[string(req.Target)]
+	if !exists {
+		return
+	}
+
+	if defaults.Architecture != "" && !cmd.Flags().Changed("arch") {
+		req.Architecture = buildapitypes.Architecture(defaults.Architecture)
+		fmt.Printf("Using architecture %q from target mapping for %q\n", defaults.Architecture, req.Target)
+	}
+
+	if len(defaults.ExtraArgs) > 0 {
+		// Mapping args come first, user args appended
+		req.AIBExtraArgs = append(defaults.ExtraArgs, req.AIBExtraArgs...)
+		fmt.Printf("Prepending extra args %v from target mapping for %q\n", defaults.ExtraArgs, req.Target)
 	}
 }
 
@@ -817,7 +878,7 @@ func displayBuildResults(ctx context.Context, api *buildapiclient.Client, buildN
 }
 
 // runBuild handles the main 'build' command (bootc builds)
-func runBuild(_ *cobra.Command, args []string) {
+func runBuild(cmd *cobra.Command, args []string) {
 	ctx := context.Background()
 	manifest = args[0]
 
@@ -862,6 +923,10 @@ func runBuild(_ *cobra.Command, args []string) {
 
 	applyRegistryCredentialsToRequest(&req)
 
+	// Fetch target defaults and apply them to the request
+	operatorConfig := fetchTargetDefaults(ctx, api, target, flashAfterBuild)
+	applyTargetDefaults(cmd, operatorConfig, &req)
+
 	// Add flash configuration if enabled
 	if flashAfterBuild {
 		if exportOCI == "" && !useInternalRegistry {
@@ -870,7 +935,6 @@ func runBuild(_ *cobra.Command, args []string) {
 		if jumpstarterClient == "" {
 			handleError(fmt.Errorf("--flash requires --client to specify Jumpstarter client config file"))
 		}
-		validateFlashTargetMapping(ctx, api, target)
 		clientConfigBytes, err := os.ReadFile(jumpstarterClient)
 		if err != nil {
 			handleError(fmt.Errorf("failed to read Jumpstarter client config: %w", err))
@@ -885,6 +949,7 @@ func runBuild(_ *cobra.Command, args []string) {
 		handleError(err)
 	}
 	fmt.Printf("Build %s accepted: %s - %s\n", resp.Name, resp.Phase, resp.Message)
+	fmt.Printf("To follow this build later: caib logs %s\n", resp.Name)
 
 	// Handle local file uploads if needed
 	localRefs, err := findLocalFileReferences(string(manifestBytes))
@@ -902,7 +967,7 @@ func runBuild(_ *cobra.Command, args []string) {
 	displayBuildResults(ctx, api, resp.Name)
 }
 
-func runDisk(_ *cobra.Command, args []string) {
+func runDisk(cmd *cobra.Command, args []string) {
 	ctx := context.Background()
 	containerRef = args[0]
 
@@ -953,6 +1018,10 @@ func runDisk(_ *cobra.Command, args []string) {
 
 	applyRegistryCredentialsToRequest(&req)
 
+	// Fetch target defaults and apply them to the request
+	operatorConfig := fetchTargetDefaults(ctx, api, target, flashAfterBuild)
+	applyTargetDefaults(cmd, operatorConfig, &req)
+
 	// Add flash configuration if enabled
 	if flashAfterBuild {
 		if exportOCI == "" && !useInternalRegistry {
@@ -961,7 +1030,6 @@ func runDisk(_ *cobra.Command, args []string) {
 		if jumpstarterClient == "" {
 			handleError(fmt.Errorf("--flash requires --client to specify Jumpstarter client config file"))
 		}
-		validateFlashTargetMapping(ctx, api, target)
 		clientConfigBytes, err := os.ReadFile(jumpstarterClient)
 		if err != nil {
 			handleError(fmt.Errorf("failed to read Jumpstarter client config: %w", err))
@@ -976,6 +1044,7 @@ func runDisk(_ *cobra.Command, args []string) {
 		handleError(err)
 	}
 	fmt.Printf("Build %s accepted: %s - %s\n", resp.Name, resp.Phase, resp.Message)
+	fmt.Printf("To follow this build later: caib logs %s\n", resp.Name)
 
 	if waitForBuild || followLogs || outputDir != "" || flashAfterBuild {
 		waitForBuildCompletion(ctx, api, resp.Name)
@@ -1288,7 +1357,7 @@ func copyFile(srcPath, dstPath string) error {
 }
 
 // runBuildDev handles the 'build-dev' command (traditional ostree/package builds)
-func runBuildDev(_ *cobra.Command, args []string) {
+func runBuildDev(cmd *cobra.Command, args []string) {
 	ctx := context.Background()
 	manifest = args[0]
 
@@ -1352,6 +1421,10 @@ func runBuildDev(_ *cobra.Command, args []string) {
 
 	applyRegistryCredentialsToRequest(&req)
 
+	// Fetch target defaults and apply them to the request
+	operatorConfig := fetchTargetDefaults(ctx, api, target, flashAfterBuild)
+	applyTargetDefaults(cmd, operatorConfig, &req)
+
 	// Add flash configuration if enabled
 	if flashAfterBuild {
 		if exportOCI == "" && !useInternalRegistry {
@@ -1360,7 +1433,6 @@ func runBuildDev(_ *cobra.Command, args []string) {
 		if jumpstarterClient == "" {
 			handleError(fmt.Errorf("--flash requires --client to specify Jumpstarter client config file"))
 		}
-		validateFlashTargetMapping(ctx, api, target)
 
 		clientConfigBytes, err := os.ReadFile(jumpstarterClient)
 		if err != nil {
@@ -1376,6 +1448,7 @@ func runBuildDev(_ *cobra.Command, args []string) {
 		handleError(err)
 	}
 	fmt.Printf("Build %s accepted: %s - %s\n", resp.Name, resp.Phase, resp.Message)
+	fmt.Printf("To follow this build later: caib logs %s\n", resp.Name)
 
 	// Handle local file uploads if needed
 	localRefs, err := findLocalFileReferences(string(manifestBytes))
@@ -1661,11 +1734,14 @@ func buildLogURL(buildName string, startTime time.Time) string {
 }
 
 func streamLogsToStdout(body io.Reader, state *logStreamState) error {
-	if state.startTime.IsZero() {
+	firstStream := state.startTime.IsZero()
+	if firstStream {
 		state.startTime = time.Now()
 	}
 
-	fmt.Println("Streaming logs...")
+	if firstStream {
+		fmt.Println("Streaming logs...")
+	}
 	state.active = true
 	state.reset()
 
@@ -1675,6 +1751,8 @@ func streamLogsToStdout(body io.Reader, state *logStreamState) error {
 	for scanner.Scan() {
 		line := scanner.Text()
 		fmt.Println(line)
+		// Advance startTime so reconnections only fetch new logs
+		state.startTime = time.Now()
 
 		// Capture lease ID from flash logs
 		// Format: "jmp shell --lease <lease-id>" or "Lease acquired: <lease-id>"
@@ -2087,6 +2165,51 @@ func printBuildDetails(st *buildapitypes.BuildResponse) {
 			return
 		}
 	}
+}
+
+func runLogs(_ *cobra.Command, args []string) {
+	ctx := context.Background()
+	name := args[0]
+
+	if strings.TrimSpace(serverURL) == "" {
+		fmt.Println("Error: --server is required (or set CAIB_SERVER, or run 'caib login <server-url>')")
+		os.Exit(1)
+	}
+
+	api, err := createBuildAPIClient(serverURL, &authToken)
+	if err != nil {
+		handleError(err)
+	}
+
+	// Verify the build exists and show current status
+	st, err := api.GetBuild(ctx, name)
+	if err != nil {
+		handleError(fmt.Errorf("failed to get build: %w", err))
+	}
+	fmt.Printf("Build %s: %s - %s\n", name, st.Phase, st.Message)
+
+	if st.Phase == phaseCompleted || st.Phase == phaseFailed {
+		// Build is finished — attempt to fetch logs once (pods may have been GC'd)
+		logTransport := &http.Transport{
+			ResponseHeaderTimeout: 30 * time.Second,
+		}
+		if insecureSkipTLS {
+			logTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+		}
+		logClient := &http.Client{
+			Timeout:   2 * time.Minute,
+			Transport: logTransport,
+		}
+		streamState := &logStreamState{}
+		if err := tryLogStreaming(ctx, logClient, name, streamState); err != nil {
+			fmt.Printf("Could not retrieve logs (pods may have been cleaned up). Use 'caib show %s' for details.\n", name)
+		}
+		return
+	}
+
+	followLogs = true
+	waitForBuildCompletion(ctx, api, name)
+	displayBuildResults(ctx, api, name)
 }
 
 func valueOrDash(v string) string {

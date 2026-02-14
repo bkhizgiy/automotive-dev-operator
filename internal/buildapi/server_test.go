@@ -163,8 +163,10 @@ var _ = Describe("APIServer", func() {
 							"qemu": {
 								Selector: "board-type=qemu",
 							},
-							"j784s4evm": {
-								Selector: "board-type=j784s4evm",
+							"ebbr": {
+								Selector:     "board-type=ebbr",
+								Architecture: "arm64",
+								ExtraArgs:    []string{"--separate-partitions"},
 							},
 						},
 					},
@@ -191,8 +193,12 @@ var _ = Describe("APIServer", func() {
 			var response OperatorConfigResponse
 			Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
 			Expect(response.JumpstarterTargets).To(HaveLen(2))
-			Expect(response.JumpstarterTargets["qemu"]).To(Equal("board-type=qemu"))
-			Expect(response.JumpstarterTargets["j784s4evm"]).To(Equal("board-type=j784s4evm"))
+			Expect(response.JumpstarterTargets["qemu"]).To(Equal(TargetDefaults{Selector: "board-type=qemu"}))
+			Expect(response.JumpstarterTargets["ebbr"]).To(Equal(TargetDefaults{
+				Selector:     "board-type=ebbr",
+				Architecture: "arm64",
+				ExtraArgs:    []string{"--separate-partitions"},
+			}))
 		})
 	})
 

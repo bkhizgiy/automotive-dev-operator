@@ -34,6 +34,9 @@ const (
 	// Phase constants for ImageBuild status
 	phaseCompleted = "Completed"
 	phaseFailed    = "Failed"
+
+	// Tekton condition type for completion status
+	conditionSucceeded = "Succeeded"
 )
 
 // ImageBuildReconciler reconciles a ImageBuild object
@@ -132,6 +135,29 @@ func (r *ImageBuildReconciler) handleUploadingState(
 		"imagebuild",
 		types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace},
 	)
+
+	// Fail the build if uploads have not completed within the configured timeout
+	uploadTimeout := 30 * time.Minute // default
+	operatorConfig := &automotivev1alpha1.OperatorConfig{}
+	if err := r.Get(ctx, types.NamespacedName{Name: "config", Namespace: OperatorNamespace}, operatorConfig); err == nil {
+		if operatorConfig.Spec.OSBuilds != nil && operatorConfig.Spec.OSBuilds.UploadTimeoutMinutes > 0 {
+			uploadTimeout = time.Duration(operatorConfig.Spec.OSBuilds.UploadTimeoutMinutes) * time.Minute
+		}
+	}
+	if time.Since(imageBuild.CreationTimestamp.Time) > uploadTimeout {
+		log.Info("Upload timed out", "age", time.Since(imageBuild.CreationTimestamp.Time), "timeout", uploadTimeout)
+		r.cleanupTransientSecrets(ctx, imageBuild, r.Log)
+		if err := r.shutdownUploadPod(ctx, imageBuild); err != nil {
+			log.Error(err, "Failed to shutdown upload pod during timeout cleanup")
+		}
+		timeoutMinutes := int(uploadTimeout.Minutes())
+		if err := r.updateStatus(ctx, imageBuild, phaseFailed,
+			fmt.Sprintf("Upload timed out: file uploads were not completed within %d minutes", timeoutMinutes)); err != nil {
+			log.Error(err, "Failed to update status to Failed")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
 
 	uploadsComplete := imageBuild.Annotations != nil &&
 		imageBuild.Annotations["automotive.sdv.cloud.redhat.com/uploads-complete"] == "true"
@@ -284,7 +310,7 @@ func (r *ImageBuildReconciler) checkBuildProgress(
 	// Build failed - cleanup transient secrets
 	r.cleanupTransientSecrets(ctx, imageBuild, r.Log)
 
-	if err := r.updateStatus(ctx, imageBuild, phaseFailed, "Build failed"); err != nil {
+	if err := r.updateStatus(ctx, imageBuild, phaseFailed, pipelineRunFailureMessage(pipelineRun)); err != nil {
 		log.Error(err, "Failed to update status to Failed")
 		return ctrl.Result{}, err
 	}
@@ -1075,7 +1101,7 @@ func (r *ImageBuildReconciler) handleFlashingState(
 		fresh.Status.Message = "Build, push, and flash completed successfully"
 	} else {
 		fresh.Status.Phase = phaseFailed
-		fresh.Status.Message = "Flash to device failed"
+		fresh.Status.Message = taskRunFailureMessage(taskRun, "Flash to device failed")
 	}
 
 	if fresh.Status.CompletionTime == nil {
@@ -1299,11 +1325,29 @@ func isPipelineRunSuccessful(pipelineRun *tektonv1.PipelineRun) bool {
 	}
 
 	for _, condition := range conditions {
-		if condition.Type == "Succeeded" {
+		if condition.Type == conditionSucceeded {
 			return condition.Status == "True"
 		}
 	}
 	return false
+}
+
+func pipelineRunFailureMessage(pipelineRun *tektonv1.PipelineRun) string {
+	for _, condition := range pipelineRun.Status.Conditions {
+		if condition.Type == conditionSucceeded && condition.Status != "True" && condition.Message != "" {
+			return fmt.Sprintf("Build failed: %s", condition.Message)
+		}
+	}
+	return "Build failed"
+}
+
+func taskRunFailureMessage(taskRun *tektonv1.TaskRun, fallback string) string {
+	for _, condition := range taskRun.Status.Conditions {
+		if condition.Type == conditionSucceeded && condition.Status != corev1.ConditionTrue && condition.Message != "" {
+			return fmt.Sprintf("%s: %s", fallback, condition.Message)
+		}
+	}
+	return fallback
 }
 
 // extractProvenance extracts build provenance information from PipelineRun results

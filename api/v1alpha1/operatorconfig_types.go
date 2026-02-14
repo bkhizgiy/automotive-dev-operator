@@ -59,6 +59,16 @@ type JumpstarterTargetMapping struct {
 	// Example: "j storage flash ${IMAGE}"
 	// +optional
 	FlashCmd string `json:"flashCmd,omitempty"`
+
+	// Architecture is the default CPU architecture for builds targeting this device
+	// Example: "arm64"
+	// +optional
+	Architecture string `json:"architecture,omitempty"`
+
+	// ExtraArgs are default extra arguments passed to AIB for builds targeting this device
+	// Example: ["--separate-partitions"]
+	// +optional
+	ExtraArgs []string `json:"extraArgs,omitempty"`
 }
 
 // DefaultJumpstarterImage is the default container image for Jumpstarter CLI operations
@@ -191,6 +201,11 @@ type OSBuildsConfig struct {
 	// Example: "default-route-openshift-image-registry.apps.mycluster.example.com"
 	// +optional
 	ClusterRegistryRoute string `json:"clusterRegistryRoute,omitempty"`
+
+	// UploadTimeoutMinutes is the maximum time in minutes to wait for file uploads before failing the build
+	// Default: 30
+	// +optional
+	UploadTimeoutMinutes int32 `json:"uploadTimeoutMinutes,omitempty"`
 
 	// NodeSelector specifies node labels that build pods must match for scheduling
 	// These labels are added to the pod template used by Tekton PipelineRuns
