@@ -34,6 +34,9 @@ const (
 	// Phase constants for ImageBuild status
 	phaseCompleted = "Completed"
 	phaseFailed    = "Failed"
+
+	// Tekton condition type for completion status
+	conditionSucceeded = "Succeeded"
 )
 
 // ImageBuildReconciler reconciles a ImageBuild object
@@ -284,7 +287,7 @@ func (r *ImageBuildReconciler) checkBuildProgress(
 	// Build failed - cleanup transient secrets
 	r.cleanupTransientSecrets(ctx, imageBuild, r.Log)
 
-	if err := r.updateStatus(ctx, imageBuild, phaseFailed, "Build failed"); err != nil {
+	if err := r.updateStatus(ctx, imageBuild, phaseFailed, pipelineRunFailureMessage(pipelineRun)); err != nil {
 		log.Error(err, "Failed to update status to Failed")
 		return ctrl.Result{}, err
 	}
@@ -1075,7 +1078,7 @@ func (r *ImageBuildReconciler) handleFlashingState(
 		fresh.Status.Message = "Build, push, and flash completed successfully"
 	} else {
 		fresh.Status.Phase = phaseFailed
-		fresh.Status.Message = "Flash to device failed"
+		fresh.Status.Message = taskRunFailureMessage(taskRun, "Flash to device failed")
 	}
 
 	if fresh.Status.CompletionTime == nil {
@@ -1299,11 +1302,29 @@ func isPipelineRunSuccessful(pipelineRun *tektonv1.PipelineRun) bool {
 	}
 
 	for _, condition := range conditions {
-		if condition.Type == "Succeeded" {
+		if condition.Type == conditionSucceeded {
 			return condition.Status == "True"
 		}
 	}
 	return false
+}
+
+func pipelineRunFailureMessage(pipelineRun *tektonv1.PipelineRun) string {
+	for _, condition := range pipelineRun.Status.Conditions {
+		if condition.Type == conditionSucceeded && condition.Status != "True" && condition.Message != "" {
+			return fmt.Sprintf("Build failed: %s", condition.Message)
+		}
+	}
+	return "Build failed"
+}
+
+func taskRunFailureMessage(taskRun *tektonv1.TaskRun, fallback string) string {
+	for _, condition := range taskRun.Status.Conditions {
+		if condition.Type == conditionSucceeded && condition.Status != corev1.ConditionTrue && condition.Message != "" {
+			return fmt.Sprintf("%s: %s", fallback, condition.Message)
+		}
+	}
+	return fallback
 }
 
 // extractProvenance extracts build provenance information from PipelineRun results

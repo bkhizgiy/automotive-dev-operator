@@ -618,17 +618,18 @@ func getStepContainerNames(pod corev1.Pod) []string {
 	return stepNames
 }
 
-// streamContainerLogs streams logs from a single container
+// streamContainerLogs streams logs from a single container.
+// Returns true if logs were successfully streamed, false if the stream could not be opened.
 func streamContainerLogs(
 	ctx context.Context, c *gin.Context, cs *kubernetes.Clientset,
 	namespace, podName, containerName, taskName string, sinceTime *metav1.Time,
-) {
+) bool {
 	req := cs.CoreV1().Pods(namespace).GetLogs(
 		podName, &corev1.PodLogOptions{Container: containerName, Follow: true, SinceTime: sinceTime},
 	)
 	stream, err := req.Stream(ctx)
 	if err != nil {
-		return
+		return false
 	}
 
 	_, _ = c.Writer.Write([]byte(
@@ -648,15 +649,15 @@ func streamContainerLogs(
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
-			return
+			return true
 		default:
 		}
 		line := scanner.Bytes()
 		if _, writeErr := c.Writer.Write(line); writeErr != nil {
-			return
+			return true
 		}
 		if _, writeErr := c.Writer.Write([]byte("\n")); writeErr != nil {
-			return
+			return true
 		}
 		c.Writer.Flush()
 	}
@@ -667,6 +668,7 @@ func streamContainerLogs(
 		_, _ = c.Writer.Write(errMsg)
 		c.Writer.Flush()
 	}
+	return true
 }
 
 // processPodLogs processes logs for all containers in a pod
@@ -689,10 +691,11 @@ func processPodLogs(
 		if !*hadStream {
 			c.Writer.Flush()
 		}
-		*hadStream = true
 
-		streamContainerLogs(ctx, c, cs, namespace, pod.Name, cName, taskName, sinceTime)
-		streamedContainers[cName] = true
+		if streamContainerLogs(ctx, c, cs, namespace, pod.Name, cName, taskName, sinceTime) {
+			*hadStream = true
+			streamedContainers[cName] = true
+		}
 	}
 }
 
