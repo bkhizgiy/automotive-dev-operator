@@ -731,6 +731,9 @@ func validateBootcBuildFlags() {
 	if exportOCI != "" && !buildDiskImage {
 		buildDiskImage = true
 	}
+	if flashAfterBuild && !buildDiskImage {
+		buildDiskImage = true
+	}
 	if !useInternalRegistry {
 		validateOutputRequiresPush(outputDir, exportOCI, "--push-disk")
 	}
@@ -773,29 +776,63 @@ func applyRegistryCredentialsToRequest(req *buildapitypes.BuildRequest) {
 	}
 }
 
-// validateFlashTargetMapping validates that the selected target has a Jumpstarter mapping.
-func validateFlashTargetMapping(ctx context.Context, api *buildapiclient.Client, target string) {
+// fetchTargetDefaults fetches the operator config once and returns it.
+// If flash is enabled, it also validates that the target has a Jumpstarter mapping.
+func fetchTargetDefaults(ctx context.Context, api *buildapiclient.Client, target string, validateFlash bool) *buildapitypes.OperatorConfigResponse {
 	config, err := api.GetOperatorConfig(ctx)
 	if err != nil {
+		// Non-fatal for defaults: if we can't reach the config endpoint, just skip defaults
+		if !validateFlash {
+			fmt.Fprintf(os.Stderr, "Warning: could not fetch operator config for target defaults: %v\n", err)
+			return nil
+		}
 		handleError(fmt.Errorf("failed to get operator configuration for Jumpstarter validation: %w", err))
 	}
 
-	if len(config.JumpstarterTargets) == 0 {
-		handleError(fmt.Errorf("flash enabled but no Jumpstarter target mappings configured in operator"))
+	if validateFlash {
+		if len(config.JumpstarterTargets) == 0 {
+			handleError(fmt.Errorf("flash enabled but no Jumpstarter target mappings configured in operator"))
+		}
+
+		if _, exists := config.JumpstarterTargets[target]; !exists {
+			availableTargets := make([]string, 0, len(config.JumpstarterTargets))
+			for t := range config.JumpstarterTargets {
+				availableTargets = append(availableTargets, t)
+			}
+			handleError(
+				fmt.Errorf(
+					"flash enabled but no Jumpstarter target mapping found for target %q. Available targets: %v",
+					target,
+					availableTargets,
+				),
+			)
+		}
 	}
 
-	if _, exists := config.JumpstarterTargets[target]; !exists {
-		availableTargets := make([]string, 0, len(config.JumpstarterTargets))
-		for t := range config.JumpstarterTargets {
-			availableTargets = append(availableTargets, t)
-		}
-		handleError(
-			fmt.Errorf(
-				"flash enabled but no Jumpstarter target mapping found for target %q. Available targets: %v",
-				target,
-				availableTargets,
-			),
-		)
+	return config
+}
+
+// applyTargetDefaults applies architecture and extra-args defaults from the operator config
+// target mapping. CLI flags override mapping defaults when explicitly set.
+func applyTargetDefaults(cmd *cobra.Command, config *buildapitypes.OperatorConfigResponse, req *buildapitypes.BuildRequest) {
+	if config == nil || len(config.JumpstarterTargets) == 0 {
+		return
+	}
+
+	defaults, exists := config.JumpstarterTargets[string(req.Target)]
+	if !exists {
+		return
+	}
+
+	if defaults.Architecture != "" && !cmd.Flags().Changed("arch") {
+		req.Architecture = buildapitypes.Architecture(defaults.Architecture)
+		fmt.Printf("Using architecture %q from target mapping for %q\n", defaults.Architecture, req.Target)
+	}
+
+	if len(defaults.ExtraArgs) > 0 {
+		// Mapping args come first, user args appended
+		req.AIBExtraArgs = append(defaults.ExtraArgs, req.AIBExtraArgs...)
+		fmt.Printf("Prepending extra args %v from target mapping for %q\n", defaults.ExtraArgs, req.Target)
 	}
 }
 
@@ -841,7 +878,7 @@ func displayBuildResults(ctx context.Context, api *buildapiclient.Client, buildN
 }
 
 // runBuild handles the main 'build' command (bootc builds)
-func runBuild(_ *cobra.Command, args []string) {
+func runBuild(cmd *cobra.Command, args []string) {
 	ctx := context.Background()
 	manifest = args[0]
 
@@ -886,6 +923,10 @@ func runBuild(_ *cobra.Command, args []string) {
 
 	applyRegistryCredentialsToRequest(&req)
 
+	// Fetch target defaults and apply them to the request
+	operatorConfig := fetchTargetDefaults(ctx, api, target, flashAfterBuild)
+	applyTargetDefaults(cmd, operatorConfig, &req)
+
 	// Add flash configuration if enabled
 	if flashAfterBuild {
 		if exportOCI == "" && !useInternalRegistry {
@@ -894,7 +935,6 @@ func runBuild(_ *cobra.Command, args []string) {
 		if jumpstarterClient == "" {
 			handleError(fmt.Errorf("--flash requires --client to specify Jumpstarter client config file"))
 		}
-		validateFlashTargetMapping(ctx, api, target)
 		clientConfigBytes, err := os.ReadFile(jumpstarterClient)
 		if err != nil {
 			handleError(fmt.Errorf("failed to read Jumpstarter client config: %w", err))
@@ -927,7 +967,7 @@ func runBuild(_ *cobra.Command, args []string) {
 	displayBuildResults(ctx, api, resp.Name)
 }
 
-func runDisk(_ *cobra.Command, args []string) {
+func runDisk(cmd *cobra.Command, args []string) {
 	ctx := context.Background()
 	containerRef = args[0]
 
@@ -978,6 +1018,10 @@ func runDisk(_ *cobra.Command, args []string) {
 
 	applyRegistryCredentialsToRequest(&req)
 
+	// Fetch target defaults and apply them to the request
+	operatorConfig := fetchTargetDefaults(ctx, api, target, flashAfterBuild)
+	applyTargetDefaults(cmd, operatorConfig, &req)
+
 	// Add flash configuration if enabled
 	if flashAfterBuild {
 		if exportOCI == "" && !useInternalRegistry {
@@ -986,7 +1030,6 @@ func runDisk(_ *cobra.Command, args []string) {
 		if jumpstarterClient == "" {
 			handleError(fmt.Errorf("--flash requires --client to specify Jumpstarter client config file"))
 		}
-		validateFlashTargetMapping(ctx, api, target)
 		clientConfigBytes, err := os.ReadFile(jumpstarterClient)
 		if err != nil {
 			handleError(fmt.Errorf("failed to read Jumpstarter client config: %w", err))
@@ -1314,7 +1357,7 @@ func copyFile(srcPath, dstPath string) error {
 }
 
 // runBuildDev handles the 'build-dev' command (traditional ostree/package builds)
-func runBuildDev(_ *cobra.Command, args []string) {
+func runBuildDev(cmd *cobra.Command, args []string) {
 	ctx := context.Background()
 	manifest = args[0]
 
@@ -1378,6 +1421,10 @@ func runBuildDev(_ *cobra.Command, args []string) {
 
 	applyRegistryCredentialsToRequest(&req)
 
+	// Fetch target defaults and apply them to the request
+	operatorConfig := fetchTargetDefaults(ctx, api, target, flashAfterBuild)
+	applyTargetDefaults(cmd, operatorConfig, &req)
+
 	// Add flash configuration if enabled
 	if flashAfterBuild {
 		if exportOCI == "" && !useInternalRegistry {
@@ -1386,7 +1433,6 @@ func runBuildDev(_ *cobra.Command, args []string) {
 		if jumpstarterClient == "" {
 			handleError(fmt.Errorf("--flash requires --client to specify Jumpstarter client config file"))
 		}
-		validateFlashTargetMapping(ctx, api, target)
 
 		clientConfigBytes, err := os.ReadFile(jumpstarterClient)
 		if err != nil {

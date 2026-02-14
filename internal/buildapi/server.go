@@ -2488,9 +2488,13 @@ func (a *APIServer) handleGetOperatorConfig(c *gin.Context) {
 	response := OperatorConfigResponse{}
 
 	if operatorConfig.Spec.Jumpstarter != nil && len(operatorConfig.Spec.Jumpstarter.TargetMappings) > 0 {
-		response.JumpstarterTargets = make(map[string]string)
+		response.JumpstarterTargets = make(map[string]TargetDefaults)
 		for target, mapping := range operatorConfig.Spec.Jumpstarter.TargetMappings {
-			response.JumpstarterTargets[target] = mapping.Selector
+			response.JumpstarterTargets[target] = TargetDefaults{
+				Selector:     mapping.Selector,
+				Architecture: mapping.Architecture,
+				ExtraArgs:    mapping.ExtraArgs,
+			}
 		}
 	}
 
