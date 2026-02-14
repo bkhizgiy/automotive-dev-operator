@@ -202,6 +202,11 @@ type OSBuildsConfig struct {
 	// +optional
 	ClusterRegistryRoute string `json:"clusterRegistryRoute,omitempty"`
 
+	// UploadTimeoutMinutes is the maximum time in minutes to wait for file uploads before failing the build
+	// Default: 30
+	// +optional
+	UploadTimeoutMinutes int32 `json:"uploadTimeoutMinutes,omitempty"`
+
 	// NodeSelector specifies node labels that build pods must match for scheduling
 	// These labels are added to the pod template used by Tekton PipelineRuns
 	// Example: {"dedicated": "builds", "disktype": "ssd"}

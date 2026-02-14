@@ -552,6 +552,12 @@ spec:
                           type: string
                       type: object
                     type: array
+                  uploadTimeoutMinutes:
+                    description: |-
+                      UploadTimeoutMinutes is the maximum time in minutes to wait for file uploads before failing the build
+                      Default: 30
+                    format: int32
+                    type: integer
                   useMemoryContainerStorage:
                     description: |-
                       UseMemoryContainerStorage determines whether to use memory-backed volumes for container storage

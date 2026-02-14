@@ -136,6 +136,29 @@ func (r *ImageBuildReconciler) handleUploadingState(
 		types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace},
 	)
 
+	// Fail the build if uploads have not completed within the configured timeout
+	uploadTimeout := 30 * time.Minute // default
+	operatorConfig := &automotivev1alpha1.OperatorConfig{}
+	if err := r.Get(ctx, types.NamespacedName{Name: "config", Namespace: OperatorNamespace}, operatorConfig); err == nil {
+		if operatorConfig.Spec.OSBuilds != nil && operatorConfig.Spec.OSBuilds.UploadTimeoutMinutes > 0 {
+			uploadTimeout = time.Duration(operatorConfig.Spec.OSBuilds.UploadTimeoutMinutes) * time.Minute
+		}
+	}
+	if time.Since(imageBuild.CreationTimestamp.Time) > uploadTimeout {
+		log.Info("Upload timed out", "age", time.Since(imageBuild.CreationTimestamp.Time), "timeout", uploadTimeout)
+		r.cleanupTransientSecrets(ctx, imageBuild, r.Log)
+		if err := r.shutdownUploadPod(ctx, imageBuild); err != nil {
+			log.Error(err, "Failed to shutdown upload pod during timeout cleanup")
+		}
+		timeoutMinutes := int(uploadTimeout.Minutes())
+		if err := r.updateStatus(ctx, imageBuild, phaseFailed,
+			fmt.Sprintf("Upload timed out: file uploads were not completed within %d minutes", timeoutMinutes)); err != nil {
+			log.Error(err, "Failed to update status to Failed")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
 	uploadsComplete := imageBuild.Annotations != nil &&
 		imageBuild.Annotations["automotive.sdv.cloud.redhat.com/uploads-complete"] == "true"
 
