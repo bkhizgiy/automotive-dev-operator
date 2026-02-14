@@ -688,13 +688,7 @@ Example:
 	_ = flashCmd.MarkFlagRequired("client")
 
 	// Add all commands
-<<<<<<< HEAD
-	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, showCmd, downloadCmd, flashCmd, logsCmd, loginCmd, catalog.NewCatalogCmd())
-=======
-	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, showCmd, downloadCmd, flashCmd, loginCmd, loginCmd, catalog.NewCatalogCmd(), sealed.NewSealedCmd())
-	// Add deprecated aliases for backwards compatibility
-	rootCmd.AddCommand(buildBootcAliasCmd, buildLegacyAliasCmd, buildTraditionalAliasCmd)
->>>>>>> 7d3f8f2 (Add seal image commands to caib CLI)
+	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, showCmd, downloadCmd, flashCmd, logsCmd, loginCmd, catalog.NewCatalogCmd(), sealed.NewSealedCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
