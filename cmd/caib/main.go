@@ -2189,7 +2189,21 @@ func runLogs(_ *cobra.Command, args []string) {
 	fmt.Printf("Build %s: %s - %s\n", name, st.Phase, st.Message)
 
 	if st.Phase == phaseCompleted || st.Phase == phaseFailed {
-		fmt.Printf("Build already finished (%s). Use 'caib show %s' for details.\n", st.Phase, name)
+		// Build is finished — attempt to fetch logs once (pods may have been GC'd)
+		logTransport := &http.Transport{
+			ResponseHeaderTimeout: 30 * time.Second,
+		}
+		if insecureSkipTLS {
+			logTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+		}
+		logClient := &http.Client{
+			Timeout:   2 * time.Minute,
+			Transport: logTransport,
+		}
+		streamState := &logStreamState{}
+		if err := tryLogStreaming(ctx, logClient, name, streamState); err != nil {
+			fmt.Printf("Could not retrieve logs (pods may have been cleaned up). Use 'caib show %s' for details.\n", name)
+		}
 		return
 	}
 

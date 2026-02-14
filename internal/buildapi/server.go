@@ -1489,6 +1489,11 @@ func listBuilds(c *gin.Context) {
 		return
 	}
 
+	// Sort by creation time, newest first
+	sort.Slice(list.Items, func(i, j int) bool {
+		return list.Items[j].CreationTimestamp.Before(&list.Items[i].CreationTimestamp)
+	})
+
 	// Resolve external route once for translating internal registry URLs
 	externalRoute, _ := getExternalRegistryRoute(ctx, k8sClient, namespace)
 
@@ -2728,6 +2733,11 @@ func (a *APIServer) listFlash(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to list flash TaskRuns: %v", err)})
 		return
 	}
+
+	// Sort by creation time, newest first
+	sort.Slice(taskRunList.Items, func(i, j int) bool {
+		return taskRunList.Items[j].CreationTimestamp.Before(&taskRunList.Items[i].CreationTimestamp)
+	})
 
 	resp := make([]FlashListItem, 0, len(taskRunList.Items))
 	for _, tr := range taskRunList.Items {
