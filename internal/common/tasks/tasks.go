@@ -80,6 +80,15 @@ func GeneratePushArtifactRegistryTask(namespace string) *tektonv1.Task {
 					Type:        tektonv1.ParamTypeString,
 					Description: "Filename of the artifact to push",
 				},
+				{
+					Name:        "builder-image",
+					Type:        tektonv1.ParamTypeString,
+					Description: "The builder image used for the build",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "",
+					},
+				},
 			},
 			Workspaces: []tektonv1.WorkspaceDeclaration{
 				{
@@ -262,6 +271,10 @@ func GenerateBuildAutomotiveImageTask(namespace string, buildConfig *BuildConfig
 				{
 					Name:        "artifact-filename",
 					Description: "artifact filename placed in the shared workspace",
+				},
+				{
+					Name:        "builder-image",
+					Description: "The builder image used for the build",
 				},
 			},
 			Workspaces: []tektonv1.WorkspaceDeclaration{
@@ -668,6 +681,11 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 					Value:       tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: "$(tasks.build-image.results.artifact-filename)"},
 				},
 				{
+					Name:        "builder-image",
+					Description: "The builder image reference used for the build",
+					Value:       tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: "$(tasks.build-image.results.builder-image)"},
+				},
+				{
 					Name:        "lease-id",
 					Description: "The Jumpstarter lease ID acquired during flash (empty if flash not enabled)",
 					Value:       tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: "$(tasks.flash-image.results.lease-id)"},
@@ -967,6 +985,13 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 							Value: tektonv1.ParamValue{
 								Type:      tektonv1.ParamTypeString,
 								StringVal: "$(tasks.build-image.results.artifact-filename)",
+							},
+						},
+						{
+							Name: "builder-image",
+							Value: tektonv1.ParamValue{
+								Type:      tektonv1.ParamTypeString,
+								StringVal: "$(tasks.build-image.results.builder-image)",
 							},
 						},
 					},

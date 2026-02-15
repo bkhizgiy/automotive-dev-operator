@@ -1354,9 +1354,9 @@ func taskRunFailureMessage(taskRun *tektonv1.TaskRun, fallback string) string {
 func extractProvenance(pipelineRun *tektonv1.PipelineRun, aibImage string) (aibImageUsed, builderImageUsed string) {
 	aibImageUsed = aibImage // Always record the AIB image that was requested
 
-	// Extract builder image from prepare-builder task result
+	// Extract builder image from pipeline result (written by build-image task)
 	for _, result := range pipelineRun.Status.Results {
-		if result.Name == "builder-image-ref" {
+		if result.Name == "builder-image" {
 			builderImageUsed = result.Value.StringVal
 			break
 		}
