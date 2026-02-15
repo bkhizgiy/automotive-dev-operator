@@ -45,7 +45,7 @@ import (
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/catalogimage"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/image"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/imagebuild"
-	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/imagesealed"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/imagereseal"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/operatorconfig"
 	// +kubebuilder:scaffold:imports
 )
@@ -245,13 +245,13 @@ func main() {
 			setupLog.Error(err, "unable to create controller", "controller", "CatalogImage")
 			os.Exit(1)
 		}
-		imageSealedReconciler := &imagesealed.Reconciler{
+		imageResealReconciler := &imagereseal.Reconciler{
 			Client: mgr.GetClient(),
 			Scheme: mgr.GetScheme(),
-			Log:    ctrl.Log.WithName("controllers").WithName("ImageSealed"),
+			Log:    ctrl.Log.WithName("controllers").WithName("ImageReseal"),
 		}
-		if err = imageSealedReconciler.SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "ImageSealed")
+		if err = imageResealReconciler.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "ImageReseal")
 			os.Exit(1)
 		}
 	}

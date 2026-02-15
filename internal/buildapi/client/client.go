@@ -356,6 +356,7 @@ func (c *Client) listJSON(ctx context.Context, endpoint, operation string, out a
 }
 
 // CreateSealed submits a new sealed operation to the API server.
+// The operation-specific endpoint is resolved from req.Operation.
 //
 //nolint:dupl // Sealed and Build methods are intentionally similar but work with different types
 func (c *Client) CreateSealed(ctx context.Context, req buildapi.SealedRequest) (*buildapi.SealedResponse, error) {
@@ -363,7 +364,7 @@ func (c *Client) CreateSealed(ctx context.Context, req buildapi.SealedRequest) (
 	if err != nil {
 		return nil, err
 	}
-	endpoint := c.resolve("/v1/sealed")
+	endpoint := c.resolve(buildapi.SealedOperationAPIPath(req.Operation))
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -383,7 +384,7 @@ func (c *Client) CreateSealed(ctx context.Context, req buildapi.SealedRequest) (
 	}()
 	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("create sealed failed: %s: %s", resp.Status, string(b))
+		return nil, fmt.Errorf("create reseal failed: %s: %s", resp.Status, string(b))
 	}
 	var out buildapi.SealedResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -393,8 +394,9 @@ func (c *Client) CreateSealed(ctx context.Context, req buildapi.SealedRequest) (
 }
 
 // GetSealed retrieves the status of a sealed job by name.
-func (c *Client) GetSealed(ctx context.Context, name string) (*buildapi.SealedResponse, error) {
-	endpoint := c.resolve(path.Join("/v1/sealed", url.PathEscape(name)))
+// The operation determines which API path to query (e.g. /v1/reseals/:name).
+func (c *Client) GetSealed(ctx context.Context, op buildapi.SealedOperation, name string) (*buildapi.SealedResponse, error) {
+	endpoint := c.resolve(path.Join(buildapi.SealedOperationAPIPath(op), url.PathEscape(name)))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -413,7 +415,7 @@ func (c *Client) GetSealed(ctx context.Context, name string) (*buildapi.SealedRe
 	}()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("get sealed failed: %s: %s", resp.Status, string(b))
+		return nil, fmt.Errorf("get reseal failed: %s: %s", resp.Status, string(b))
 	}
 	var out buildapi.SealedResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -423,8 +425,9 @@ func (c *Client) GetSealed(ctx context.Context, name string) (*buildapi.SealedRe
 }
 
 // ListSealed retrieves a list of sealed jobs from the API server.
-func (c *Client) ListSealed(ctx context.Context) ([]buildapi.SealedListItem, error) {
-	endpoint := c.resolve("/v1/sealed")
+// The operation determines which API path to query (e.g. /v1/reseals).
+func (c *Client) ListSealed(ctx context.Context, op buildapi.SealedOperation) ([]buildapi.SealedListItem, error) {
+	endpoint := c.resolve(buildapi.SealedOperationAPIPath(op))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -443,7 +446,7 @@ func (c *Client) ListSealed(ctx context.Context) ([]buildapi.SealedListItem, err
 	}()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("list sealed failed: %s: %s", resp.Status, string(b))
+		return nil, fmt.Errorf("list reseal failed: %s: %s", resp.Status, string(b))
 	}
 	var out []buildapi.SealedListItem
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {

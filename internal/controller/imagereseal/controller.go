@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package imagesealed provides the controller for ImageSealed resources.
-package imagesealed
+// Package imagereseal provides the controller for ImageReseal resources.
+package imagereseal
 
 import (
 	"context"
@@ -44,23 +44,23 @@ const (
 	phaseFailed    = "Failed"
 )
 
-// Reconciler reconciles an ImageSealed object
+// Reconciler reconciles an ImageReseal object
 type Reconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	Log    logr.Logger
 }
 
-// +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=imagesealeds,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=imagesealeds/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=imagesealeds/finalizers,verbs=update
+// +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=imagereseals,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=imagereseals/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=imagereseals/finalizers,verbs=update
 // +kubebuilder:rbac:groups=tekton.dev,resources=tasks;taskruns;pipelineruns,verbs=get;list;watch;create;update;patch;delete
 
-// Reconcile handles reconciliation of ImageSealed resources.
+// Reconcile handles reconciliation of ImageReseal resources.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	sealed := &automotivev1alpha1.ImageSealed{}
+	sealed := &automotivev1alpha1.ImageReseal{}
 	if err := r.Get(ctx, req.NamespacedName, sealed); err != nil {
 		if k8serrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
@@ -81,7 +81,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 }
 
-func (r *Reconciler) handlePending(ctx context.Context, sealed *automotivev1alpha1.ImageSealed) (ctrl.Result, error) {
+func (r *Reconciler) handlePending(ctx context.Context, sealed *automotivev1alpha1.ImageReseal) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	stages := sealed.Spec.GetStages()
 	if len(stages) == 0 {
@@ -90,10 +90,10 @@ func (r *Reconciler) handlePending(ctx context.Context, sealed *automotivev1alph
 	if err := validateStages(stages); err != nil {
 		return r.updateStatus(ctx, sealed, phaseFailed, err.Error())
 	}
-	logger.Info("Starting sealed operation", "name", sealed.Name, "stages", stages)
+	logger.Info("Starting reseal operation", "name", sealed.Name, "stages", stages)
 
 	if err := r.ensureSealedTasks(ctx, sealed.Namespace); err != nil {
-		return r.updateStatus(ctx, sealed, phaseFailed, fmt.Sprintf("Failed to ensure sealed tasks: %v", err))
+		return r.updateStatus(ctx, sealed, phaseFailed, fmt.Sprintf("Failed to ensure reseal tasks: %v", err))
 	}
 
 	if len(stages) == 1 {
@@ -112,14 +112,14 @@ func (r *Reconciler) handlePending(ctx context.Context, sealed *automotivev1alph
 
 	sealed.Status.StartTime = &metav1.Time{Time: time.Now()}
 	sealed.Status.Phase = phaseRunning
-	sealed.Status.Message = "Sealed operation started"
+	sealed.Status.Message = "Reseal operation started"
 	if err := r.Status().Update(ctx, sealed); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 }
 
-func (r *Reconciler) handleRunning(ctx context.Context, sealed *automotivev1alpha1.ImageSealed) (ctrl.Result, error) {
+func (r *Reconciler) handleRunning(ctx context.Context, sealed *automotivev1alpha1.ImageReseal) (ctrl.Result, error) {
 	if sealed.Status.TaskRunName != "" {
 		return r.handleRunningTaskRun(ctx, sealed)
 	}
@@ -129,7 +129,7 @@ func (r *Reconciler) handleRunning(ctx context.Context, sealed *automotivev1alph
 	return r.updateStatus(ctx, sealed, phaseFailed, "neither TaskRunName nor PipelineRunName is set")
 }
 
-func (r *Reconciler) handleRunningTaskRun(ctx context.Context, sealed *automotivev1alpha1.ImageSealed) (ctrl.Result, error) {
+func (r *Reconciler) handleRunningTaskRun(ctx context.Context, sealed *automotivev1alpha1.ImageReseal) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	tr := &tektonv1.TaskRun{}
 	if err := r.Get(ctx, client.ObjectKey{Name: sealed.Status.TaskRunName, Namespace: sealed.Namespace}, tr); err != nil {
@@ -143,10 +143,10 @@ func (r *Reconciler) handleRunningTaskRun(ctx context.Context, sealed *automotiv
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 	phase := phaseFailed
-	message := "Sealed operation failed"
+	message := "Operation failed"
 	if tr.IsSuccessful() {
 		phase = phaseCompleted
-		message = "Sealed operation completed successfully"
+		message = "Operation completed successfully"
 		sealed.Status.OutputRef = sealed.Spec.OutputRef
 	}
 	r.cleanupTransientSecrets(ctx, sealed, logger)
@@ -154,7 +154,7 @@ func (r *Reconciler) handleRunningTaskRun(ctx context.Context, sealed *automotiv
 	return r.updateStatus(ctx, sealed, phase, message)
 }
 
-func (r *Reconciler) handleRunningPipelineRun(ctx context.Context, sealed *automotivev1alpha1.ImageSealed) (ctrl.Result, error) {
+func (r *Reconciler) handleRunningPipelineRun(ctx context.Context, sealed *automotivev1alpha1.ImageReseal) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	pr := &tektonv1.PipelineRun{}
 	if err := r.Get(ctx, client.ObjectKey{Name: sealed.Status.PipelineRunName, Namespace: sealed.Namespace}, pr); err != nil {
@@ -168,10 +168,10 @@ func (r *Reconciler) handleRunningPipelineRun(ctx context.Context, sealed *autom
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 	phase := phaseFailed
-	message := "Sealed pipeline failed"
+	message := "Pipeline failed"
 	if isPipelineRunSuccessful(pr) {
 		phase = phaseCompleted
-		message = "Sealed pipeline completed successfully"
+		message = "Pipeline completed successfully"
 		sealed.Status.OutputRef = sealed.Spec.OutputRef
 	}
 	r.cleanupTransientSecrets(ctx, sealed, logger)
@@ -211,7 +211,7 @@ func (r *Reconciler) ensureSealedTask(ctx context.Context, task *tektonv1.Task) 
 	return r.Update(ctx, existing)
 }
 
-func (r *Reconciler) createSealedTaskRun(ctx context.Context, sealed *automotivev1alpha1.ImageSealed, operation string) (*tektonv1.TaskRun, error) {
+func (r *Reconciler) createSealedTaskRun(ctx context.Context, sealed *automotivev1alpha1.ImageReseal, operation string) (*tektonv1.TaskRun, error) {
 	taskRunName := sealed.Name
 	existingTR := &tektonv1.TaskRun{}
 	if err := r.Get(ctx, client.ObjectKey{Name: taskRunName, Namespace: sealed.Namespace}, existingTR); err == nil {
@@ -261,12 +261,12 @@ func (r *Reconciler) createSealedTaskRun(ctx context.Context, sealed *automotive
 			Name:      taskRunName,
 			Namespace: sealed.Namespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/managed-by":                "imagesealed-controller",
+				"app.kubernetes.io/managed-by":                "imagereseal-controller",
 				tasks.SealedTaskRunLabel:                      sealed.Name,
-				"automotive.sdv.cloud.redhat.com/imagesealed": sealed.Name,
+				"automotive.sdv.cloud.redhat.com/imagereseal": sealed.Name,
 			},
 			OwnerReferences: []metav1.OwnerReference{
-				{APIVersion: automotivev1alpha1.GroupVersion.String(), Kind: "ImageSealed", Name: sealed.Name, UID: sealed.UID, Controller: ptr(true)},
+				{APIVersion: automotivev1alpha1.GroupVersion.String(), Kind: "ImageReseal", Name: sealed.Name, UID: sealed.UID, Controller: ptr(true)},
 			},
 		},
 		Spec: tektonv1.TaskRunSpec{
@@ -281,7 +281,7 @@ func (r *Reconciler) createSealedTaskRun(ctx context.Context, sealed *automotive
 	return tr, nil
 }
 
-func (r *Reconciler) createSealedPipelineRun(ctx context.Context, sealed *automotivev1alpha1.ImageSealed, stages []string) (*tektonv1.PipelineRun, error) {
+func (r *Reconciler) createSealedPipelineRun(ctx context.Context, sealed *automotivev1alpha1.ImageReseal, stages []string) (*tektonv1.PipelineRun, error) {
 	prName := sealed.Name
 	existing := &tektonv1.PipelineRun{}
 	if err := r.Get(ctx, client.ObjectKey{Name: prName, Namespace: sealed.Namespace}, existing); err == nil {
@@ -371,11 +371,11 @@ func (r *Reconciler) createSealedPipelineRun(ctx context.Context, sealed *automo
 			Name:      prName,
 			Namespace: sealed.Namespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/managed-by":                "imagesealed-controller",
-				"automotive.sdv.cloud.redhat.com/imagesealed": sealed.Name,
+				"app.kubernetes.io/managed-by":                "imagereseal-controller",
+				"automotive.sdv.cloud.redhat.com/imagereseal": sealed.Name,
 			},
 			OwnerReferences: []metav1.OwnerReference{
-				{APIVersion: automotivev1alpha1.GroupVersion.String(), Kind: "ImageSealed", Name: sealed.Name, UID: sealed.UID, Controller: ptr(true)},
+				{APIVersion: automotivev1alpha1.GroupVersion.String(), Kind: "ImageReseal", Name: sealed.Name, UID: sealed.UID, Controller: ptr(true)},
 			},
 		},
 		Spec: tektonv1.PipelineRunSpec{
@@ -400,7 +400,7 @@ func validateStages(stages []string) error {
 	}
 	for _, s := range stages {
 		if !valid[s] {
-			return fmt.Errorf("invalid sealed operation %q; must be one of %v", s, tasks.SealedOperationNames)
+			return fmt.Errorf("invalid operation %q; must be one of %v", s, tasks.SealedOperationNames)
 		}
 	}
 	return nil
@@ -415,7 +415,7 @@ func isPipelineRunSuccessful(pr *tektonv1.PipelineRun) bool {
 	return false
 }
 
-func (r *Reconciler) updateStatus(ctx context.Context, sealed *automotivev1alpha1.ImageSealed, phase, message string) (ctrl.Result, error) {
+func (r *Reconciler) updateStatus(ctx context.Context, sealed *automotivev1alpha1.ImageReseal, phase, message string) (ctrl.Result, error) {
 	sealed.Status.Phase = phase
 	sealed.Status.Message = message
 	if err := r.Status().Update(ctx, sealed); err != nil {
@@ -428,7 +428,7 @@ func (r *Reconciler) updateStatus(ctx context.Context, sealed *automotivev1alpha
 // and should be cleaned up after the sealed operation completes.
 const transientLabel = "automotive.sdv.cloud.redhat.com/transient"
 
-func (r *Reconciler) cleanupTransientSecrets(ctx context.Context, sealed *automotivev1alpha1.ImageSealed, log logr.Logger) {
+func (r *Reconciler) cleanupTransientSecrets(ctx context.Context, sealed *automotivev1alpha1.ImageReseal, log logr.Logger) {
 	for _, ref := range []struct {
 		name       string
 		secretType string
@@ -494,7 +494,7 @@ func ptr(b bool) *bool {
 // SetupWithManager sets up the controller with the Manager.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&automotivev1alpha1.ImageSealed{}).
+		For(&automotivev1alpha1.ImageReseal{}).
 		Owns(&tektonv1.TaskRun{}).
 		Owns(&tektonv1.PipelineRun{}).
 		Complete(r)

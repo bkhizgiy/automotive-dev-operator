@@ -1396,8 +1396,8 @@ func GenerateFlashTask(namespace string) *tektonv1.Task {
 	}
 }
 
-// SealedTaskRunLabel is the label value used to identify sealed TaskRuns in the API
-const SealedTaskRunLabel = "automotive.sdv.cloud.redhat.com/sealed-taskrun"
+// SealedTaskRunLabel is the label used to identify reseal-operation TaskRuns in the API.
+const SealedTaskRunLabel = "automotive.sdv.cloud.redhat.com/reseal-taskrun"
 
 // defaultSealedMemoryVolumeSize is the default size limit for memory-backed volumes in sealed tasks.
 var defaultSealedMemoryVolumeSize = resource.MustParse("4Gi")
@@ -1405,9 +1405,9 @@ var defaultSealedMemoryVolumeSize = resource.MustParse("4Gi")
 // SealedOperationNames is the list of sealed operation names (used for task names and validation).
 var SealedOperationNames = []string{"prepare-reseal", "reseal", "extract-for-signing", "inject-signed"}
 
-// SealedTaskName returns the Tekton Task name for a sealed operation (e.g. "prepare-reseal" -> "sealed-prepare-reseal").
+// SealedTaskName returns the Tekton Task name for a reseal operation (e.g. "prepare-reseal" -> "prepare-reseal").
 func SealedTaskName(operation string) string {
-	return "sealed-" + operation
+	return operation
 }
 
 // sealedTaskSpec returns the common TaskSpec for all sealed tasks (shared params, workspaces, step script).
@@ -1452,8 +1452,8 @@ func sealedTaskSpec(operation string) tektonv1.TaskSpec {
 		},
 		Results: []tektonv1.TaskResult{
 			{
-				Name:        "sealed-container",
-				Description: "Reference to the sealed container image (for prepare-reseal/reseal)",
+				Name:        "output-container",
+				Description: "Reference to the output container image",
 			},
 		},
 		Workspaces: []tektonv1.WorkspaceDeclaration{
@@ -1472,7 +1472,7 @@ func sealedTaskSpec(operation string) tektonv1.TaskSpec {
 		},
 		Steps: []tektonv1.Step{
 			{
-				Name:  "sealed-op",
+				Name:  "run-op",
 				Image: "$(params.aib-image)",
 				Env: []corev1.EnvVar{
 					{Name: "OPERATION", Value: operation},
@@ -1483,7 +1483,7 @@ func sealedTaskSpec(operation string) tektonv1.TaskSpec {
 					{Name: "REGISTRY_AUTH_PATH", Value: "/workspace/registry-auth"},
 					{Name: "BUILDER_IMAGE", Value: "$(params.builder-image)"},
 					{Name: "ARCHITECTURE", Value: "$(params.architecture)"},
-					{Name: "RESULT_PATH", Value: "$(results.sealed-container.path)"},
+					{Name: "RESULT_PATH", Value: "$(results.output-container.path)"},
 				},
 				Script:  SealedOperationScript,
 				Timeout: &metav1.Duration{Duration: 2 * time.Hour},

@@ -33,7 +33,6 @@ import (
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/auth"
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/catalog"
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/config"
-	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/sealed"
 	buildapitypes "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi"
 	buildapiclient "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi/client"
 	"github.com/fatih/color"
@@ -43,14 +42,17 @@ import (
 )
 
 const (
-	archAMD64      = "amd64"
-	archARM64      = "arm64"
-	phaseCompleted = "Completed"
-	phaseFailed    = "Failed"
-	phaseFlashing  = "Flashing"
-	errPrefixBuild = "build"
-	errPrefixFlash = "flash"
-	errPrefixPush  = "push"
+	archAMD64       = "amd64"
+	archARM64       = "arm64"
+	phaseCompleted  = "Completed"
+	phaseFailed     = "Failed"
+	phaseFlashing   = "Flashing"
+	errPrefixBuild  = "build"
+	errPrefixFlash  = "flash"
+	errPrefixPush   = "push"
+	phasePending    = "Pending"
+	phaseRunning    = "Running"
+	defaultRegistry = "docker.io"
 )
 
 var (
@@ -114,6 +116,14 @@ var (
 
 	// TLS options
 	insecureSkipTLS bool
+
+	// Sealed operation options
+	sealedBuilderImage      string
+	sealedArchitecture      string
+	sealedKeySecret         string
+	sealedKeyPasswordSecret string
+	sealedKeyFile           string
+	sealedKeyPassword       string
 )
 
 // envBool parses a boolean from environment variable
@@ -345,7 +355,7 @@ func extractRegistryCredentials(primaryRef, secondaryRef string) (string, string
 	if len(parts) > 1 && (strings.Contains(parts[0], ".") || strings.Contains(parts[0], ":") || parts[0] == "localhost") {
 		return parts[0], username, password
 	}
-	return "docker.io", username, password
+	return defaultRegistry, username, password
 }
 
 // validateRegistryCredentials validates registry credentials and returns an error for partial credentials
@@ -687,8 +697,123 @@ Example:
 	flashCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", true, "wait for flash to complete")
 	_ = flashCmd.MarkFlagRequired("client")
 
+	// Sealed operations - top-level commands matching AIB CLI structure
+
+	prepareResealCmd := &cobra.Command{
+		Use:   "prepare-reseal <source-container> <output-container>",
+		Short: "Prepare a bootc container image for resealing",
+		Long: `Prepare a bootc container image for resealing. With --server, runs on
+the cluster via the Build API; otherwise runs locally using the AIB container.
+
+Examples:
+  # Run on cluster
+  caib prepare-reseal quay.io/org/my-os:latest quay.io/org/my-os:prepared \
+    --server https://build-api.example.com -w -f
+
+  # Run locally
+  caib prepare-reseal ./input.qcow2 ./output.qcow2 --workspace ./work`,
+		Args: cobra.ExactArgs(2),
+		Run:  runPrepareReseal,
+	}
+
+	resealCmd := &cobra.Command{
+		Use:   "reseal <source-container> <output-container>",
+		Short: "Reseal a prepared bootc container image with a new key",
+		Long: `Reseal a bootc container image that was prepared with prepare-reseal.
+With --server, runs on the cluster via the Build API; otherwise runs locally.
+
+If no seal key is provided, an ephemeral key is generated for one-time use.
+
+Examples:
+  # Reseal with a key file (auto-uploaded to cluster)
+  caib reseal quay.io/org/my-os:prepared quay.io/org/my-os:resealed \
+    --server https://build-api.example.com --key /path/to/seal-key.pem -w -f
+
+  # Reseal with an existing cluster secret
+  caib reseal quay.io/org/my-os:prepared quay.io/org/my-os:resealed \
+    --server https://build-api.example.com --key-secret my-seal-key -w -f
+
+  # Reseal without a key (ephemeral key)
+  caib reseal quay.io/org/my-os:prepared quay.io/org/my-os:resealed \
+    --server https://build-api.example.com -w -f`,
+		Args: cobra.ExactArgs(2),
+		Run:  runReseal,
+	}
+
+	extractForSigningCmd := &cobra.Command{
+		Use:   "extract-for-signing <source-container> <output-artifact>",
+		Short: "Extract components from a container image for external signing",
+		Long: `Extract components that need to be signed (e.g. for secure boot) from a
+container image. Sign the extracted contents externally, then use inject-signed.
+
+With --server, source is a container registry ref and output is an OCI artifact ref.
+Locally, paths are relative to --workspace.
+
+Examples:
+  # Run on cluster
+  caib extract-for-signing quay.io/org/my-os:prepared \
+    quay.io/org/my-os/signing-artifacts:latest \
+    --server https://build-api.example.com -w -f
+
+  # Run locally
+  caib extract-for-signing ./input.qcow2 ./signing-output/ --workspace ./work`,
+		Args: cobra.ExactArgs(2),
+		Run:  runExtractForSigning,
+	}
+
+	injectSignedCmd := &cobra.Command{
+		Use:   "inject-signed <source-container> <signed-artifact> <output-container>",
+		Short: "Inject signed components back into a container image",
+		Long: `Inject externally signed components (from extract-for-signing) back into the
+container image. Optionally reseals in the same step with --key.
+
+With --server, source/output are container registry refs and signed-artifact is an OCI ref.
+Locally, paths are relative to --workspace.
+
+Examples:
+  # Inject signed files on cluster
+  caib inject-signed quay.io/org/my-os:prepared \
+    quay.io/org/my-os/signing-artifacts:latest \
+    quay.io/org/my-os:signed \
+    --server https://build-api.example.com -w -f
+
+  # Inject and reseal in one step
+  caib inject-signed quay.io/org/my-os:prepared \
+    quay.io/org/my-os/signing-artifacts:latest \
+    quay.io/org/my-os:signed-resealed \
+    --server https://build-api.example.com --key /path/to/seal-key.pem -w -f`,
+		Args: cobra.ExactArgs(3),
+		Run:  runInjectSigned,
+	}
+
+	// Sealed operation shared flags helper
+	addSealedFlags := func(cmd *cobra.Command) {
+		cmd.Flags().StringVar(&serverURL, "server", config.DefaultServer(), "Build API server URL")
+		cmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication")
+		cmd.Flags().StringVar(
+			&automotiveImageBuilder, "aib-image",
+			"quay.io/centos-sig-automotive/automotive-image-builder:latest", "AIB container image",
+		)
+		cmd.Flags().StringVar(&sealedBuilderImage, "builder-image", "", "Builder container image (overrides --arch default)")
+		cmd.Flags().StringVar(&sealedArchitecture, "arch", "", "Target architecture for default builder image (amd64, arm64); auto-detected if not set")
+		cmd.Flags().StringArrayVar(&aibExtraArgs, "extra-args", nil, "Extra arguments to pass to AIB (repeatable)")
+		cmd.Flags().BoolVarP(&waitForBuild, "wait", "w", false, "Wait for completion")
+		cmd.Flags().BoolVarP(&followLogs, "follow", "f", false, "Stream task logs")
+		cmd.Flags().StringVar(&sealedKeySecret, "key-secret", "", "Name of existing cluster secret containing sealing key (data key 'private-key')")
+		cmd.Flags().StringVar(&sealedKeyPasswordSecret, "key-password-secret", "", "Name of existing cluster secret containing key password (data key 'password')")
+		cmd.Flags().StringVar(&sealedKeyFile, "key", "", "Path to local PEM key file (uploaded to cluster automatically)")
+		cmd.Flags().StringVar(&sealedKeyPassword, "passwd", "", "Password for encrypted key file (used with --key)")
+		cmd.Flags().IntVar(&timeout, "timeout", 120, "Timeout in minutes")
+	}
+	addSealedFlags(prepareResealCmd)
+	addSealedFlags(resealCmd)
+	addSealedFlags(extractForSigningCmd)
+	addSealedFlags(injectSignedCmd)
+
 	// Add all commands
-	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, showCmd, downloadCmd, flashCmd, logsCmd, loginCmd, catalog.NewCatalogCmd(), sealed.NewSealedCmd())
+	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, showCmd, downloadCmd, flashCmd, logsCmd, loginCmd,
+		prepareResealCmd, resealCmd, extractForSigningCmd, injectSignedCmd,
+		catalog.NewCatalogCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
@@ -1749,7 +1874,7 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 				continue
 			}
 
-			if st.Phase == "Pending" {
+			if st.Phase == phasePending {
 				streamState.reset()
 				if userFollowRequested && !pendingWarningShown {
 					fmt.Println("Waiting for build to start before streaming logs...")
@@ -1802,7 +1927,7 @@ func (s *logStreamState) reset() {
 }
 
 func isBuildActive(phase string) bool {
-	return phase == "Building" || phase == "Running" || phase == "Uploading" || phase == phaseFlashing
+	return phase == "Building" || phase == phaseRunning || phase == "Uploading" || phase == phaseFlashing
 }
 
 // progressBar renders build progress. In a TTY it uses \r overwrite with a
@@ -2765,7 +2890,7 @@ func waitForFlashCompletion(ctx context.Context, api *buildapiclient.Client, nam
 				continue
 			}
 
-			if st.Phase == "Pending" {
+			if st.Phase == phasePending {
 				streamState.reset()
 				if !pendingWarningShown {
 					fmt.Println("Waiting for flash to start before streaming logs...")
@@ -2774,7 +2899,7 @@ func waitForFlashCompletion(ctx context.Context, api *buildapiclient.Client, nam
 				continue
 			}
 
-			if st.Phase == "Running" {
+			if st.Phase == phaseRunning {
 				if streamState.retryCount == 0 {
 					fmt.Println("Flash is running. Attempting to stream logs...")
 					pendingWarningShown = false
@@ -2815,4 +2940,377 @@ func tryFlashLogStreaming(ctx context.Context, logClient *http.Client, name stri
 	}
 
 	return handleLogStreamError(resp, state)
+}
+
+// ── Sealed operations ──
+
+// sealedContainerTool returns the container tool to use for local AIB execution
+func sealedContainerTool() string {
+	if t := os.Getenv("CONTAINER_TOOL"); t != "" {
+		return t
+	}
+	return "podman"
+}
+
+// sealedRunAIB runs the AIB container with the given subcommand and args
+func sealedRunAIB(subcommand, workDir string, args ...string) error {
+	tool := sealedContainerTool()
+	if _, err := exec.LookPath(tool); err != nil {
+		return fmt.Errorf("%s not found: %w (set CONTAINER_TOOL for docker)", tool, err)
+	}
+	absWork, err := filepath.Abs(workDir)
+	if err != nil {
+		return fmt.Errorf("resolve work dir: %w", err)
+	}
+	if err := os.MkdirAll(absWork, 0755); err != nil {
+		return fmt.Errorf("create work dir: %w", err)
+	}
+	aibArgs := []string{"run", "--rm", "-v", absWork + ":/workspace:rw", "--privileged",
+		automotiveImageBuilder, "aib", "--verbose", subcommand}
+	aibArgs = append(aibArgs, aibExtraArgs...)
+	aibArgs = append(aibArgs, args...)
+	cmd := exec.Command(tool, aibArgs...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("aib %s: %w", subcommand, err)
+	}
+	return nil
+}
+
+func sealedToContainerPath(rel string) string {
+	return "/workspace/" + strings.ReplaceAll(rel, "\\", "/")
+}
+
+func sealedEnsurePathInWorkspace(workDir, path string) (string, error) {
+	absWork, err := filepath.Abs(workDir)
+	if err != nil {
+		return "", err
+	}
+	if filepath.IsAbs(path) {
+		absPath := filepath.Clean(path)
+		rel, relErr := filepath.Rel(absWork, absPath)
+		if relErr != nil || strings.HasPrefix(rel, "..") {
+			return "", fmt.Errorf("path must be under work dir: %s", path)
+		}
+		return absPath, nil
+	}
+	return filepath.Join(absWork, path), nil
+}
+
+func sealedRunLocalTwoArgOp(subcommand, workDir, input, output string) error {
+	if workDir == "" {
+		workDir = "."
+	}
+	absWork, err := filepath.Abs(workDir)
+	if err != nil {
+		return fmt.Errorf("workspace: %w", err)
+	}
+	inPath, err := sealedEnsurePathInWorkspace(absWork, input)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(inPath); err != nil {
+		return fmt.Errorf("input disk: %w", err)
+	}
+	outPath, err := sealedEnsurePathInWorkspace(absWork, output)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
+		return fmt.Errorf("create output dir: %w", err)
+	}
+	relIn, err := filepath.Rel(absWork, inPath)
+	if err != nil {
+		return fmt.Errorf("resolve relative input path: %w", err)
+	}
+	relOut, err := filepath.Rel(absWork, outPath)
+	if err != nil {
+		return fmt.Errorf("resolve relative output path: %w", err)
+	}
+	return sealedRunAIB(subcommand, absWork, sealedToContainerPath(relIn), sealedToContainerPath(relOut))
+}
+
+func sealedRegistryCredentials(refs ...string) (registryURL, username, password string) {
+	username = strings.TrimSpace(os.Getenv("REGISTRY_USERNAME"))
+	password = strings.TrimSpace(os.Getenv("REGISTRY_PASSWORD"))
+	if username == "" || password == "" {
+		return "", "", ""
+	}
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			continue
+		}
+		parts := strings.SplitN(ref, "/", 2)
+		if len(parts) < 2 {
+			return defaultRegistry, username, password
+		}
+		first := parts[0]
+		if strings.Contains(first, ".") || strings.Contains(first, ":") || first == "localhost" {
+			return first, username, password
+		}
+		return defaultRegistry, username, password
+	}
+	return "", "", ""
+}
+
+// sealedBuildRequest builds a SealedRequest from CLI flags
+func sealedBuildRequest(op buildapitypes.SealedOperation, inputRef, outputRef, signedRef string) (buildapitypes.SealedRequest, error) {
+	req := buildapitypes.SealedRequest{
+		Operation:    op,
+		InputRef:     inputRef,
+		OutputRef:    outputRef,
+		SignedRef:    signedRef,
+		AIBImage:     automotiveImageBuilder,
+		BuilderImage: sealedBuilderImage,
+		Architecture: sealedArchitecture,
+		AIBExtraArgs: aibExtraArgs,
+	}
+	if regURL, user, pass := sealedRegistryCredentials(inputRef, outputRef, signedRef); regURL != "" {
+		req.RegistryCredentials = &buildapitypes.RegistryCredentials{
+			Enabled:     true,
+			AuthType:    "username-password",
+			RegistryURL: regURL,
+			Username:    user,
+			Password:    pass,
+		}
+	}
+	if strings.TrimSpace(sealedKeyFile) != "" {
+		keyData, err := os.ReadFile(strings.TrimSpace(sealedKeyFile))
+		if err != nil {
+			return req, fmt.Errorf("failed to read key file %s: %w", sealedKeyFile, err)
+		}
+		req.KeyContent = string(keyData)
+		if strings.TrimSpace(sealedKeyPassword) != "" {
+			req.KeyPassword = strings.TrimSpace(sealedKeyPassword)
+		}
+	} else if strings.TrimSpace(sealedKeySecret) != "" {
+		req.KeySecretRef = strings.TrimSpace(sealedKeySecret)
+		if strings.TrimSpace(sealedKeyPasswordSecret) != "" {
+			req.KeyPasswordSecretRef = strings.TrimSpace(sealedKeyPasswordSecret)
+		}
+	}
+	return req, nil
+}
+
+// sealedRunViaAPI creates a sealed job via the Build API and optionally waits/streams logs
+func sealedRunViaAPI(op buildapitypes.SealedOperation, inputRef, outputRef, signedRef string) {
+	api, err := createBuildAPIClient(serverURL, &authToken)
+	if err != nil {
+		handleError(err)
+	}
+	ctx := context.Background()
+	req, err := sealedBuildRequest(op, inputRef, outputRef, signedRef)
+	if err != nil {
+		handleError(err)
+	}
+	resp, err := api.CreateSealed(ctx, req)
+	if err != nil {
+		handleError(err)
+	}
+	fmt.Printf("Job %s accepted: %s - %s\n", resp.Name, resp.Phase, resp.Message)
+	if waitForBuild || followLogs {
+		sealedWaitForCompletion(ctx, api, op, resp.Name)
+	}
+}
+
+const maxSealedLogRetries = 24
+
+func sealedWaitForCompletion(ctx context.Context, api *buildapiclient.Client, op buildapitypes.SealedOperation, name string) {
+	fmt.Println("Waiting for job to complete...")
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	sealedTimeout := time.Duration(timeout) * time.Minute
+	deadline := time.Now().Add(sealedTimeout)
+	var lastPhase string
+	logRetries := 0
+	logStreaming := false
+	logRetryWarningShown := false
+	for time.Now().Before(deadline) {
+		st, err := api.GetSealed(ctx, op, name)
+		if err != nil {
+			fmt.Printf("status check failed: %v\n", err)
+			<-ticker.C
+			continue
+		}
+		if st.Phase != lastPhase {
+			fmt.Printf("status: %s - %s\n", st.Phase, st.Message)
+			lastPhase = st.Phase
+		}
+		if st.Phase == phaseCompleted {
+			fmt.Println("Job completed successfully.")
+			if st.OutputRef != "" {
+				fmt.Printf("Output: %s\n", st.OutputRef)
+			}
+			return
+		}
+		if st.Phase == phaseFailed {
+			fmt.Printf("Error: job failed: %s\n", st.Message)
+			os.Exit(1)
+		}
+		if followLogs && !logStreaming && (st.Phase == phaseRunning || st.Phase == phasePending) {
+			if logRetries < maxSealedLogRetries {
+				sErr := sealedStreamLogs(op, name)
+				if sErr != nil {
+					logRetries++
+					if !logRetryWarningShown {
+						fmt.Printf("Waiting for logs... (attempt %d/%d)\n", logRetries, maxSealedLogRetries)
+						logRetryWarningShown = true
+					}
+				} else {
+					logStreaming = true
+				}
+			} else if !logRetryWarningShown {
+				fmt.Printf("Log streaming failed after %d attempts. Falling back to status updates.\n", maxSealedLogRetries)
+				logRetryWarningShown = true
+				followLogs = false
+			}
+		}
+		<-ticker.C
+	}
+	fmt.Printf("Error: timed out after %v\n", sealedTimeout)
+	os.Exit(1)
+}
+
+func sealedStreamLogs(op buildapitypes.SealedOperation, name string) error {
+	logURL := strings.TrimRight(serverURL, "/") + buildapitypes.SealedOperationAPIPath(op) + "/" + url.PathEscape(name) + "/logs?follow=1"
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, logURL, nil)
+	if t := strings.TrimSpace(authToken); t != "" {
+		req.Header.Set("Authorization", "Bearer "+t)
+	}
+	httpClient := &http.Client{Timeout: 10 * time.Minute}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("log stream failed: %w", err)
+	}
+	defer func() {
+		if cErr := resp.Body.Close(); cErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", cErr)
+		}
+	}()
+	if resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusGatewayTimeout {
+		return fmt.Errorf("log endpoint not ready (HTTP %d)", resp.StatusCode)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("log stream error: HTTP %d", resp.StatusCode)
+	}
+	fmt.Println("Streaming logs...")
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		fmt.Println(scanner.Text())
+	}
+	_ = scanner.Err()
+	return nil
+}
+
+// ── Sealed command runners ──
+
+func runPrepareReseal(_ *cobra.Command, args []string) {
+	if strings.TrimSpace(serverURL) != "" {
+		sealedRunViaAPI(buildapitypes.SealedPrepareReseal, args[0], args[1], "")
+		return
+	}
+	if err := sealedRunLocalTwoArgOp("prepare-reseal", ".", args[0], args[1]); err != nil {
+		handleError(err)
+	}
+}
+
+func runReseal(_ *cobra.Command, args []string) {
+	if strings.TrimSpace(serverURL) != "" {
+		sealedRunViaAPI(buildapitypes.SealedReseal, args[0], args[1], "")
+		return
+	}
+	if err := sealedRunLocalTwoArgOp("reseal", ".", args[0], args[1]); err != nil {
+		handleError(err)
+	}
+}
+
+func runExtractForSigning(_ *cobra.Command, args []string) {
+	if strings.TrimSpace(serverURL) != "" {
+		sealedRunViaAPI(buildapitypes.SealedExtractForSigning, args[0], args[1], "")
+		return
+	}
+	workDir := "."
+	absWork, err := filepath.Abs(workDir)
+	if err != nil {
+		handleError(fmt.Errorf("workspace: %w", err))
+	}
+	inPath, err := sealedEnsurePathInWorkspace(absWork, args[0])
+	if err != nil {
+		handleError(err)
+	}
+	if _, err := os.Stat(inPath); err != nil {
+		handleError(fmt.Errorf("input disk: %w", err))
+	}
+	outPath, err := sealedEnsurePathInWorkspace(absWork, args[1])
+	if err != nil {
+		handleError(err)
+	}
+	if err := os.MkdirAll(outPath, 0755); err != nil {
+		handleError(fmt.Errorf("create output dir: %w", err))
+	}
+	relIn, err := filepath.Rel(absWork, inPath)
+	if err != nil {
+		handleError(fmt.Errorf("resolve relative input path: %w", err))
+	}
+	relOut, err := filepath.Rel(absWork, outPath)
+	if err != nil {
+		handleError(fmt.Errorf("resolve relative output path: %w", err))
+	}
+	if err := sealedRunAIB("extract-for-signing", absWork, sealedToContainerPath(relIn), sealedToContainerPath(relOut)); err != nil {
+		handleError(err)
+	}
+}
+
+func runInjectSigned(_ *cobra.Command, args []string) {
+	if strings.TrimSpace(serverURL) != "" {
+		sealedRunViaAPI(buildapitypes.SealedInjectSigned, args[0], args[2], args[1])
+		return
+	}
+	workDir := "."
+	absWork, err := filepath.Abs(workDir)
+	if err != nil {
+		handleError(fmt.Errorf("workspace: %w", err))
+	}
+	input, signedDir, output := args[0], args[1], args[2]
+	inPath, err := sealedEnsurePathInWorkspace(absWork, input)
+	if err != nil {
+		handleError(err)
+	}
+	if _, err := os.Stat(inPath); err != nil {
+		handleError(fmt.Errorf("input disk: %w", err))
+	}
+	signedPath, err := sealedEnsurePathInWorkspace(absWork, signedDir)
+	if err != nil {
+		handleError(err)
+	}
+	if _, err := os.Stat(signedPath); err != nil {
+		handleError(fmt.Errorf("signed dir: %w", err))
+	}
+	outPath, err := sealedEnsurePathInWorkspace(absWork, output)
+	if err != nil {
+		handleError(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
+		handleError(fmt.Errorf("create output dir: %w", err))
+	}
+	relIn, err := filepath.Rel(absWork, inPath)
+	if err != nil {
+		handleError(fmt.Errorf("resolve relative input path: %w", err))
+	}
+	relSigned, err := filepath.Rel(absWork, signedPath)
+	if err != nil {
+		handleError(fmt.Errorf("resolve relative signed path: %w", err))
+	}
+	relOut, err := filepath.Rel(absWork, outPath)
+	if err != nil {
+		handleError(fmt.Errorf("resolve relative output path: %w", err))
+	}
+	if err := sealedRunAIB("inject-signed", absWork,
+		sealedToContainerPath(relIn), sealedToContainerPath(relSigned), sealedToContainerPath(relOut)); err != nil {
+		handleError(err)
+	}
 }

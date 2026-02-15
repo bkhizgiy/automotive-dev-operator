@@ -530,13 +530,16 @@ func (a *APIServer) createRouter() *gin.Engine {
 			configGroup.GET("", a.handleGetOperatorConfig)
 		}
 
-		sealedGroup := v1.Group("/sealed")
-		sealedGroup.Use(a.authMiddleware())
-		{
-			sealedGroup.POST("", a.handleCreateSealed)
-			sealedGroup.GET("", a.handleListSealed)
-			sealedGroup.GET("/:name", a.handleGetSealed)
-			sealedGroup.GET("/:name/logs", a.handleSealedLogs)
+		// Register all four sealed operation endpoints
+		for _, opPath := range []string{"/prepare-reseals", "/reseals", "/extract-for-signings", "/inject-signeds"} {
+			grp := v1.Group(opPath)
+			grp.Use(a.authMiddleware())
+			{
+				grp.POST("", a.handleCreateSealed)
+				grp.GET("", a.handleListSealed)
+				grp.GET("/:name", a.handleGetSealed)
+				grp.GET("/:name/logs", a.handleSealedLogs)
+			}
 		}
 
 		// Register catalog routes with authentication
@@ -2654,25 +2657,45 @@ func (a *APIServer) handleFlashLogs(c *gin.Context) {
 
 // Sealed API handlers
 
+// sealedPathToOperation maps the API path prefix to the AIB sealed operation.
+var sealedPathToOperation = map[string]SealedOperation{
+	"/v1/prepare-reseals":      SealedPrepareReseal,
+	"/v1/reseals":              SealedReseal,
+	"/v1/extract-for-signings": SealedExtractForSigning,
+	"/v1/inject-signeds":       SealedInjectSigned,
+}
+
+// resolveSealedOperation extracts the sealed operation from the request URL path.
+func resolveSealedOperation(c *gin.Context) SealedOperation {
+	p := c.Request.URL.Path
+	for prefix, op := range sealedPathToOperation {
+		if strings.HasPrefix(p, prefix) {
+			return op
+		}
+	}
+	return ""
+}
+
 func (a *APIServer) handleCreateSealed(c *gin.Context) {
-	a.log.Info("create sealed", "reqID", c.GetString("reqID"))
-	a.createSealed(c)
+	op := resolveSealedOperation(c)
+	a.log.Info("create reseal", "operation", op, "reqID", c.GetString("reqID"))
+	a.createSealed(c, op)
 }
 
 func (a *APIServer) handleListSealed(c *gin.Context) {
-	a.log.Info("list sealed jobs", "reqID", c.GetString("reqID"))
+	a.log.Info("list reseal jobs", "reqID", c.GetString("reqID"))
 	a.listSealed(c)
 }
 
 func (a *APIServer) handleGetSealed(c *gin.Context) {
 	name := c.Param("name")
-	a.log.Info("get sealed", "sealed", name, "reqID", c.GetString("reqID"))
+	a.log.Info("get reseal", "name", name, "reqID", c.GetString("reqID"))
 	a.getSealed(c, name)
 }
 
 func (a *APIServer) handleSealedLogs(c *gin.Context) {
 	name := c.Param("name")
-	a.log.Info("sealed logs requested", "sealed", name, "reqID", c.GetString("reqID"))
+	a.log.Info("reseal logs requested", "name", name, "reqID", c.GetString("reqID"))
 	a.streamSealedLogs(c, name)
 }
 
@@ -3121,7 +3144,7 @@ func validateSealedRequest(req *SealedRequest) ([]string, string) {
 		}
 	}
 	if req.Name == "" {
-		req.Name = fmt.Sprintf("sealed-%s-%s", stages[0], time.Now().Format("20060102-150405"))
+		req.Name = fmt.Sprintf("%s-%s", stages[0], time.Now().Format("20060102-150405"))
 	}
 	if err := validateBuildName(req.Name); err != nil {
 		return nil, err.Error()
@@ -3190,7 +3213,7 @@ func createSealedSecrets(ctx context.Context, clientset kubernetes.Interface, na
 				Name:      secretName,
 				Namespace: namespace,
 				Labels: map[string]string{
-					"automotive.sdv.cloud.redhat.com/imagesealed": req.Name,
+					"automotive.sdv.cloud.redhat.com/imagereseal": req.Name,
 					"automotive.sdv.cloud.redhat.com/transient":   "true",
 				},
 			},
@@ -3210,7 +3233,7 @@ func createSealedSecrets(ctx context.Context, clientset kubernetes.Interface, na
 				Name:      keySecretName,
 				Namespace: namespace,
 				Labels: map[string]string{
-					"automotive.sdv.cloud.redhat.com/imagesealed": req.Name,
+					"automotive.sdv.cloud.redhat.com/imagereseal": req.Name,
 					"automotive.sdv.cloud.redhat.com/transient":   "true",
 				},
 			},
@@ -3232,7 +3255,7 @@ func createSealedSecrets(ctx context.Context, clientset kubernetes.Interface, na
 					Name:      keyPwSecretName,
 					Namespace: namespace,
 					Labels: map[string]string{
-						"automotive.sdv.cloud.redhat.com/imagesealed": req.Name,
+						"automotive.sdv.cloud.redhat.com/imagereseal": req.Name,
 						"automotive.sdv.cloud.redhat.com/transient":   "true",
 					},
 				},
@@ -3265,11 +3288,16 @@ func cleanupSealedSecrets(ctx context.Context, clientset kubernetes.Interface, n
 	}
 }
 
-func (a *APIServer) createSealed(c *gin.Context) {
+func (a *APIServer) createSealed(c *gin.Context, pathOp SealedOperation) {
 	var req SealedRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON request"})
 		return
+	}
+
+	// Auto-set operation from the URL path if the request body doesn't specify one
+	if req.Operation == "" && len(req.Stages) == 0 {
+		req.Operation = pathOp
 	}
 
 	stages, errMsg := validateSealedRequest(&req)
@@ -3301,10 +3329,10 @@ func (a *APIServer) createSealed(c *gin.Context) {
 	refs, err := createSealedSecrets(ctx, clientset, namespace, &req)
 	if err != nil {
 		if k8serrors.IsAlreadyExists(err) {
-			c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("sealed job %s already exists", req.Name)})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("job %s already exists", req.Name)})
+		return
+	}
+	c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -3313,7 +3341,7 @@ func (a *APIServer) createSealed(c *gin.Context) {
 		aibImage = tasks.AutomotiveImageBuilder
 	}
 
-	imageSealed := &automotivev1alpha1.ImageSealed{
+	imageSealed := &automotivev1alpha1.ImageReseal{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      req.Name,
 			Namespace: namespace,
@@ -3325,7 +3353,7 @@ func (a *APIServer) createSealed(c *gin.Context) {
 				"automotive.sdv.cloud.redhat.com/requested-by": requestedBy,
 			},
 		},
-		Spec: automotivev1alpha1.ImageSealedSpec{
+		Spec: automotivev1alpha1.ImageResealSpec{
 			Operation:            string(req.Operation),
 			Stages:               stages,
 			InputRef:             req.InputRef,
@@ -3345,10 +3373,10 @@ func (a *APIServer) createSealed(c *gin.Context) {
 	if err := k8sClient.Create(ctx, imageSealed); err != nil {
 		cleanupSealedSecrets(ctx, clientset, namespace, &req, refs)
 		if k8serrors.IsAlreadyExists(err) {
-			c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("sealed job %s already exists", req.Name)})
+			c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("job %s already exists", req.Name)})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to create ImageSealed: %v", err)})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to create ImageReseal: %v", err)})
 		return
 	}
 
@@ -3357,7 +3385,7 @@ func (a *APIServer) createSealed(c *gin.Context) {
 		if createdSecret != nil {
 			createdSecret.OwnerReferences = []metav1.OwnerReference{{
 				APIVersion: automotivev1alpha1.GroupVersion.String(),
-				Kind:       "ImageSealed",
+				Kind:       "ImageReseal",
 				Name:       imageSealed.Name,
 				UID:        imageSealed.UID,
 			}}
@@ -3368,7 +3396,7 @@ func (a *APIServer) createSealed(c *gin.Context) {
 	writeJSON(c, http.StatusAccepted, SealedResponse{
 		Name:        req.Name,
 		Phase:       phasePending,
-		Message:     "Sealed job created",
+		Message:     "Reseal job created",
 		RequestedBy: requestedBy,
 		OutputRef:   req.OutputRef,
 	})
@@ -3382,9 +3410,9 @@ func (a *APIServer) listSealed(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	list := &automotivev1alpha1.ImageSealedList{}
+	list := &automotivev1alpha1.ImageResealList{}
 	if err := k8sClient.List(ctx, list, client.InNamespace(namespace)); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to list ImageSealed: %v", err)})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to list ImageReseal: %v", err)})
 		return
 	}
 	// Sort by creation time, newest first
@@ -3418,10 +3446,10 @@ func (a *APIServer) getSealed(c *gin.Context, name string) {
 		return
 	}
 	ctx := c.Request.Context()
-	sealed := &automotivev1alpha1.ImageSealed{}
+	sealed := &automotivev1alpha1.ImageReseal{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, sealed); err != nil {
 		if k8serrors.IsNotFound(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "sealed job not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -3465,10 +3493,10 @@ func (a *APIServer) streamSealedLogs(c *gin.Context, name string) {
 		return
 	}
 	ctx := c.Request.Context()
-	sealed := &automotivev1alpha1.ImageSealed{}
+	sealed := &automotivev1alpha1.ImageReseal{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, sealed); err != nil {
 		if k8serrors.IsNotFound(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "sealed job not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -3479,7 +3507,7 @@ func (a *APIServer) streamSealedLogs(c *gin.Context, name string) {
 		tr := &tektonv1.TaskRun{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: sealed.Status.TaskRunName, Namespace: namespace}, tr); err != nil {
 			if k8serrors.IsNotFound(err) {
-				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sealed TaskRun not found yet"})
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "TaskRun not found yet"})
 				return
 			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -3493,17 +3521,17 @@ func (a *APIServer) streamSealedLogs(c *gin.Context, name string) {
 			return
 		}
 		if len(trList.Items) == 0 {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sealed pipeline not ready (no TaskRuns yet)"})
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "pipeline not ready (no TaskRuns yet)"})
 			return
 		}
 		taskRun = &trList.Items[0]
 	} else {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sealed job not ready (no TaskRun or PipelineRun yet)"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "job not ready (no TaskRun or PipelineRun yet)"})
 		return
 	}
 	podName := taskRun.Status.PodName
 	if podName == "" {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sealed pod not ready"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "pod not ready"})
 		return
 	}
 	sinceTime := parseSinceTime(c.Query("since"))
@@ -3511,7 +3539,7 @@ func (a *APIServer) streamSealedLogs(c *gin.Context, name string) {
 	streamCtx, cancel := context.WithTimeout(ctx, streamDuration)
 	defer cancel()
 	setupLogStreamHeaders(c)
-	containerName := "step-sealed-op"
+	containerName := "step-run-op"
 
 	// Retry getting the log stream if the container is still initializing
 	var stream io.ReadCloser
@@ -3551,7 +3579,7 @@ func (a *APIServer) streamSealedLogs(c *gin.Context, name string) {
 			fmt.Fprintf(os.Stderr, "Warning: failed to close stream: %v\n", err)
 		}
 	}()
-	_, _ = c.Writer.Write([]byte("\n===== Sealed TaskRun Logs =====\n\n"))
+	_, _ = c.Writer.Write([]byte("\n===== TaskRun Logs =====\n\n"))
 	c.Writer.Flush()
 	scanner := bufio.NewScanner(stream)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)

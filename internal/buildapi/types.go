@@ -297,6 +297,22 @@ const (
 	SealedInjectSigned      SealedOperation = "inject-signed"
 )
 
+// SealedOperationAPIPath returns the v1 API path prefix for the given sealed operation.
+func SealedOperationAPIPath(op SealedOperation) string {
+	switch op {
+	case SealedPrepareReseal:
+		return "/v1/prepare-reseals"
+	case SealedReseal:
+		return "/v1/reseals"
+	case SealedExtractForSigning:
+		return "/v1/extract-for-signings"
+	case SealedInjectSigned:
+		return "/v1/inject-signeds"
+	default:
+		return "/v1/reseals"
+	}
+}
+
 // SealedRequest is the payload to create a sealed operation via the REST API
 type SealedRequest struct {
 	Name      string          `json:"name"`

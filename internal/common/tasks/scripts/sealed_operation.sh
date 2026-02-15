@@ -39,7 +39,7 @@ log_command() {
   echo "Running: ${redacted[*]}"
 }
 
-echo "=== Sealed operation: ${OPERATION} ==="
+echo "=== Operation: ${OPERATION} ==="
 echo "Input ref: ${INPUT_REF}"
 
 WORKSPACE="${WORKSPACE:-/workspace/shared}"
@@ -255,7 +255,7 @@ oras_push() {
 run_container_seal_op() {
   local op="$1"
   local source_container="${INPUT_REF}"
-  local output_container="${OUTPUT_REF:-localhost/sealed-output:latest}"
+  local output_container="${OUTPUT_REF:-localhost/reseal-output:latest}"
   local builder_image="${BUILDER_IMAGE:-}"
 
   echo "=== ${op} Configuration ==="
@@ -298,7 +298,7 @@ run_container_seal_op() {
     echo "Warning: builder-image not specified; aib may fail if it requires one"
   fi
 
-  # Run the sealed operation
+  # Run the operation
   if [ -z "$SEAL_KEY_FILE" ] || [ ! -f "$SEAL_KEY_FILE" ]; then
     echo "No key provided - aib may generate ephemeral key"
     seal_cmd=(aib --verbose "$op" "${BUILD_CONTAINER_ARGS[@]}" "$source_container" "$output_container")
@@ -315,11 +315,11 @@ run_container_seal_op() {
 
   # Push output container to registry
   if [ -n "${OUTPUT_REF:-}" ]; then
-    echo "Pushing sealed container to registry: $OUTPUT_REF"
+    echo "Pushing output container to registry: $OUTPUT_REF"
     push_cmd=(skopeo copy --authfile="$REGISTRY_AUTH_FILE" "containers-storage:$output_container" "docker://$OUTPUT_REF")
     log_command "${push_cmd[@]}"
     "${push_cmd[@]}"
-    echo "Sealed container pushed successfully to $OUTPUT_REF"
+    echo "Output container pushed successfully to $OUTPUT_REF"
   fi
 }
 
@@ -493,4 +493,4 @@ if [ -n "${RESULT_PATH:-}" ] && [ -n "${OUTPUT_REF:-}" ]; then
   echo "Result written to ${RESULT_PATH}: ${OUTPUT_REF}"
 fi
 
-echo "=== Sealed operation completed ==="
+echo "=== Operation completed ==="

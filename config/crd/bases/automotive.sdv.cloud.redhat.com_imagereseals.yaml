@@ -4,14 +4,14 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: imagesealeds.automotive.sdv.cloud.redhat.com
+  name: imagereseals.automotive.sdv.cloud.redhat.com
 spec:
   group: automotive.sdv.cloud.redhat.com
   names:
-    kind: ImageSealed
-    listKind: ImageSealedList
-    plural: imagesealeds
-    singular: imagesealed
+    kind: ImageReseal
+    listKind: ImageResealList
+    plural: imagereseals
+    singular: imagereseal
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -28,7 +28,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          ImageSealed is the Schema for the imagesealeds API.
+          ImageReseal is the Schema for the imagereseals API.
           It triggers an AIB sealed operation (prepare-reseal, reseal, extract-for-signing, inject-signed) on a disk image.
         properties:
           apiVersion:
@@ -49,7 +49,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: ImageSealedSpec defines the desired state of ImageSealed
+            description: ImageResealSpec defines the desired state of ImageReseal
             properties:
               aibExtraArgs:
                 description: AIBExtraArgs are extra arguments to pass to AIB
@@ -80,7 +80,7 @@ spec:
                 type: string
               keySecretRef:
                 description: |-
-                  KeySecretRef is the name of a secret containing the sealing key (same shape as ImageReseal).
+                  KeySecretRef is the name of a secret containing the sealing key.
                   The secret must have a data key named "private-key" with the PEM-encoded key.
                   Optional for prepare-reseal and reseal: if not set, aib may use an ephemeral key.
                 type: string
@@ -122,7 +122,7 @@ spec:
             - inputRef
             type: object
           status:
-            description: ImageSealedStatus defines the observed state of ImageSealed
+            description: ImageResealStatus defines the observed state of ImageReseal
             properties:
               completionTime:
                 description: CompletionTime is when the sealed operation completed

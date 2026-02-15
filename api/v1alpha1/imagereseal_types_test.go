@@ -23,33 +23,33 @@ import (
 	. "github.com/onsi/gomega"    //nolint:revive
 )
 
-func TestImageSealedTypes(t *testing.T) {
+func TestImageResealTypes(t *testing.T) {
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "ImageSealed Types Suite")
+	RunSpecs(t, "ImageReseal Types Suite")
 }
 
-var _ = Describe("ImageSealedSpec", func() {
+var _ = Describe("ImageResealSpec", func() {
 
 	Describe("GetAIBImage", func() {
 		It("should return the configured AIB image when set", func() {
-			spec := &ImageSealedSpec{AIBImage: "custom/aib:v1"}
+			spec := &ImageResealSpec{AIBImage: "custom/aib:v1"}
 			Expect(spec.GetAIBImage()).To(Equal("custom/aib:v1"))
 		})
 
 		It("should return default AIB image when not set", func() {
-			spec := &ImageSealedSpec{}
+			spec := &ImageResealSpec{}
 			Expect(spec.GetAIBImage()).To(Equal("quay.io/centos-sig-automotive/automotive-image-builder:latest"))
 		})
 
 		It("should return default AIB image when empty string", func() {
-			spec := &ImageSealedSpec{AIBImage: ""}
+			spec := &ImageResealSpec{AIBImage: ""}
 			Expect(spec.GetAIBImage()).To(Equal("quay.io/centos-sig-automotive/automotive-image-builder:latest"))
 		})
 	})
 
 	Describe("GetStages", func() {
 		It("should return Stages when set", func() {
-			spec := &ImageSealedSpec{
+			spec := &ImageResealSpec{
 				Operation: "reseal",
 				Stages:    []string{"prepare-reseal", "reseal"},
 			}
@@ -57,17 +57,17 @@ var _ = Describe("ImageSealedSpec", func() {
 		})
 
 		It("should return single-element slice from Operation when Stages is empty", func() {
-			spec := &ImageSealedSpec{Operation: "prepare-reseal"}
+			spec := &ImageResealSpec{Operation: "prepare-reseal"}
 			Expect(spec.GetStages()).To(Equal([]string{"prepare-reseal"}))
 		})
 
 		It("should return nil when neither Operation nor Stages is set", func() {
-			spec := &ImageSealedSpec{}
+			spec := &ImageResealSpec{}
 			Expect(spec.GetStages()).To(BeNil())
 		})
 
 		It("should prefer Stages over Operation", func() {
-			spec := &ImageSealedSpec{
+			spec := &ImageResealSpec{
 				Operation: "reseal",
 				Stages:    []string{"extract-for-signing", "inject-signed"},
 			}
@@ -80,7 +80,7 @@ var _ = Describe("ImageSealedSpec", func() {
 
 	Describe("Spec fields", func() {
 		It("should store all sealed spec fields", func() {
-			spec := ImageSealedSpec{
+			spec := ImageResealSpec{
 				Operation:            "inject-signed",
 				Stages:               []string{"prepare-reseal", "inject-signed"},
 				InputRef:             "quay.io/test/image:seal",

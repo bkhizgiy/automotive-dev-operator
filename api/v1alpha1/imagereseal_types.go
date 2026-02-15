@@ -20,8 +20,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// ImageSealedSpec defines the desired state of ImageSealed
-type ImageSealedSpec struct {
+// ImageResealSpec defines the desired state of ImageReseal
+type ImageResealSpec struct {
 	// Operation is the AIB sealed operation when running a single stage (ignored if Stages is set).
 	// +kubebuilder:validation:Enum=prepare-reseal;reseal;extract-for-signing;inject-signed
 	Operation string `json:"operation,omitempty"`
@@ -60,7 +60,7 @@ type ImageSealedSpec struct {
 	// (REGISTRY_URL, REGISTRY_USERNAME, REGISTRY_PASSWORD)
 	SecretRef string `json:"secretRef,omitempty"`
 
-	// KeySecretRef is the name of a secret containing the sealing key (same shape as ImageReseal).
+	// KeySecretRef is the name of a secret containing the sealing key.
 	// The secret must have a data key named "private-key" with the PEM-encoded key.
 	// Optional for prepare-reseal and reseal: if not set, aib may use an ephemeral key.
 	KeySecretRef string `json:"keySecretRef,omitempty"`
@@ -73,8 +73,8 @@ type ImageSealedSpec struct {
 	AIBExtraArgs []string `json:"aibExtraArgs,omitempty"`
 }
 
-// ImageSealedStatus defines the observed state of ImageSealed
-type ImageSealedStatus struct {
+// ImageResealStatus defines the observed state of ImageReseal
+type ImageResealStatus struct {
 	// Phase represents the current phase of the sealed operation
 	// +kubebuilder:validation:Enum=Pending;Running;Completed;Failed
 	Phase string `json:"phase,omitempty"`
@@ -104,31 +104,31 @@ type ImageSealedStatus struct {
 // +kubebuilder:printcolumn:name="Operation",type=string,JSONPath=`.spec.operation`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// ImageSealed is the Schema for the imagesealeds API.
+// ImageReseal is the Schema for the imagereseals API.
 // It triggers an AIB sealed operation (prepare-reseal, reseal, extract-for-signing, inject-signed) on a disk image.
-type ImageSealed struct {
+type ImageReseal struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   ImageSealedSpec   `json:"spec,omitempty"`
-	Status ImageSealedStatus `json:"status,omitempty"`
+	Spec   ImageResealSpec   `json:"spec,omitempty"`
+	Status ImageResealStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// ImageSealedList contains a list of ImageSealed
-type ImageSealedList struct {
+// ImageResealList contains a list of ImageReseal
+type ImageResealList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []ImageSealed `json:"items"`
+	Items           []ImageReseal `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&ImageSealed{}, &ImageSealedList{})
+	SchemeBuilder.Register(&ImageReseal{}, &ImageResealList{})
 }
 
 // GetAIBImage returns the AIB container image, or default if not set
-func (s *ImageSealedSpec) GetAIBImage() string {
+func (s *ImageResealSpec) GetAIBImage() string {
 	if s.AIBImage != "" {
 		return s.AIBImage
 	}
@@ -137,7 +137,7 @@ func (s *ImageSealedSpec) GetAIBImage() string {
 
 // GetStages returns the ordered list of stages to run. Uses Stages if set, otherwise []string{Operation}.
 // Returns nil if neither is set (invalid spec).
-func (s *ImageSealedSpec) GetStages() []string {
+func (s *ImageResealSpec) GetStages() []string {
 	if len(s.Stages) > 0 {
 		return s.Stages
 	}
