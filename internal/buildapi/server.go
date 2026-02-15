@@ -68,6 +68,11 @@ const (
 	// maxManifestSize is the maximum allowed manifest size in bytes.
 	// Manifests are stored in ConfigMaps, which are limited by etcd's ~1MB object size.
 	maxManifestSize = 900 * 1024
+
+	// Registry auth type constants
+	authTypeUsernamePassword = "username-password"
+	authTypeToken            = "token"
+	authTypeDockerConfig     = "docker-config"
 )
 
 var getClientFromRequestFn = getClientFromRequest
@@ -904,7 +909,7 @@ func createRegistrySecret(
 	secretData := make(map[string][]byte)
 
 	switch creds.AuthType {
-	case "username-password":
+	case authTypeUsernamePassword:
 		if creds.RegistryURL == "" || creds.Username == "" || creds.Password == "" {
 			return "", fmt.Errorf("registry URL, username, and password are required for username-password authentication")
 		}
@@ -925,13 +930,13 @@ func createRegistrySecret(
 			return "", fmt.Errorf("failed to create docker config: %w", err)
 		}
 		secretData[".dockerconfigjson"] = dockerConfig
-	case "token":
+	case authTypeToken:
 		if creds.RegistryURL == "" || creds.Token == "" {
 			return "", fmt.Errorf("registry URL and token are required for token authentication")
 		}
 		secretData["REGISTRY_URL"] = []byte(creds.RegistryURL)
 		secretData["REGISTRY_TOKEN"] = []byte(creds.Token)
-	case "docker-config":
+	case authTypeDockerConfig:
 		if creds.DockerConfig == "" {
 			return "", fmt.Errorf("docker config is required for docker-config authentication")
 		}
@@ -978,7 +983,7 @@ func createPushSecret(
 	var err error
 
 	switch creds.AuthType {
-	case "username-password":
+	case authTypeUsernamePassword:
 		if creds.RegistryURL == "" || creds.Username == "" || creds.Password == "" {
 			return "", fmt.Errorf("registry URL, username, and password are required for push")
 		}
@@ -994,7 +999,7 @@ func createPushSecret(
 		if err != nil {
 			return "", fmt.Errorf("failed to marshal docker config: %w", err)
 		}
-	case "token":
+	case authTypeToken:
 		if creds.RegistryURL == "" || creds.Token == "" {
 			return "", fmt.Errorf("registry URL and token are required for push with token auth")
 		}
@@ -1010,7 +1015,7 @@ func createPushSecret(
 		if err != nil {
 			return "", fmt.Errorf("failed to marshal docker config: %w", err)
 		}
-	case "docker-config":
+	case authTypeDockerConfig:
 		if creds.DockerConfig == "" {
 			return "", fmt.Errorf("docker config is required for push with docker-config auth")
 		}
@@ -3092,7 +3097,7 @@ func createSealedSecrets(ctx context.Context, clientset kubernetes.Interface, na
 		secretData := make(map[string][]byte)
 
 		switch creds.AuthType {
-		case "username-password":
+		case authTypeUsernamePassword:
 			if creds.RegistryURL == "" || creds.Username == "" || creds.Password == "" {
 				return nil, fmt.Errorf("registry URL, username, and password are required for username-password authentication")
 			}
@@ -3112,13 +3117,13 @@ func createSealedSecrets(ctx context.Context, clientset kubernetes.Interface, na
 				return nil, fmt.Errorf("failed to create docker config: %w", err)
 			}
 			secretData[".dockerconfigjson"] = dockerConfig
-		case "token":
+		case authTypeToken:
 			if creds.RegistryURL == "" || creds.Token == "" {
 				return nil, fmt.Errorf("registry URL and token are required for token authentication")
 			}
 			secretData["REGISTRY_URL"] = []byte(creds.RegistryURL)
 			secretData["REGISTRY_TOKEN"] = []byte(creds.Token)
-		case "docker-config":
+		case authTypeDockerConfig:
 			if creds.DockerConfig == "" {
 				return nil, fmt.Errorf("docker config is required for docker-config authentication")
 			}
