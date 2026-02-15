@@ -129,15 +129,18 @@ func supportsColorOutput() bool {
 		return false
 	}
 
-	shell := os.Getenv("SHELL")
 	termType := os.Getenv("TERM")
+	if termType == "dumb" {
+		return false
+	}
+
+	shell := os.Getenv("SHELL")
 
 	isSupportedShell := strings.Contains(shell, "bash") ||
 		strings.Contains(shell, "fish") ||
 		strings.Contains(shell, "zsh")
 
 	hasColorTerm := termType != "" &&
-		termType != "dumb" &&
 		!strings.Contains(termType, "mono")
 
 	return !color.NoColor || isSupportedShell || hasColorTerm
