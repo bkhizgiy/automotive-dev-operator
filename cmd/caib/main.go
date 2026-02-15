@@ -44,6 +44,7 @@ const (
 	archARM64      = "arm64"
 	phaseCompleted = "Completed"
 	phaseFailed    = "Failed"
+	phaseFlashing  = "Flashing"
 	errPrefixBuild = "build"
 	errPrefixFlash = "flash"
 	errPrefixPush  = "push"
@@ -1677,14 +1678,14 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 					isFlashFailure = true
 				} else if strings.Contains(strings.ToLower(st.Message), errPrefixPush) {
 					errPrefix = errPrefixPush
-				} else if lastPhase == "Flashing" {
+				} else if lastPhase == phaseFlashing {
 					errPrefix = errPrefixFlash
 					isFlashFailure = true
 				} else if lastPhase == "Pushing" {
 					errPrefix = errPrefixPush
-				} else if flashAfterBuild {
-					// If user requested --flash and build failed, treat as flash failure
-					// since they were attempting to flash
+				} else if flashAfterBuild && (lastPhase == phaseFlashing || strings.Contains(strings.ToLower(st.Message), errPrefixFlash)) {
+					// Only treat as flash failure if we actually reached a flash-related phase
+					// or the error message explicitly indicates a flash error
 					errPrefix = errPrefixFlash
 					isFlashFailure = true
 				}
@@ -1767,7 +1768,7 @@ func (s *logStreamState) reset() {
 }
 
 func isBuildActive(phase string) bool {
-	return phase == "Building" || phase == "Running" || phase == "Uploading" || phase == "Flashing"
+	return phase == "Building" || phase == "Running" || phase == "Uploading" || phase == phaseFlashing
 }
 
 // tryLogStreaming attempts to stream logs and returns error if it fails
@@ -2495,9 +2496,23 @@ func parseLeaseDuration(duration string) time.Duration {
 		return time.Hour // Default 1 hour
 	}
 	var hours, mins, secs int
-	_, _ = fmt.Sscanf(parts[0], "%d", &hours)
-	_, _ = fmt.Sscanf(parts[1], "%d", &mins)
-	_, _ = fmt.Sscanf(parts[2], "%d", &secs)
+
+	// Validate each part can be parsed as an integer
+	if n, err := fmt.Sscanf(parts[0], "%d", &hours); n != 1 || err != nil {
+		return time.Hour // Default 1 hour if hours is invalid
+	}
+	if n, err := fmt.Sscanf(parts[1], "%d", &mins); n != 1 || err != nil {
+		return time.Hour // Default 1 hour if minutes is invalid
+	}
+	if n, err := fmt.Sscanf(parts[2], "%d", &secs); n != 1 || err != nil {
+		return time.Hour // Default 1 hour if seconds is invalid
+	}
+
+	// Validate ranges to prevent negative or extremely large values
+	if hours < 0 || hours > 8760 || mins < 0 || mins >= 60 || secs < 0 || secs >= 60 {
+		return time.Hour // Default 1 hour if values are out of reasonable range
+	}
+
 	return time.Duration(hours)*time.Hour + time.Duration(mins)*time.Minute + time.Duration(secs)*time.Second
 }
 
