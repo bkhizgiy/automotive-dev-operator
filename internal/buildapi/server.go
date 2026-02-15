@@ -64,6 +64,10 @@ const (
 
 	// Flash TaskRun constants
 	flashTaskRunLabel = "automotive.sdv.cloud.redhat.com/flash-taskrun"
+
+	// maxManifestSize is the maximum allowed manifest size in bytes.
+	// Manifests are stored in ConfigMaps, which are limited by etcd's ~1MB object size.
+	maxManifestSize = 900 * 1024
 )
 
 var getClientFromRequestFn = getClientFromRequest
@@ -243,7 +247,6 @@ func (a *APIServer) mintRegistryToken(ctx context.Context, c *gin.Context, names
 
 // APILimits holds configurable limits for the API server
 type APILimits struct {
-	MaxManifestSize             int64
 	MaxUploadFileSize           int64
 	MaxTotalUploadSize          int64
 	MaxLogStreamDurationMinutes int32
@@ -252,7 +255,6 @@ type APILimits struct {
 // DefaultAPILimits returns the default limits
 func DefaultAPILimits() APILimits {
 	return APILimits{
-		MaxManifestSize:             10 * 1024 * 1024,       // 10MB
 		MaxUploadFileSize:           1 * 1024 * 1024 * 1024, // 1GB
 		MaxTotalUploadSize:          2 * 1024 * 1024 * 1024, // 2GB
 		MaxLogStreamDurationMinutes: 120,                    // 2 hours
@@ -349,9 +351,6 @@ func LoadLimitsFromConfig(cfg *automotivev1alpha1.BuildAPIConfig) APILimits {
 	limits := DefaultAPILimits()
 	if cfg == nil {
 		return limits
-	}
-	if cfg.MaxManifestSize > 0 {
-		limits.MaxManifestSize = cfg.MaxManifestSize
 	}
 	if cfg.MaxUploadFileSize > 0 {
 		limits.MaxUploadFileSize = cfg.MaxUploadFileSize
@@ -1068,17 +1067,46 @@ func validateContainerRef(ref string) error {
 }
 
 func validateBuildName(name string) error {
-	return validateInput(name, "build name", 253, false, "/")
-}
-
-// validateBuildRequest validates the build request and applies defaults
-func validateBuildRequest(req *BuildRequest, maxManifestSize int64) error {
-	if err := validateBuildName(req.Name); err != nil {
+	if err := validateInput(name, "build name", 253, false, "/"); err != nil {
 		return err
 	}
 
-	if int64(len(req.Manifest)) > maxManifestSize {
-		return fmt.Errorf("manifest too large (max %d bytes)", maxManifestSize)
+	// Check if name would become empty after sanitization
+	sanitized := sanitizeBuildNameForValidation(name)
+	if sanitized == "" {
+		return fmt.Errorf("build name contains only invalid characters")
+	}
+
+	return nil
+}
+
+func sanitizeBuildNameForValidation(name string) string {
+	name = strings.ToLower(name)
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('-')
+		}
+	}
+	result := strings.ReplaceAll(b.String(), "--", "-")
+	for strings.Contains(result, "--") {
+		result = strings.ReplaceAll(result, "--", "-")
+	}
+	return strings.Trim(result, "-")
+}
+
+// validateBuildRequest validates the build request, sanitizes the name, and applies defaults
+func validateBuildRequest(req *BuildRequest) error {
+	if err := validateBuildName(req.Name); err != nil {
+		return err
+	}
+	req.Name = sanitizeBuildNameForValidation(req.Name)
+
+	if len(req.Manifest) > maxManifestSize {
+		return fmt.Errorf("manifest too large: %d bytes exceeds %d byte limit (ConfigMap/etcd constraint)",
+			len(req.Manifest), maxManifestSize)
 	}
 
 	if req.Mode == ModeDisk {
@@ -1335,7 +1363,7 @@ func (a *APIServer) createBuild(c *gin.Context) {
 
 	needsUpload := strings.Contains(req.Manifest, "source_path")
 
-	if err := validateBuildRequest(&req, a.limits.MaxManifestSize); err != nil {
+	if err := validateBuildRequest(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -1675,8 +1703,6 @@ func getBuildTemplate(c *gin.Context, name string) {
 		manifestFileName = "manifest.aib.yml"
 	}
 
-	var aibExtra []string
-
 	var sourceFiles []string
 	for _, line := range strings.Split(manifest, "\n") {
 		s := strings.TrimSpace(line)
@@ -1703,8 +1729,8 @@ func getBuildTemplate(c *gin.Context, name string) {
 			ExportFormat:           ExportFormat(build.Spec.GetExportFormat()),
 			Mode:                   Mode(build.Spec.GetMode()),
 			AutomotiveImageBuilder: build.Spec.GetAIBImage(),
-			CustomDefs:             nil,
-			AIBExtraArgs:           aibExtra,
+			CustomDefs:             build.Spec.GetCustomDefs(),
+			AIBExtraArgs:           build.Spec.GetAIBExtraArgs(),
 			Compression:            build.Spec.GetCompression(),
 		},
 		SourceFiles: sourceFiles,

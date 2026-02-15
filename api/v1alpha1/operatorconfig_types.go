@@ -100,11 +100,6 @@ func (c *JumpstarterConfig) GetJumpstarterImage() string {
 
 // BuildAPIConfig defines configuration for the Build API server
 type BuildAPIConfig struct {
-	// MaxManifestSize is the maximum allowed manifest size in bytes
-	// Default: 10485760 (10MB)
-	// +optional
-	MaxManifestSize int64 `json:"maxManifestSize,omitempty"`
-
 	// MaxUploadFileSize is the maximum size for individual uploaded files in bytes
 	// Default: 1073741824 (1GB)
 	// +optional

@@ -158,7 +158,7 @@ var _ = Describe("Internal Registry", func() {
 					UseInternalRegistry: true,
 					Mode:                ModeBootc,
 				}
-				err := validateBuildRequest(req, 10*1024*1024)
+				err := validateBuildRequest(req)
 				Expect(err).NotTo(HaveOccurred())
 			})
 
@@ -171,7 +171,7 @@ var _ = Describe("Internal Registry", func() {
 					InternalRegistryTag:       "v2",
 					Mode:                      ModePackage,
 				}
-				err := validateBuildRequest(req, 10*1024*1024)
+				err := validateBuildRequest(req)
 				Expect(err).NotTo(HaveOccurred())
 			})
 		})

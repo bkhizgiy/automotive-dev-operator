@@ -226,10 +226,8 @@ load_args_from_file() {
   while IFS= read -r line || [[ -n "$line" ]]; do
     # Skip empty lines and comments
     [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-    for item in $line; do
-      $validator "$item" "$description"
-      result_array+=("$item")
-    done
+    $validator "$line" "$description"
+    result_array+=("$line")
   done < "$file"
   echo "Loaded ${#result_array[@]} items for $description"
   return 0

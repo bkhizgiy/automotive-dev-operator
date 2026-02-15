@@ -3,6 +3,7 @@ package imagebuild
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"strings"
 	"time"
@@ -38,7 +39,35 @@ const (
 
 	// Tekton condition type for completion status
 	conditionSucceeded = "Succeeded"
+
+	maxK8sNameLength = 63
 )
+
+// safeDerivedName generates a Kubernetes-safe derived resource name by truncating
+// the base name and appending a hash to preserve uniqueness. The final name will
+// never exceed maxK8sNameLength (63 chars for DNS label names) characters.
+func safeDerivedName(baseName, suffix string) string {
+	maxBaseLength := maxK8sNameLength - len(suffix) - 9
+
+	if maxBaseLength >= len(baseName) {
+		return fmt.Sprintf("%s%s", baseName, suffix)
+	}
+
+	hash := sha256.Sum256([]byte(baseName))
+	hexHash := fmt.Sprintf("%x", hash[:4]) // 8-char hex
+
+	if maxBaseLength <= 0 {
+		// suffix + hash overhead exceed the limit; use hex hash + suffix only
+		name := hexHash + suffix
+		if len(name) > maxK8sNameLength {
+			name = name[:maxK8sNameLength]
+		}
+		return name
+	}
+
+	truncated := baseName[:maxBaseLength]
+	return fmt.Sprintf("%s-%s%s", truncated, hexHash, suffix)
+}
 
 // ImageBuildReconciler reconciles a ImageBuild object
 //
@@ -760,7 +789,7 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 	}
 	pipelineRun := &tektonv1.PipelineRun{
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: fmt.Sprintf("%s-build-", imageBuild.Name),
+			GenerateName: safeDerivedName(imageBuild.Name, "-build-"),
 			Namespace:    imageBuild.Namespace,
 			Labels: map[string]string{
 				tektonv1.ManagedByLabelKey:                        "automotive-dev-operator",
@@ -807,19 +836,12 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 }
 
 // createOrUpdateManifestConfigMap creates or updates a ConfigMap containing the inline
-// manifest content from the ImageBuild spec. The ConfigMap is named "{imageBuild.Name}-manifest"
-// and owned by the ImageBuild CR for automatic garbage collection.
+// manifest content from the ImageBuild spec
 func (r *ImageBuildReconciler) createOrUpdateManifestConfigMap(
 	ctx context.Context,
 	imageBuild *automotivev1alpha1.ImageBuild,
 ) (string, error) {
-	configMapName := fmt.Sprintf("%s-manifest", imageBuild.Name)
-
-	manifestFileName := imageBuild.Spec.GetManifestFileName()
-	if manifestFileName == "" {
-		manifestFileName = "manifest.aib.yml"
-	}
-
+	configMapName := safeDerivedName(imageBuild.Name, "-manifest")
 	manifestContent := imageBuild.Spec.GetManifest()
 
 	cm := &corev1.ConfigMap{
@@ -836,15 +858,19 @@ func (r *ImageBuildReconciler) createOrUpdateManifestConfigMap(
 			"automotive.sdv.cloud.redhat.com/build-name":    imageBuild.Name,
 			"automotive.sdv.cloud.redhat.com/resource-type": "manifest",
 		}
+		manifestKey := imageBuild.Spec.GetManifestFileName()
+		if manifestKey == "" {
+			manifestKey = "manifest.aib.yml"
+		}
 		cm.Data = map[string]string{
-			manifestFileName: manifestContent,
+			manifestKey: manifestContent,
 		}
 
 		if customDefs := imageBuild.Spec.GetCustomDefs(); len(customDefs) > 0 {
 			cm.Data["custom-definitions.env"] = strings.Join(customDefs, "\n")
 		}
 		if extraArgs := imageBuild.Spec.GetAIBExtraArgs(); len(extraArgs) > 0 {
-			cm.Data["aib-extra-args.txt"] = strings.Join(extraArgs, " ")
+			cm.Data["aib-extra-args.txt"] = strings.Join(extraArgs, "\n")
 		}
 
 		return controllerutil.SetControllerReference(imageBuild, cm, r.Scheme)
@@ -960,7 +986,7 @@ func (r *ImageBuildReconciler) createPushTaskRun(ctx context.Context, imageBuild
 
 	taskRun := &tektonv1.TaskRun{
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: fmt.Sprintf("%s-push-", imageBuild.Name),
+			GenerateName: safeDerivedName(imageBuild.Name, "-push-"),
 			Namespace:    imageBuild.Namespace,
 			Labels: map[string]string{
 				tektonv1.ManagedByLabelKey:                        "automotive-dev-operator",
@@ -1251,7 +1277,7 @@ func (r *ImageBuildReconciler) createFlashTaskRun(
 
 	taskRun := &tektonv1.TaskRun{
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: fmt.Sprintf("%s-flash-", imageBuild.Name),
+			GenerateName: safeDerivedName(imageBuild.Name, "-flash-"),
 			Namespace:    imageBuild.Namespace,
 			Labels: map[string]string{
 				tektonv1.ManagedByLabelKey:                        "automotive-dev-operator",
@@ -1454,7 +1480,7 @@ func isTaskRunSuccessful(taskRun *tektonv1.TaskRun) bool {
 func (r *ImageBuildReconciler) createUploadPod(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) error {
 	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
 
-	podName := fmt.Sprintf("%s-upload-pod", imageBuild.Name)
+	podName := safeDerivedName(imageBuild.Name, "-upload-pod")
 	existingPod := &corev1.Pod{}
 	err := r.Get(ctx, types.NamespacedName{
 		Name:      podName,
@@ -1625,7 +1651,7 @@ func (r *ImageBuildReconciler) getOrCreateWorkspacePVC(
 	}
 
 	timestamp := fmt.Sprintf("%d", time.Now().Unix())
-	uniquePVCName := fmt.Sprintf("%s-ws-%s", imageBuild.Name, timestamp)
+	uniquePVCName := safeDerivedName(fmt.Sprintf("%s-%s", imageBuild.Name, timestamp), "-ws")
 
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1673,7 +1699,7 @@ func (r *ImageBuildReconciler) getOrCreateWorkspacePVC(
 func (r *ImageBuildReconciler) shutdownUploadPod(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) error {
 	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
 
-	podName := fmt.Sprintf("%s-upload-pod", imageBuild.Name)
+	podName := safeDerivedName(imageBuild.Name, "-upload-pod")
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,

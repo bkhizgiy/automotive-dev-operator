@@ -1,6 +1,7 @@
 package imagebuild
 
 import (
+	"strings"
 	"testing"
 
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
@@ -186,4 +187,95 @@ func TestTaskRunFailureMessage(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSafeDerivedName(t *testing.T) {
+	tests := []struct {
+		name       string
+		baseName   string
+		suffix     string
+		wantMaxLen int
+		wantSuffix string
+	}{
+		{
+			name:       "short name no truncation",
+			baseName:   "simple",
+			suffix:     "-manifest",
+			wantMaxLen: 63,
+			wantSuffix: "-manifest",
+		},
+		{
+			name:       "exact length boundary",
+			baseName:   "exactly-fifty-four-chars-to-test-boundary-conditions",
+			suffix:     "-manifest",
+			wantMaxLen: 63,
+			wantSuffix: "-manifest",
+		},
+		{
+			name:       "long name needs truncation",
+			baseName:   "this-is-a-very-long-build-name-that-will-definitely-exceed-limits",
+			suffix:     "-manifest",
+			wantMaxLen: 63,
+			wantSuffix: "-manifest",
+		},
+		{
+			name:       "long suffix",
+			baseName:   "build-name",
+			suffix:     "-upload-pod",
+			wantMaxLen: 63,
+			wantSuffix: "-upload-pod",
+		},
+		{
+			name:       "very long name with short suffix",
+			baseName:   "extremely-long-build-name-that-definitely-exceeds-kubernetes-dns-label-limits",
+			suffix:     "-ws",
+			wantMaxLen: 63,
+			wantSuffix: "-ws",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := safeDerivedName(tt.baseName, tt.suffix)
+
+			// Check length constraint
+			if len(result) > tt.wantMaxLen {
+				t.Errorf("safeDerivedName() result %q length %d exceeds max %d", result, len(result), tt.wantMaxLen)
+			}
+
+			// Check suffix is preserved
+			if !strings.HasSuffix(result, tt.wantSuffix) {
+				t.Errorf("safeDerivedName() result %q does not end with expected suffix %q", result, tt.wantSuffix)
+			}
+
+			// Check deterministic (same input gives same output)
+			result2 := safeDerivedName(tt.baseName, tt.suffix)
+			if result != result2 {
+				t.Errorf("safeDerivedName() is not deterministic: %q != %q", result, result2)
+			}
+		})
+	}
+
+	// Test uniqueness: different base names that would truncate to same prefix should produce different results
+	t.Run("hash provides uniqueness", func(t *testing.T) {
+		longName1 := "very-long-name-with-same-prefix-but-different-suffix-one"
+		longName2 := "very-long-name-with-same-prefix-but-different-suffix-two"
+		suffix := "-manifest"
+
+		result1 := safeDerivedName(longName1, suffix)
+		result2 := safeDerivedName(longName2, suffix)
+
+		if result1 == result2 {
+			t.Errorf("safeDerivedName() produced same result for different inputs: %q", result1)
+		}
+
+		// Both should still be valid length and have correct suffix
+		if len(result1) > 63 || len(result2) > 63 {
+			t.Errorf("safeDerivedName() results exceed length: %q (%d), %q (%d)", result1, len(result1), result2, len(result2))
+		}
+
+		if !strings.HasSuffix(result1, suffix) || !strings.HasSuffix(result2, suffix) {
+			t.Errorf("safeDerivedName() results don't have correct suffix: %q, %q", result1, result2)
+		}
+	})
 }

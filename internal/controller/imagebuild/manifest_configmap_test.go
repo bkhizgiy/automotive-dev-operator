@@ -109,7 +109,7 @@ func TestCreateOrUpdateManifestConfigMap(t *testing.T) {
 			wantCMName:       "build-with-args-manifest",
 			wantManifestKey:  "m.aib.yml",
 			wantManifestData: "name: test\n",
-			wantExtraArgs:    "--verbose --no-cache",
+			wantExtraArgs:    "--verbose\n--no-cache",
 		},
 		{
 			name: "includes both custom defs and extra args",
