@@ -168,13 +168,42 @@ else
 fi
 echo "Architecture: $RESOLVED_ARCH"
 
-# ── Default builder image based on architecture ──
-# If no explicit BUILDER_IMAGE was provided, compute a default from the internal registry
-if [ -z "${BUILDER_IMAGE:-}" ]; then
-  NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || echo "automotive-dev-operator-system")
-  BUILDER_IMAGE="image-registry.openshift-image-registry.svc:5000/${NAMESPACE}/aib-build:autosd-${RESOLVED_ARCH}"
-  echo "Using default builder image: $BUILDER_IMAGE"
-fi
+# Priority: 1) explicit BUILDER_IMAGE param  2) source container annotation  3) internal registry default
+resolve_builder_from_annotation() {
+  local source="$1"
+
+  # If already set (explicit param or previously resolved), keep it
+  if [ -n "${builder_image:-}" ]; then
+    echo "Using explicitly provided builder image: $builder_image"
+    return
+  fi
+
+  # Try to read the builder-image label from the source container
+  local annotation_key="automotive.sdv.cloud.redhat.com/builder-image"
+  echo "No builder image specified, checking source container labels..."
+  local resolved=""
+  resolved=$(skopeo inspect "containers-storage:$source" 2>/dev/null \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Labels',{}).get('$annotation_key',''))" 2>/dev/null) || true
+
+  if [ -n "$resolved" ]; then
+    # Rewrite external OpenShift registry route to internal service URL
+    # Annotations may contain the external route (default-route-openshift-image-registry.apps.*)
+    if [[ "$resolved" == default-route-openshift-image-registry.apps.* ]]; then
+      local path="${resolved#*/}"
+      resolved="image-registry.openshift-image-registry.svc:5000/${path}"
+      echo "Rewrote external registry route to internal URL"
+    fi
+    builder_image="$resolved"
+    echo "Resolved builder image from source container label: $builder_image"
+    return
+  fi
+
+  # Fallback: default from internal registry
+  local ns
+  ns=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || echo "automotive-dev-operator-system")
+  builder_image="image-registry.openshift-image-registry.svc:5000/${ns}/aib-build:autosd-${RESOLVED_ARCH}"
+  echo "No annotation found, using default builder image: $builder_image"
+}
 
 validate_arg "${INPUT_REF}" "input-ref"
 validate_arg "${OUTPUT_REF:-}" "output-ref"
@@ -261,7 +290,7 @@ run_container_seal_op() {
   echo "=== ${op} Configuration ==="
   echo "SOURCE: $source_container"
   echo "OUTPUT: $output_container"
-  echo "BUILDER: ${builder_image:-<not specified>}"
+  echo "BUILDER: ${builder_image:-<will resolve from source>}"
   echo "============================"
 
   if [ -z "$source_container" ]; then
@@ -279,6 +308,9 @@ run_container_seal_op() {
     log_command "${pull_auth_cmd[@]}"
     "${pull_auth_cmd[@]}"
   fi
+
+  # Resolve builder image: explicit param > source annotation > default
+  resolve_builder_from_annotation "$source_container"
 
   # Build --build-container argument (required for reseal/prepare-reseal)
   declare -a BUILD_CONTAINER_ARGS=()
@@ -380,7 +412,7 @@ run_inject_signed() {
   echo "SOURCE: $source_container"
   echo "OUTPUT: $output_container"
   echo "SIGNED: ${SIGNED_REF:-<not set>}"
-  echo "BUILDER: ${builder_image:-<not specified>}"
+  echo "BUILDER: ${builder_image:-<will resolve from source>}"
   echo "RESEAL-WITH-KEY: ${SEAL_KEY_FILE:-<not set>}"
   echo "====================================="
 
@@ -403,6 +435,9 @@ run_inject_signed() {
     log_command "${pull_auth_cmd[@]}"
     "${pull_auth_cmd[@]}"
   fi
+
+  # Resolve builder image: explicit param > source annotation > default
+  resolve_builder_from_annotation "$source_container"
 
   # Build --build-container argument (from SHARED_RESEAL_ARGS in AIB)
   declare -a BUILD_CONTAINER_ARGS=()

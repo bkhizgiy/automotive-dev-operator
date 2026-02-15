@@ -766,7 +766,7 @@ Input, signed artifact, and output can be given as positionals or via --input, -
 		cmd.Flags().StringVar(&sealedArchitecture, "arch", "", "Target architecture for default builder image (amd64, arm64); auto-detected if not set")
 		cmd.Flags().StringArrayVar(&aibExtraArgs, "extra-args", nil, "Extra arguments to pass to AIB (repeatable)")
 		cmd.Flags().BoolVarP(&waitForBuild, "wait", "w", false, "Wait for completion")
-		cmd.Flags().BoolVarP(&followLogs, "follow", "f", false, "Stream task logs")
+		cmd.Flags().BoolVarP(&followLogs, "follow", "f", true, "Stream task logs")
 		cmd.Flags().StringVar(&sealedKeySecret, "key-secret", "", "Name of existing cluster secret containing sealing key (data key 'private-key')")
 		cmd.Flags().StringVar(&sealedKeyPasswordSecret, "key-password-secret", "", "Name of existing cluster secret containing key password (data key 'password')")
 		cmd.Flags().StringVar(&sealedKeyFile, "key", "", "Path to local PEM key file (uploaded to cluster automatically)")
@@ -2913,94 +2913,6 @@ func tryFlashLogStreaming(ctx context.Context, logClient *http.Client, name stri
 
 // ── Sealed operations ──
 
-// sealedContainerTool returns the container tool to use for local AIB execution
-func sealedContainerTool() string {
-	if t := os.Getenv("CONTAINER_TOOL"); t != "" {
-		return t
-	}
-	return "podman"
-}
-
-// sealedRunAIB runs the AIB container with the given subcommand and args
-func sealedRunAIB(subcommand, workDir string, args ...string) error {
-	tool := sealedContainerTool()
-	if _, err := exec.LookPath(tool); err != nil {
-		return fmt.Errorf("%s not found: %w (set CONTAINER_TOOL for docker)", tool, err)
-	}
-	absWork, err := filepath.Abs(workDir)
-	if err != nil {
-		return fmt.Errorf("resolve work dir: %w", err)
-	}
-	if err := os.MkdirAll(absWork, 0755); err != nil {
-		return fmt.Errorf("create work dir: %w", err)
-	}
-	aibArgs := []string{"run", "--rm", "-v", absWork + ":/workspace:rw", "--privileged",
-		automotiveImageBuilder, "aib", "--verbose", subcommand}
-	aibArgs = append(aibArgs, aibExtraArgs...)
-	aibArgs = append(aibArgs, args...)
-	cmd := exec.Command(tool, aibArgs...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("aib %s: %w", subcommand, err)
-	}
-	return nil
-}
-
-func sealedToContainerPath(rel string) string {
-	return "/workspace/" + strings.ReplaceAll(rel, "\\", "/")
-}
-
-func sealedEnsurePathInWorkspace(workDir, path string) (string, error) {
-	absWork, err := filepath.Abs(workDir)
-	if err != nil {
-		return "", err
-	}
-	if filepath.IsAbs(path) {
-		absPath := filepath.Clean(path)
-		rel, relErr := filepath.Rel(absWork, absPath)
-		if relErr != nil || strings.HasPrefix(rel, "..") {
-			return "", fmt.Errorf("path must be under work dir: %s", path)
-		}
-		return absPath, nil
-	}
-	return filepath.Join(absWork, path), nil
-}
-
-func sealedRunLocalTwoArgOp(subcommand, workDir, input, output string) error {
-	if workDir == "" {
-		workDir = "."
-	}
-	absWork, err := filepath.Abs(workDir)
-	if err != nil {
-		return fmt.Errorf("workspace: %w", err)
-	}
-	inPath, err := sealedEnsurePathInWorkspace(absWork, input)
-	if err != nil {
-		return err
-	}
-	if _, err := os.Stat(inPath); err != nil {
-		return fmt.Errorf("input disk: %w", err)
-	}
-	outPath, err := sealedEnsurePathInWorkspace(absWork, output)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
-		return fmt.Errorf("create output dir: %w", err)
-	}
-	relIn, err := filepath.Rel(absWork, inPath)
-	if err != nil {
-		return fmt.Errorf("resolve relative input path: %w", err)
-	}
-	relOut, err := filepath.Rel(absWork, outPath)
-	if err != nil {
-		return fmt.Errorf("resolve relative output path: %w", err)
-	}
-	return sealedRunAIB(subcommand, absWork, sealedToContainerPath(relIn), sealedToContainerPath(relOut))
-}
-
 func sealedRegistryCredentials(refs ...string) (registryURL, username, password string) {
 	username = strings.TrimSpace(os.Getenv("REGISTRY_USERNAME"))
 	password = strings.TrimSpace(os.Getenv("REGISTRY_PASSWORD"))
@@ -3239,13 +3151,7 @@ func runPrepareReseal(_ *cobra.Command, args []string) {
 	if err != nil {
 		handleError(err)
 	}
-	if strings.TrimSpace(serverURL) != "" {
-		sealedRunViaAPI(buildapitypes.SealedPrepareReseal, inputRef, outputRef, "")
-		return
-	}
-	if err := sealedRunLocalTwoArgOp("prepare-reseal", ".", inputRef, outputRef); err != nil {
-		handleError(err)
-	}
+	sealedRunViaAPI(buildapitypes.SealedPrepareReseal, inputRef, outputRef, "")
 }
 
 func runReseal(_ *cobra.Command, args []string) {
@@ -3253,13 +3159,7 @@ func runReseal(_ *cobra.Command, args []string) {
 	if err != nil {
 		handleError(err)
 	}
-	if strings.TrimSpace(serverURL) != "" {
-		sealedRunViaAPI(buildapitypes.SealedReseal, inputRef, outputRef, "")
-		return
-	}
-	if err := sealedRunLocalTwoArgOp("reseal", ".", inputRef, outputRef); err != nil {
-		handleError(err)
-	}
+	sealedRunViaAPI(buildapitypes.SealedReseal, inputRef, outputRef, "")
 }
 
 func runExtractForSigning(_ *cobra.Command, args []string) {
@@ -3267,40 +3167,7 @@ func runExtractForSigning(_ *cobra.Command, args []string) {
 	if err != nil {
 		handleError(err)
 	}
-	if strings.TrimSpace(serverURL) != "" {
-		sealedRunViaAPI(buildapitypes.SealedExtractForSigning, inputRef, outputRef, "")
-		return
-	}
-	workDir := "."
-	absWork, err := filepath.Abs(workDir)
-	if err != nil {
-		handleError(fmt.Errorf("workspace: %w", err))
-	}
-	inPath, err := sealedEnsurePathInWorkspace(absWork, inputRef)
-	if err != nil {
-		handleError(err)
-	}
-	if _, err := os.Stat(inPath); err != nil {
-		handleError(fmt.Errorf("input disk: %w", err))
-	}
-	outPath, err := sealedEnsurePathInWorkspace(absWork, outputRef)
-	if err != nil {
-		handleError(err)
-	}
-	if err := os.MkdirAll(outPath, 0755); err != nil {
-		handleError(fmt.Errorf("create output dir: %w", err))
-	}
-	relIn, err := filepath.Rel(absWork, inPath)
-	if err != nil {
-		handleError(fmt.Errorf("resolve relative input path: %w", err))
-	}
-	relOut, err := filepath.Rel(absWork, outPath)
-	if err != nil {
-		handleError(fmt.Errorf("resolve relative output path: %w", err))
-	}
-	if err := sealedRunAIB("extract-for-signing", absWork, sealedToContainerPath(relIn), sealedToContainerPath(relOut)); err != nil {
-		handleError(err)
-	}
+	sealedRunViaAPI(buildapitypes.SealedExtractForSigning, inputRef, outputRef, "")
 }
 
 func runInjectSigned(_ *cobra.Command, args []string) {
@@ -3308,51 +3175,5 @@ func runInjectSigned(_ *cobra.Command, args []string) {
 	if err != nil {
 		handleError(err)
 	}
-	if strings.TrimSpace(serverURL) != "" {
-		sealedRunViaAPI(buildapitypes.SealedInjectSigned, inputRef, outputRef, signedRef)
-		return
-	}
-	workDir := "."
-	absWork, err := filepath.Abs(workDir)
-	if err != nil {
-		handleError(fmt.Errorf("workspace: %w", err))
-	}
-	input, signedDir, output := inputRef, signedRef, outputRef
-	inPath, err := sealedEnsurePathInWorkspace(absWork, input)
-	if err != nil {
-		handleError(err)
-	}
-	if _, err := os.Stat(inPath); err != nil {
-		handleError(fmt.Errorf("input disk: %w", err))
-	}
-	signedPath, err := sealedEnsurePathInWorkspace(absWork, signedDir)
-	if err != nil {
-		handleError(err)
-	}
-	if _, err := os.Stat(signedPath); err != nil {
-		handleError(fmt.Errorf("signed dir: %w", err))
-	}
-	outPath, err := sealedEnsurePathInWorkspace(absWork, output)
-	if err != nil {
-		handleError(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
-		handleError(fmt.Errorf("create output dir: %w", err))
-	}
-	relIn, err := filepath.Rel(absWork, inPath)
-	if err != nil {
-		handleError(fmt.Errorf("resolve relative input path: %w", err))
-	}
-	relSigned, err := filepath.Rel(absWork, signedPath)
-	if err != nil {
-		handleError(fmt.Errorf("resolve relative signed path: %w", err))
-	}
-	relOut, err := filepath.Rel(absWork, outPath)
-	if err != nil {
-		handleError(fmt.Errorf("resolve relative output path: %w", err))
-	}
-	if err := sealedRunAIB("inject-signed", absWork,
-		sealedToContainerPath(relIn), sealedToContainerPath(relSigned), sealedToContainerPath(relOut)); err != nil {
-		handleError(err)
-	}
+	sealedRunViaAPI(buildapitypes.SealedInjectSigned, inputRef, outputRef, signedRef)
 }
