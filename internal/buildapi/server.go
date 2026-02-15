@@ -1146,42 +1146,6 @@ func applyBuildDefaults(req *BuildRequest) error {
 	return nil
 }
 
-// createManifestConfigMap creates a ConfigMap for the build manifest
-func createManifestConfigMap(
-	ctx context.Context, k8sClient client.Client,
-	namespace string, req *BuildRequest,
-) (string, error) {
-	cfgName := fmt.Sprintf("%s-manifest", req.Name)
-	cmData := map[string]string{req.ManifestFileName: req.Manifest}
-
-	if len(req.CustomDefs) > 0 {
-		cmData["custom-definitions.env"] = strings.Join(req.CustomDefs, "\n")
-	}
-	if len(req.AIBExtraArgs) > 0 {
-		cmData["aib-extra-args.txt"] = strings.Join(req.AIBExtraArgs, " ")
-	}
-
-	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cfgName,
-			Namespace: namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by":                  "build-api",
-				"app.kubernetes.io/part-of":                     "automotive-dev",
-				"app.kubernetes.io/created-by":                  "automotive-dev-build-api",
-				"automotive.sdv.cloud.redhat.com/resource-type": "manifest-config",
-			},
-		},
-		Data: cmData,
-	}
-
-	if err := k8sClient.Create(ctx, cm); err != nil {
-		return "", fmt.Errorf("error creating manifest ConfigMap: %w", err)
-	}
-
-	return cfgName, nil
-}
-
 // setupBuildSecrets creates necessary secrets for the build
 func setupBuildSecrets(
 	ctx context.Context, k8sClient client.Client,
@@ -1346,16 +1310,19 @@ func buildExportSpec(req *BuildRequest) *automotivev1alpha1.ExportSpec {
 }
 
 // buildAIBSpec creates AIBSpec configuration from build request
-func buildAIBSpec(req *BuildRequest, manifestConfigMap string, inputFilesServer bool) *automotivev1alpha1.AIBSpec {
+func buildAIBSpec(req *BuildRequest, manifest, manifestFileName string, inputFilesServer bool) *automotivev1alpha1.AIBSpec {
 	return &automotivev1alpha1.AIBSpec{
-		Distro:            string(req.Distro),
-		Target:            string(req.Target),
-		Mode:              string(req.Mode),
-		ManifestConfigMap: manifestConfigMap,
-		Image:             req.AutomotiveImageBuilder,
-		BuilderImage:      req.BuilderImage,
-		InputFilesServer:  inputFilesServer,
-		ContainerRef:      req.ContainerRef,
+		Distro:           string(req.Distro),
+		Target:           string(req.Target),
+		Mode:             string(req.Mode),
+		Manifest:         manifest,
+		ManifestFileName: manifestFileName,
+		Image:            req.AutomotiveImageBuilder,
+		BuilderImage:     req.BuilderImage,
+		InputFilesServer: inputFilesServer,
+		ContainerRef:     req.ContainerRef,
+		CustomDefs:       req.CustomDefs,
+		AIBExtraArgs:     req.AIBExtraArgs,
 	}
 }
 
@@ -1394,12 +1361,6 @@ func (a *APIServer) createBuild(c *gin.Context) {
 		return
 	} else if !k8serrors.IsNotFound(err) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error checking existing build: %v", err)})
-		return
-	}
-
-	cfgName, err := createManifestConfigMap(ctx, k8sClient, namespace, &req)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -1449,7 +1410,7 @@ func (a *APIServer) createBuild(c *gin.Context) {
 			StorageClass:  req.StorageClass,
 			SecretRef:     envSecretRef,
 			PushSecretRef: pushSecretName,
-			AIB:           buildAIBSpec(&req, cfgName, needsUpload),
+			AIB:           buildAIBSpec(&req, req.Manifest, req.ManifestFileName, needsUpload),
 			Export:        buildExportSpec(&req),
 			Flash:         flashSpec,
 		},
@@ -1460,13 +1421,6 @@ func (a *APIServer) createBuild(c *gin.Context) {
 	}
 
 	// Set owner references for cascading deletion
-	if err := setConfigMapOwnerRef(ctx, k8sClient, namespace, cfgName, imageBuild); err != nil {
-		log.Printf(
-			"WARNING: failed to set owner reference on ConfigMap %s: %v (cleanup may require manual intervention)",
-			cfgName, err,
-		)
-	}
-
 	if envSecretRef != "" {
 		if err := setSecretOwnerRef(ctx, k8sClient, namespace, envSecretRef, imageBuild); err != nil {
 			log.Printf(
@@ -1715,30 +1669,13 @@ func getBuildTemplate(c *gin.Context, name string) {
 		return
 	}
 
-	cm := &corev1.ConfigMap{}
-	manifestKey := types.NamespacedName{Name: build.Spec.GetManifestConfigMap(), Namespace: namespace}
-	if err := k8sClient.Get(ctx, manifestKey, cm); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error fetching manifest config: %v", err)})
-		return
+	manifest := build.Spec.GetManifest()
+	manifestFileName := build.Spec.GetManifestFileName()
+	if manifestFileName == "" {
+		manifestFileName = "manifest.aib.yml"
 	}
 
-	// Rehydrate advanced args
 	var aibExtra []string
-	if v, ok := cm.Data["aib-extra-args.txt"]; ok {
-		fields := strings.Fields(strings.TrimSpace(v))
-		aibExtra = append(aibExtra, fields...)
-	}
-
-	manifestFileName := "manifest.aib.yml"
-	var manifest string
-	for k, v := range cm.Data {
-		if k == "custom-definitions.env" || k == "aib-extra-args.txt" {
-			continue
-		}
-		manifestFileName = k
-		manifest = v
-		break
-	}
 
 	var sourceFiles []string
 	for _, line := range strings.Split(manifest, "\n") {
@@ -2038,22 +1975,6 @@ func copyFileToPod(config *rest.Config, namespace, podName, containerName, local
 	}
 	streamOpts := remotecommand.StreamOptions{Stdin: pr, Stdout: io.Discard, Stderr: io.Discard}
 	return executor.StreamWithContext(context.Background(), streamOpts)
-}
-
-func setConfigMapOwnerRef(
-	ctx context.Context,
-	c client.Client,
-	namespace, configMapName string,
-	owner *automotivev1alpha1.ImageBuild,
-) error {
-	cm := &corev1.ConfigMap{}
-	if err := c.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: namespace}, cm); err != nil {
-		return err
-	}
-	cm.OwnerReferences = []metav1.OwnerReference{
-		*metav1.NewControllerRef(owner, automotivev1alpha1.GroupVersion.WithKind("ImageBuild")),
-	}
-	return c.Update(ctx, cm)
 }
 
 func setSecretOwnerRef(

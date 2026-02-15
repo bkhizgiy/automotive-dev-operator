@@ -204,22 +204,6 @@ var _ = Describe("controller", Ordered, func() {
 		It("should build a real automotive image", func() {
 			var err error
 
-			By("creating a manifest ConfigMap")
-			manifestYAML := `
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: e2e-real-build-manifest
-  namespace: automotive-dev-operator-system
-data:
-  manifest.aib.yml: |
-    name: e2e-test-image
-`
-			cmd := exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(manifestYAML)
-			_, err = utils.Run(cmd)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-
 			By("creating an ImageBuild CR for a real build")
 			// Detect architecture for the build
 			arch := "amd64"
@@ -250,7 +234,9 @@ spec:
     distro: autosd
     target: qemu
     mode: image
-    manifestConfigMap: e2e-real-build-manifest
+    manifest: |
+      name: e2e-test-image
+    manifestFileName: "manifest.aib.yml"
     image: quay.io/centos-sig-automotive/automotive-image-builder:latest
 
   # Export configuration
@@ -259,7 +245,7 @@ spec:
     compression: gzip
     buildDiskImage: false
 `, arch)
-			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(imageBuildYAML)
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
@@ -331,9 +317,6 @@ spec:
 
 			By("cleaning up real build resources")
 			cmd = exec.Command("kubectl", "delete", "imagebuild", "e2e-real-build",
-				"-n", namespace, "--ignore-not-found=true")
-			_, _ = utils.Run(cmd)
-			cmd = exec.Command("kubectl", "delete", "configmap", "e2e-real-build-manifest",
 				"-n", namespace, "--ignore-not-found=true")
 			_, _ = utils.Run(cmd)
 		})

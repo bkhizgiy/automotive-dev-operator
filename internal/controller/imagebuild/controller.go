@@ -25,6 +25,7 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 const (
@@ -680,13 +681,19 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 		}
 	}
 
+	// Create an internal ConfigMap from the inline manifest content
+	manifestConfigMapName, err := r.createOrUpdateManifestConfigMap(ctx, imageBuild)
+	if err != nil {
+		return fmt.Errorf("failed to create manifest ConfigMap: %w", err)
+	}
+
 	pipelineWorkspaces := []tektonv1.WorkspaceBinding{
 		sharedWorkspaceBinding,
 		{
 			Name: "manifest-config-workspace",
 			ConfigMap: &corev1.ConfigMapVolumeSource{
 				LocalObjectReference: corev1.LocalObjectReference{
-					Name: imageBuild.Spec.GetManifestConfigMap(),
+					Name: manifestConfigMapName,
 				},
 			},
 		},
@@ -797,6 +804,56 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 
 	log.Info("Successfully created PipelineRun", "name", pipelineRun.Name)
 	return nil
+}
+
+// createOrUpdateManifestConfigMap creates or updates a ConfigMap containing the inline
+// manifest content from the ImageBuild spec. The ConfigMap is named "{imageBuild.Name}-manifest"
+// and owned by the ImageBuild CR for automatic garbage collection.
+func (r *ImageBuildReconciler) createOrUpdateManifestConfigMap(
+	ctx context.Context,
+	imageBuild *automotivev1alpha1.ImageBuild,
+) (string, error) {
+	configMapName := fmt.Sprintf("%s-manifest", imageBuild.Name)
+
+	manifestFileName := imageBuild.Spec.GetManifestFileName()
+	if manifestFileName == "" {
+		manifestFileName = "manifest.aib.yml"
+	}
+
+	manifestContent := imageBuild.Spec.GetManifest()
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      configMapName,
+			Namespace: imageBuild.Namespace,
+		},
+	}
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
+		cm.Labels = map[string]string{
+			"app.kubernetes.io/managed-by":                  "automotive-dev-operator",
+			"app.kubernetes.io/part-of":                     "automotive-dev",
+			"automotive.sdv.cloud.redhat.com/build-name":    imageBuild.Name,
+			"automotive.sdv.cloud.redhat.com/resource-type": "manifest",
+		}
+		cm.Data = map[string]string{
+			manifestFileName: manifestContent,
+		}
+
+		if customDefs := imageBuild.Spec.GetCustomDefs(); len(customDefs) > 0 {
+			cm.Data["custom-definitions.env"] = strings.Join(customDefs, "\n")
+		}
+		if extraArgs := imageBuild.Spec.GetAIBExtraArgs(); len(extraArgs) > 0 {
+			cm.Data["aib-extra-args.txt"] = strings.Join(extraArgs, " ")
+		}
+
+		return controllerutil.SetControllerReference(imageBuild, cm, r.Scheme)
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to create or update manifest ConfigMap %q: %w", configMapName, err)
+	}
+
+	return configMapName, nil
 }
 
 func (r *ImageBuildReconciler) createPushTaskRun(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild, artifactFilename string) error {
