@@ -33,7 +33,9 @@ import (
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/config"
 	buildapitypes "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi"
 	buildapiclient "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi/client"
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
@@ -42,6 +44,10 @@ const (
 	archARM64      = "arm64"
 	phaseCompleted = "Completed"
 	phaseFailed    = "Failed"
+	phaseFlashing  = "Flashing"
+	errPrefixBuild = "build"
+	errPrefixFlash = "flash"
+	errPrefixPush  = "push"
 )
 
 // getDefaultArch returns the current system architecture in caib format
@@ -113,6 +119,32 @@ func envBool(key string) bool {
 		return false
 	}
 	return b
+}
+
+func supportsColorOutput() bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		return false
+	}
+
+	termType := os.Getenv("TERM")
+	if termType == "dumb" {
+		return false
+	}
+
+	shell := os.Getenv("SHELL")
+
+	isSupportedShell := strings.Contains(shell, "bash") ||
+		strings.Contains(shell, "fish") ||
+		strings.Contains(shell, "zsh")
+
+	hasColorTerm := termType != "" &&
+		!strings.Contains(termType, "mono")
+
+	return !color.NoColor || isSupportedShell || hasColorTerm
 }
 
 // createBuildAPIClient creates a build API client with authentication token from flags or kubeconfig
@@ -838,6 +870,13 @@ func applyTargetDefaults(cmd *cobra.Command, config *buildapitypes.OperatorConfi
 
 // displayBuildResults shows push locations after build completion
 func displayBuildResults(ctx context.Context, api *buildapiclient.Client, buildName string) {
+	labelColor := func(a ...any) string { return fmt.Sprint(a...) }
+	valueColor := func(a ...any) string { return fmt.Sprint(a...) }
+	if supportsColorOutput() {
+		labelColor = color.New(color.FgHiBlue, color.Bold).SprintFunc()
+		valueColor = color.New(color.FgCyan).SprintFunc()
+	}
+
 	if useInternalRegistry {
 		st, err := api.GetBuild(ctx, buildName)
 		if err != nil {
@@ -845,10 +884,10 @@ func displayBuildResults(ctx context.Context, api *buildapiclient.Client, buildN
 			return
 		}
 		if st.ContainerImage != "" {
-			fmt.Printf("Container image: %s\n", st.ContainerImage)
+			fmt.Printf("%s %s\n", labelColor("Container image:"), valueColor(st.ContainerImage))
 		}
 		if st.DiskImage != "" {
-			fmt.Printf("Disk image: %s\n", st.DiskImage)
+			fmt.Printf("%s %s\n", labelColor("Disk image:"), valueColor(st.DiskImage))
 		}
 		if st.RegistryToken != "" {
 			if outputDir != "" && st.DiskImage != "" {
@@ -857,20 +896,22 @@ func displayBuildResults(ctx context.Context, api *buildapiclient.Client, buildN
 				credsFile, err := writeRegistryCredentialsFile(st.RegistryToken)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: failed to write registry credentials file: %v\n", err)
-					fmt.Printf("\nRegistry credentials (valid ~4 hours):\n")
-					fmt.Printf("  Username: serviceaccount\n")
-					fmt.Printf("  Token:    %s\n", st.RegistryToken)
+					fmt.Printf("\n%s\n", labelColor("Registry credentials (valid ~4 hours):"))
+					fmt.Printf("  %s %s\n", labelColor("Username:"), valueColor("serviceaccount"))
+					fmt.Printf("  %s %s\n", labelColor("Token:"), valueColor(st.RegistryToken))
 				} else {
-					fmt.Printf("\nRegistry credentials written to: %s (valid ~4 hours)\n", credsFile)
+					fmt.Printf("\n%s %s (valid ~4 hours)\n",
+						labelColor("Registry credentials written to:"),
+						valueColor(credsFile))
 				}
 			}
 		}
 	} else {
 		if containerPush != "" {
-			fmt.Printf("Container image pushed to: %s\n", containerPush)
+			fmt.Printf("%s %s\n", labelColor("Container image pushed to:"), valueColor(containerPush))
 		}
 		if exportOCI != "" {
-			fmt.Printf("Disk image pushed to: %s\n", exportOCI)
+			fmt.Printf("%s %s\n", labelColor("Disk image pushed to:"), valueColor(exportOCI))
 		}
 		_, registryUsername, registryPassword := extractRegistryCredentials(containerPush, exportOCI)
 		downloadOCIArtifactIfRequested(outputDir, exportOCI, registryUsername, registryPassword, insecureSkipTLS)
@@ -1546,8 +1587,10 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 	if insecureSkipTLS {
 		logTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
+	// No hard Timeout on the client: log streams can run for the entire
+	// build duration (often >10 min). The build's context timeout
+	// (timeoutCtx) already governs cancellation via the request context.
 	logClient := &http.Client{
-		Timeout:   10 * time.Minute,
 		Transport: logTransport,
 	}
 	streamState := &logStreamState{}
@@ -1578,10 +1621,20 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 			if st.Phase == phaseCompleted {
 				flashWasExecuted := strings.Contains(st.Message, "flash")
 				if flashWasExecuted {
-					fmt.Println("\n" + strings.Repeat("=", 50))
-					fmt.Println("Build and flash completed successfully!")
-					fmt.Println(strings.Repeat("=", 50))
-					fmt.Println("\nThe device has been flashed and a lease has been acquired.")
+					bannerColor := func(a ...any) string { return fmt.Sprint(a...) }
+					infoColor := func(a ...any) string { return fmt.Sprint(a...) }
+					commandColor := func(a ...any) string { return fmt.Sprint(a...) }
+					if supportsColorOutput() {
+						bannerColor = color.New(color.FgGreen, color.Bold).SprintFunc()
+						infoColor = color.New(color.FgHiGreen).SprintFunc()
+						commandColor = color.New(color.FgCyan, color.Bold).SprintFunc()
+					}
+
+					divider := strings.Repeat("=", 50)
+					fmt.Println("\n" + bannerColor(divider))
+					fmt.Println(bannerColor("Build and flash completed successfully!"))
+					fmt.Println(bannerColor(divider))
+					fmt.Println("\n" + infoColor("The device has been flashed and a lease has been acquired."))
 					// Get lease ID from API response (preferred) or fall back to log parsing
 					leaseID := ""
 					if st.Jumpstarter != nil && st.Jumpstarter.LeaseID != "" {
@@ -1590,18 +1643,18 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 						leaseID = streamState.leaseID
 					}
 					if leaseID != "" {
-						fmt.Printf("\nLease ID: %s\n", leaseID)
-						fmt.Println("\nTo access the device:")
-						fmt.Printf("  jmp shell --lease %s\n", leaseID)
-						fmt.Println("\nTo release the lease when done:")
-						fmt.Printf("  jmp delete leases %s\n", leaseID)
+						fmt.Printf("\n%s %s\n", infoColor("Lease ID:"), commandColor(leaseID))
+						fmt.Printf("\n%s\n", infoColor("To access the device:"))
+						fmt.Printf("  %s\n", commandColor(fmt.Sprintf("jmp shell --lease %s", leaseID)))
+						fmt.Printf("\n%s\n", infoColor("To release the lease when done:"))
+						fmt.Printf("  %s\n", commandColor(fmt.Sprintf("jmp delete leases %s", leaseID)))
 					} else {
-						fmt.Println("Check the logs above for lease details, or use:")
-						fmt.Println("  jmp list leases")
-						fmt.Println("\nTo access the device:")
-						fmt.Println("  jmp shell --lease <lease-id>")
-						fmt.Println("\nTo release the lease when done:")
-						fmt.Println("  jmp delete leases <lease-id>")
+						fmt.Println(infoColor("Check the logs above for lease details, or use:"))
+						fmt.Printf("  %s\n", commandColor("jmp list leases"))
+						fmt.Printf("\n%s\n", infoColor("To access the device:"))
+						fmt.Printf("  %s\n", commandColor("jmp shell --lease <lease-id>"))
+						fmt.Printf("\n%s\n", infoColor("To release the lease when done:"))
+						fmt.Printf("  %s\n", commandColor("jmp delete leases <lease-id>"))
 					}
 				} else {
 					fmt.Println("Build completed successfully!")
@@ -1610,36 +1663,55 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 						fmt.Println("This may be because no Jumpstarter target mapping exists for this target.")
 						fmt.Println("Check OperatorConfig for JumpstarterTargetMappings configuration.")
 					}
-					if st.Jumpstarter != nil && st.Jumpstarter.Available {
-						fmt.Println("\nJumpstarter is available")
-						if st.Jumpstarter.ExporterSelector != "" {
-							fmt.Println("matching exporter(s) found")
-							fmt.Printf("  Exporter selector: %s\n", st.Jumpstarter.ExporterSelector)
-						}
-						if st.Jumpstarter.FlashCmd != "" {
-							fmt.Printf("  Flash command: %s\n", st.Jumpstarter.FlashCmd)
-						}
-					}
+					// Show flash instructions with colors
+					displayFlashInstructions(st, false)
 				}
 				return
 			}
 			if st.Phase == phaseFailed {
 				// Provide phase-specific error messages
-				errPrefix := "build"
-				if strings.Contains(strings.ToLower(st.Message), "flash") {
-					errPrefix = "flash"
-				} else if strings.Contains(strings.ToLower(st.Message), "push") {
-					errPrefix = "push"
-				} else if lastPhase == "Flashing" {
-					errPrefix = "flash"
+				errPrefix := errPrefixBuild
+				isFlashFailure := false
+
+				if strings.Contains(strings.ToLower(st.Message), errPrefixFlash) {
+					errPrefix = errPrefixFlash
+					isFlashFailure = true
+				} else if strings.Contains(strings.ToLower(st.Message), errPrefixPush) {
+					errPrefix = errPrefixPush
+				} else if lastPhase == phaseFlashing {
+					errPrefix = errPrefixFlash
+					isFlashFailure = true
 				} else if lastPhase == "Pushing" {
-					errPrefix = "push"
+					errPrefix = errPrefixPush
+				} else if flashAfterBuild && (lastPhase == phaseFlashing || strings.Contains(strings.ToLower(st.Message), errPrefixFlash)) {
+					// Only treat as flash failure if we actually reached a flash-related phase
+					// or the error message explicitly indicates a flash error
+					errPrefix = errPrefixFlash
+					isFlashFailure = true
 				}
-				handleError(fmt.Errorf("%s failed: %s", errPrefix, st.Message))
+
+				err := fmt.Errorf("%s failed: %s", errPrefix, st.Message)
+				if isFlashFailure {
+					handleFlashError(err, st)
+				} else {
+					handleError(err)
+				}
 			}
 
 			// Attempt log streaming for active builds
-			if !followLogs || streamState.active || !streamState.canRetry() {
+			if !followLogs || streamState.active {
+				continue
+			}
+
+			// If the stream ended cleanly but the build is still active
+			// (e.g. stream covered build tasks but flash pod hadn't appeared yet),
+			// allow reconnection so we pick up remaining task logs.
+			if streamState.completed && isBuildActive(st.Phase) {
+				streamState.completed = false
+				streamState.retryCount = 0
+			}
+
+			if !streamState.canRetry() {
 				continue
 			}
 
@@ -1696,7 +1768,7 @@ func (s *logStreamState) reset() {
 }
 
 func isBuildActive(phase string) bool {
-	return phase == "Building" || phase == "Running" || phase == "Uploading" || phase == "Flashing"
+	return phase == "Building" || phase == "Running" || phase == "Uploading" || phase == phaseFlashing
 }
 
 // tryLogStreaming attempts to stream logs and returns error if it fails
@@ -1810,6 +1882,74 @@ func handleLogStreamError(resp *http.Response, state *logStreamState) error {
 
 func handleError(err error) {
 	fmt.Printf("Error: %v\n", err)
+	os.Exit(1)
+}
+
+// displayFlashInstructions shows colorful flashing instructions when flash is not executed or fails
+func displayFlashInstructions(st *buildapitypes.BuildResponse, isFailure bool) {
+	if st.Jumpstarter == nil || !st.Jumpstarter.Available {
+		return
+	}
+
+	colorsSupported := supportsColorOutput()
+
+	var headerColor, commandColor, infoColor func(...any) string
+	var headerPrefix, commandPrefix string
+
+	if isFailure {
+		if colorsSupported {
+			headerColor = color.New(color.FgRed, color.Bold).SprintFunc()
+			commandColor = color.New(color.FgYellow, color.Bold).SprintFunc()
+			infoColor = color.New(color.FgHiRed).SprintFunc()
+		} else {
+			headerColor = func(a ...any) string { return fmt.Sprint(a...) }
+			commandColor = func(a ...any) string { return fmt.Sprint(a...) }
+			infoColor = func(a ...any) string { return fmt.Sprint(a...) }
+			headerPrefix = "[!] "
+			commandPrefix = ">> "
+		}
+	} else {
+		if colorsSupported {
+			// Success mode: use calmer, informational colors
+			headerColor = color.New(color.FgBlue, color.Bold).SprintFunc()
+			commandColor = color.New(color.FgCyan, color.Bold).SprintFunc()
+			infoColor = color.New(color.FgHiBlue).SprintFunc()
+		} else {
+			// Fallback with symbols for no-color terminals
+			headerColor = func(a ...any) string { return fmt.Sprint(a...) }
+			commandColor = func(a ...any) string { return fmt.Sprint(a...) }
+			infoColor = func(a ...any) string { return fmt.Sprint(a...) }
+			headerPrefix = "[*] "
+			commandPrefix = ">> "
+		}
+	}
+
+	if isFailure {
+		fmt.Printf("\n%s%s\n", headerPrefix, headerColor("Manual Flash Required"))
+		fmt.Printf("%s\n", infoColor("Flash failed, but you can flash manually using Jumpstarter:"))
+	} else {
+		fmt.Printf("\n%s%s\n", headerPrefix, headerColor("Jumpstarter Flash Available"))
+		fmt.Printf("%s\n", infoColor("Jumpstarter is available for flashing:"))
+	}
+
+	if st.Jumpstarter.ExporterSelector != "" {
+		fmt.Printf("  %s %s\n", infoColor("Exporter selector:"), st.Jumpstarter.ExporterSelector)
+	}
+
+	if st.Jumpstarter.FlashCmd != "" {
+		fmt.Printf("  %s\n", infoColor("Flash command:"))
+		fmt.Printf("    %s%s\n", commandPrefix, commandColor(st.Jumpstarter.FlashCmd))
+	}
+}
+
+func handleFlashError(err error, st *buildapitypes.BuildResponse) {
+	fmt.Printf("Error: %v\n", err)
+
+	// Show flash instructions to help user flash manually after failure
+	if flashAfterBuild && st != nil {
+		displayFlashInstructions(st, true)
+	}
+
 	os.Exit(1)
 }
 
@@ -2356,9 +2496,23 @@ func parseLeaseDuration(duration string) time.Duration {
 		return time.Hour // Default 1 hour
 	}
 	var hours, mins, secs int
-	_, _ = fmt.Sscanf(parts[0], "%d", &hours)
-	_, _ = fmt.Sscanf(parts[1], "%d", &mins)
-	_, _ = fmt.Sscanf(parts[2], "%d", &secs)
+
+	// Validate each part can be parsed as an integer
+	if n, err := fmt.Sscanf(parts[0], "%d", &hours); n != 1 || err != nil {
+		return time.Hour // Default 1 hour if hours is invalid
+	}
+	if n, err := fmt.Sscanf(parts[1], "%d", &mins); n != 1 || err != nil {
+		return time.Hour // Default 1 hour if minutes is invalid
+	}
+	if n, err := fmt.Sscanf(parts[2], "%d", &secs); n != 1 || err != nil {
+		return time.Hour // Default 1 hour if seconds is invalid
+	}
+
+	// Validate ranges to prevent negative or extremely large values
+	if hours < 0 || hours > 8760 || mins < 0 || mins >= 60 || secs < 0 || secs >= 60 {
+		return time.Hour // Default 1 hour if values are out of reasonable range
+	}
+
 	return time.Duration(hours)*time.Hour + time.Duration(mins)*time.Minute + time.Duration(secs)*time.Second
 }
 
@@ -2432,8 +2586,10 @@ func waitForFlashCompletion(ctx context.Context, api *buildapiclient.Client, nam
 	if insecureSkipTLS {
 		flashLogTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
+	// No hard Timeout on the client: flash operations can stream logs for
+	// the entire lease duration (default 3 hours, user-configurable). The
+	// flash's context timeout (timeoutCtx) already governs cancellation.
 	logClient := &http.Client{
-		Timeout:   10 * time.Minute,
 		Transport: flashLogTransport,
 	}
 	streamState := &logStreamState{}

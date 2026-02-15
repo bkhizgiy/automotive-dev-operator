@@ -6,13 +6,16 @@ toolchain go1.24.4
 
 require (
 	github.com/containers/image/v5 v5.36.2
+	github.com/fatih/color v1.18.0
 	github.com/gin-gonic/gin v1.10.1
 	github.com/golang-jwt/jwt/v5 v5.2.2
 	github.com/onsi/ginkgo/v2 v2.23.4
 	github.com/onsi/gomega v1.36.3
+	golang.org/x/term v0.35.0
 	k8s.io/apimachinery v0.33.3
 	k8s.io/apiserver v0.33.3
 	k8s.io/client-go v0.33.3
+	knative.dev/pkg v0.0.0-20250716115900-19d3cc2da0b9
 	sigs.k8s.io/controller-runtime v0.19.1
 )
 
@@ -58,6 +61,7 @@ require (
 	github.com/klauspost/pgzip v1.2.6 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/letsencrypt/boulder v0.0.0-20240620165639-de9c06129bec // indirect
+	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/mattn/go-sqlite3 v1.14.28 // indirect
@@ -96,7 +100,6 @@ require (
 	golang.org/x/crypto v0.42.0 // indirect
 	google.golang.org/api v0.243.0 // indirect
 	gopkg.in/go-jose/go-jose.v2 v2.6.3 // indirect
-	knative.dev/pkg v0.0.0-20250716115900-19d3cc2da0b9 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.6.0 // indirect
 )
@@ -160,7 +163,6 @@ require (
 	golang.org/x/oauth2 v0.30.0 // indirect
 	golang.org/x/sync v0.17.0 // indirect
 	golang.org/x/sys v0.36.0 // indirect
-	golang.org/x/term v0.35.0 // indirect
 	golang.org/x/text v0.29.0 // indirect
 	golang.org/x/time v0.12.0 // indirect
 	golang.org/x/tools v0.36.0 // indirect
@@ -181,5 +183,5 @@ require (
 	k8s.io/utils v0.0.0-20250604170112-4c0f3b243397
 	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.32.0 // indirect
 	sigs.k8s.io/json v0.0.0-20241014173422-cfa47c3a1cc8 // indirect
-	sigs.k8s.io/yaml v1.6.0
+	sigs.k8s.io/yaml v1.6.0 // indirect
 )
