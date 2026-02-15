@@ -173,6 +173,7 @@ parts_dir="${exportFile}-parts"
 distro="$(params.distro)"
 target="$(params.target)"
 arch="$(params.arch)"
+builder_image_used="$(params.builder-image)"
 
 config_file="/etc/partition-config/partition-rules.yaml"
 default_partitions=""
@@ -194,6 +195,13 @@ if [ -n "$default_partitions" ]; then
   default_partitions_escaped=$(json_escape "$default_partitions")
   default_partitions_annotation=",
     \"automotive.sdv.cloud.redhat.com/default-partitions\": \"${default_partitions_escaped}\""
+fi
+
+builder_image_annotation=""
+if [ -n "$builder_image_used" ]; then
+  builder_image_escaped=$(json_escape "$builder_image_used")
+  builder_image_annotation=",
+    \"automotive.sdv.cloud.redhat.com/builder-image\": \"${builder_image_escaped}\""
 fi
 
 cd /workspace/shared
@@ -298,7 +306,7 @@ if [ -d "${parts_dir}" ] && [ -n "$(ls -A "${parts_dir}" 2>/dev/null)" ]; then
     "automotive.sdv.cloud.redhat.com/parts": "${file_list}",
     "automotive.sdv.cloud.redhat.com/distro": "${distro}",
     "automotive.sdv.cloud.redhat.com/target": "${target}",
-    "automotive.sdv.cloud.redhat.com/arch": "${arch}"${default_partitions_annotation}
+    "automotive.sdv.cloud.redhat.com/arch": "${arch}"${default_partitions_annotation}${builder_image_annotation}
   },
   ${layer_annotations_json}
 }
@@ -346,6 +354,10 @@ else
       echo "  Contents: ${file_list}"
       annotation_args="--annotation automotive.sdv.cloud.redhat.com/parts=${file_list}"
     fi
+  fi
+
+  if [ -n "$builder_image_used" ]; then
+    annotation_args="${annotation_args} --annotation automotive.sdv.cloud.redhat.com/builder-image=${builder_image_used}"
   fi
 
   echo "Pushing single-file artifact to ${repo_url}"

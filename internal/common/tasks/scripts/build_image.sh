@@ -296,6 +296,9 @@ if [ -z "$BUILDER_IMAGE" ] && { [ "$BUILD_MODE" = "bootc" ] || [ "$BUILD_MODE" =
   echo "Using builder image from cluster registry: $BUILDER_IMAGE"
 fi
 
+# Record the effective builder image used for annotation
+echo -n "${BUILDER_IMAGE:-}" > /tekton/results/builder-image
+
 if [ -n "$BUILDER_IMAGE" ] && { [ "$BUILD_MODE" = "bootc" ] || [ "$BUILD_MODE" = "disk" ]; }; then
   echo "Pulling builder image to local storage: $BUILDER_IMAGE"
 
@@ -370,11 +373,42 @@ case "$BUILD_MODE" in
         "${DISK_OUTPUT_ARGS[@]}"
 
       if [ -n "$CONTAINER_PUSH" ]; then
+        PUSH_SRC="containers-storage:$BOOTC_CONTAINER_NAME"
+
+        # Add builder-image as manifest annotation + config label
+        if [ -n "$BUILDER_IMAGE" ]; then
+          echo "Annotating bootc container with builder image: $BUILDER_IMAGE"
+          OCI_DIR="/tmp/bootc-oci"
+          rm -rf "$OCI_DIR"
+          skopeo copy "$PUSH_SRC" "oci:${OCI_DIR}:latest"
+          python3 - "$OCI_DIR" "$BUILDER_IMAGE" <<'PYEOF'
+import json, sys, hashlib, os
+KEY = "automotive.sdv.cloud.redhat.com/builder-image"
+def update_blob(d, old_dig, data):
+    content = json.dumps(data, indent=2).encode()
+    h = hashlib.sha256(content).hexdigest()
+    new_p = os.path.join(d, "blobs", "sha256", h)
+    old_p = os.path.join(d, "blobs", *old_dig.split(":", 1))
+    with open(new_p, "wb") as f: f.write(content)
+    if old_p != new_p: os.remove(old_p)
+    return f"sha256:{h}", len(content)
+d, val = sys.argv[1], sys.argv[2]
+with open(os.path.join(d, "index.json")) as f: index = json.load(f)
+entry = index["manifests"][0]
+with open(os.path.join(d, "blobs", *entry["digest"].split(":", 1))) as f: manifest = json.load(f)
+with open(os.path.join(d, "blobs", *manifest["config"]["digest"].split(":", 1))) as f: config = json.load(f)
+config.setdefault("config", {}).setdefault("Labels", {})[KEY] = val
+manifest["config"]["digest"], manifest["config"]["size"] = update_blob(d, manifest["config"]["digest"], config)
+manifest.setdefault("annotations", {})[KEY] = val
+entry["digest"], entry["size"] = update_blob(d, entry["digest"], manifest)
+with open(os.path.join(d, "index.json"), "w") as f: json.dump(index, f, indent=2)
+PYEOF
+          PUSH_SRC="oci:${OCI_DIR}:latest"
+        fi
+
         echo "Pushing container to registry: $CONTAINER_PUSH"
-        skopeo copy \
-          --authfile="$REGISTRY_AUTH_FILE" \
-          "containers-storage:$BOOTC_CONTAINER_NAME" \
-          "docker://$CONTAINER_PUSH"
+        skopeo copy --authfile="$REGISTRY_AUTH_FILE" "$PUSH_SRC" "docker://$CONTAINER_PUSH"
+        rm -rf "${OCI_DIR:-/tmp/nonexistent}" 2>/dev/null || true
         echo "Container pushed successfully to $CONTAINER_PUSH"
       fi
 
