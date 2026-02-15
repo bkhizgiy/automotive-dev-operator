@@ -1546,8 +1546,10 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 	if insecureSkipTLS {
 		logTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
+	// No hard Timeout on the client: log streams can run for the entire
+	// build duration (often >10 min). The build's context timeout
+	// (timeoutCtx) already governs cancellation via the request context.
 	logClient := &http.Client{
-		Timeout:   10 * time.Minute,
 		Transport: logTransport,
 	}
 	streamState := &logStreamState{}
@@ -1639,7 +1641,19 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 			}
 
 			// Attempt log streaming for active builds
-			if !followLogs || streamState.active || !streamState.canRetry() {
+			if !followLogs || streamState.active {
+				continue
+			}
+
+			// If the stream ended cleanly but the build is still active
+			// (e.g. stream covered build tasks but flash pod hadn't appeared yet),
+			// allow reconnection so we pick up remaining task logs.
+			if streamState.completed && isBuildActive(st.Phase) {
+				streamState.completed = false
+				streamState.retryCount = 0
+			}
+
+			if !streamState.canRetry() {
 				continue
 			}
 

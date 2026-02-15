@@ -631,12 +631,6 @@ func streamContainerLogs(
 	if err != nil {
 		return false
 	}
-
-	_, _ = c.Writer.Write([]byte(
-		"\n===== Logs from " + taskName + "/" + strings.TrimPrefix(containerName, "step-") + " =====\n\n",
-	))
-	c.Writer.Flush()
-
 	defer func() {
 		if err := stream.Close(); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to close stream: %v\n", err)
@@ -646,12 +640,24 @@ func streamContainerLogs(
 	scanner := bufio.NewScanner(stream)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 
+	headerWritten := false
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
 			return true
 		default:
 		}
+
+		// Write header only when the first line of actual content arrives.
+		// This avoids printing empty headers on reconnection for containers
+		// whose logs have already been streamed.
+		if !headerWritten {
+			_, _ = c.Writer.Write([]byte(
+				"\n===== Logs from " + taskName + "/" + strings.TrimPrefix(containerName, "step-") + " =====\n\n",
+			))
+			headerWritten = true
+		}
+
 		line := scanner.Bytes()
 		if _, writeErr := c.Writer.Write(line); writeErr != nil {
 			return true
@@ -811,11 +817,21 @@ func (a *APIServer) streamLogs(c *gin.Context, name string) {
 			break
 		}
 
-		if !hadStream || !allPodsComplete {
-			time.Sleep(2 * time.Second)
-		}
+		// Always sleep between iterations to avoid tight-looping
+		// (e.g. when build pods are done but flash pod hasn't appeared yet)
+		time.Sleep(2 * time.Second)
+
 		if !hadStream {
 			_, _ = c.Writer.Write([]byte("."))
+			if f, ok := c.Writer.(http.Flusher); ok {
+				f.Flush()
+			}
+		} else if allPodsComplete {
+			// All current pods are done but build isn't finished (e.g. waiting
+			// for flash pod to be scheduled). Send a newline-terminated
+			// keepalive so the client's line-based scanner can process it,
+			// preventing both proxy idle-timeouts and client HTTP timeouts.
+			_, _ = c.Writer.Write([]byte("[Waiting for remaining pipeline tasks...]\n"))
 			if f, ok := c.Writer.(http.Flusher); ok {
 				f.Flush()
 			}
