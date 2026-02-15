@@ -1587,9 +1587,10 @@ func (a *APIServer) getBuild(c *gin.Context, name string) {
 		}
 	}
 
-	// For completed builds, check if Jumpstarter is available and get target mapping
+	// For terminal builds, include Jumpstarter mapping so the CLI can show
+	// manual flash guidance after successful or failed flash attempts.
 	var jumpstarterInfo *JumpstarterInfo
-	if build.Status.Phase == "Completed" {
+	if build.Status.Phase == phaseCompleted || build.Status.Phase == phaseFailed {
 		operatorConfig := &automotivev1alpha1.OperatorConfig{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: "config", Namespace: namespace}, operatorConfig); err == nil {
 			if operatorConfig.Status.JumpstarterAvailable {
