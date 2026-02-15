@@ -31,11 +31,11 @@ func TestSealedTasks(t *testing.T) {
 var _ = Describe("Sealed Tasks", func() {
 
 	Describe("SealedTaskName", func() {
-		It("should prefix operation with 'sealed-'", func() {
-			Expect(SealedTaskName("prepare-reseal")).To(Equal("sealed-prepare-reseal"))
-			Expect(SealedTaskName("reseal")).To(Equal("sealed-reseal"))
-			Expect(SealedTaskName("extract-for-signing")).To(Equal("sealed-extract-for-signing"))
-			Expect(SealedTaskName("inject-signed")).To(Equal("sealed-inject-signed"))
+		It("should return the operation name as the task name", func() {
+			Expect(SealedTaskName("prepare-reseal")).To(Equal("prepare-reseal"))
+			Expect(SealedTaskName("reseal")).To(Equal("reseal"))
+			Expect(SealedTaskName("extract-for-signing")).To(Equal("extract-for-signing"))
+			Expect(SealedTaskName("inject-signed")).To(Equal("inject-signed"))
 		})
 	})
 
@@ -51,7 +51,7 @@ var _ = Describe("Sealed Tasks", func() {
 	Describe("GenerateSealedTaskForOperation", func() {
 		It("should set correct name and namespace", func() {
 			task := GenerateSealedTaskForOperation("test-ns", "prepare-reseal")
-			Expect(task.Name).To(Equal("sealed-prepare-reseal"))
+			Expect(task.Name).To(Equal("prepare-reseal"))
 			Expect(task.Namespace).To(Equal("test-ns"))
 		})
 
@@ -77,8 +77,8 @@ var _ = Describe("Sealed Tasks", func() {
 				names[i] = t.Name
 			}
 			Expect(names).To(ContainElements(
-				"sealed-prepare-reseal", "sealed-reseal",
-				"sealed-extract-for-signing", "sealed-inject-signed",
+				"prepare-reseal", "reseal",
+				"extract-for-signing", "inject-signed",
 			))
 		})
 	})
@@ -228,10 +228,10 @@ var _ = Describe("Sealed Tasks", func() {
 		})
 
 		Describe("step", func() {
-			It("should have a single step named sealed-op", func() {
+			It("should have a single step named run-op", func() {
 				task := GenerateSealedTaskForOperation("test-ns", "inject-signed")
 				Expect(task.Spec.Steps).To(HaveLen(1))
-				Expect(task.Spec.Steps[0].Name).To(Equal("sealed-op"))
+				Expect(task.Spec.Steps[0].Name).To(Equal("run-op"))
 			})
 
 			It("should use aib-image param as the step image", func() {
@@ -253,10 +253,10 @@ var _ = Describe("Sealed Tasks", func() {
 		})
 
 		Describe("results", func() {
-			It("should declare sealed-container result", func() {
+			It("should declare output-container result", func() {
 				task := GenerateSealedTaskForOperation("test-ns", "reseal")
 				Expect(task.Spec.Results).To(HaveLen(1))
-				Expect(task.Spec.Results[0].Name).To(Equal("sealed-container"))
+				Expect(task.Spec.Results[0].Name).To(Equal("output-container"))
 			})
 		})
 	})
