@@ -750,6 +750,7 @@ func (a *APIServer) streamLogs(c *gin.Context, name string) {
 
 	pipelineRunSelector := "tekton.dev/pipelineRun=" + tr + ",tekton.dev/memberOf=tasks"
 	var hadStream bool
+	var lastKeepalive time.Time
 	streamedContainers := make(map[string]map[string]bool)
 	completedPods := make(map[string]bool)
 
@@ -831,9 +832,14 @@ func (a *APIServer) streamLogs(c *gin.Context, name string) {
 			// for flash pod to be scheduled). Send a newline-terminated
 			// keepalive so the client's line-based scanner can process it,
 			// preventing both proxy idle-timeouts and client HTTP timeouts.
-			_, _ = c.Writer.Write([]byte("[Waiting for remaining pipeline tasks...]\n"))
-			if f, ok := c.Writer.(http.Flusher); ok {
-				f.Flush()
+			// Only send every 30 seconds to avoid flooding the logs.
+			now := time.Now()
+			if now.Sub(lastKeepalive) >= 30*time.Second {
+				_, _ = c.Writer.Write([]byte("[Waiting for remaining pipeline tasks...]\n"))
+				if f, ok := c.Writer.(http.Flusher); ok {
+					f.Flush()
+				}
+				lastKeepalive = now
 			}
 		}
 	}

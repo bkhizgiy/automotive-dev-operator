@@ -2568,8 +2568,10 @@ func waitForFlashCompletion(ctx context.Context, api *buildapiclient.Client, nam
 	if insecureSkipTLS {
 		flashLogTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
+	// No hard Timeout on the client: flash operations can stream logs for
+	// the entire lease duration (default 3 hours, user-configurable). The
+	// flash's context timeout (timeoutCtx) already governs cancellation.
 	logClient := &http.Client{
-		Timeout:   10 * time.Minute,
 		Transport: flashLogTransport,
 	}
 	streamState := &logStreamState{}
