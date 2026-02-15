@@ -20,6 +20,7 @@ package imagereseal
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -112,7 +113,11 @@ func (r *Reconciler) handlePending(ctx context.Context, sealed *automotivev1alph
 
 	sealed.Status.StartTime = &metav1.Time{Time: time.Now()}
 	sealed.Status.Phase = phaseRunning
-	sealed.Status.Message = "Reseal operation started"
+	if len(stages) == 1 {
+		sealed.Status.Message = fmt.Sprintf("Running - %s started", stages[0])
+	} else {
+		sealed.Status.Message = fmt.Sprintf("Running - pipeline started (%s)", strings.Join(stages, ", "))
+	}
 	if err := r.Status().Update(ctx, sealed); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -261,7 +266,7 @@ func (r *Reconciler) createSealedTaskRun(ctx context.Context, sealed *automotive
 			Name:      taskRunName,
 			Namespace: sealed.Namespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/managed-by":                "imagereseal-controller",
+				"app.kubernetes.io/managed-by":                "automotive-dev-operator",
 				tasks.SealedTaskRunLabel:                      sealed.Name,
 				"automotive.sdv.cloud.redhat.com/imagereseal": sealed.Name,
 			},
@@ -371,7 +376,7 @@ func (r *Reconciler) createSealedPipelineRun(ctx context.Context, sealed *automo
 			Name:      prName,
 			Namespace: sealed.Namespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/managed-by":                "imagereseal-controller",
+				"app.kubernetes.io/managed-by":                "automotive-dev-operator",
 				"automotive.sdv.cloud.redhat.com/imagereseal": sealed.Name,
 			},
 			OwnerReferences: []metav1.OwnerReference{
