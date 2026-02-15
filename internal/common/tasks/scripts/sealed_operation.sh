@@ -300,7 +300,7 @@ run_container_seal_op() {
 
   # Run the operation
   if [ -z "$SEAL_KEY_FILE" ] || [ ! -f "$SEAL_KEY_FILE" ]; then
-    echo "No key provided - aib may generate ephemeral key"
+    echo "No key provided - aib may use ephemeral key for one-time seal"
     seal_cmd=(aib --verbose "$op" "${BUILD_CONTAINER_ARGS[@]}" "$source_container" "$output_container")
     log_command "${seal_cmd[@]}"
     "${seal_cmd[@]}"

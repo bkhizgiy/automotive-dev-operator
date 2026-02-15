@@ -3330,9 +3330,9 @@ func (a *APIServer) createSealed(c *gin.Context, pathOp SealedOperation) {
 	if err != nil {
 		if k8serrors.IsAlreadyExists(err) {
 			c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("job %s already exists", req.Name)})
-		return
-	}
-	c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 

@@ -124,6 +124,9 @@ var (
 	sealedKeyPasswordSecret string
 	sealedKeyFile           string
 	sealedKeyPassword       string
+	sealedInputRef          string
+	sealedOutputRef         string
+	sealedSignedRef         string
 )
 
 // envBool parses a boolean from environment variable
@@ -700,89 +703,52 @@ Example:
 	// Sealed operations - top-level commands matching AIB CLI structure
 
 	prepareResealCmd := &cobra.Command{
-		Use:   "prepare-reseal <source-container> <output-container>",
+		Use:   "prepare-reseal [source-container] [output-container]",
 		Short: "Prepare a bootc container image for resealing",
 		Long: `Prepare a bootc container image for resealing. With --server, runs on
 the cluster via the Build API; otherwise runs locally using the AIB container.
 
+Input and output can be given as positionals or via --input and --output (any order).
+
 Examples:
-  # Run on cluster
-  caib prepare-reseal quay.io/org/my-os:latest quay.io/org/my-os:prepared \
-    --server https://build-api.example.com -w -f
 
   # Run locally
   caib prepare-reseal ./input.qcow2 ./output.qcow2 --workspace ./work`,
-		Args: cobra.ExactArgs(2),
+		Args: cobra.RangeArgs(0, 2),
 		Run:  runPrepareReseal,
 	}
 
 	resealCmd := &cobra.Command{
-		Use:   "reseal <source-container> <output-container>",
+		Use:   "reseal [source-container] [output-container]",
 		Short: "Reseal a prepared bootc container image with a new key",
 		Long: `Reseal a bootc container image that was prepared with prepare-reseal.
 With --server, runs on the cluster via the Build API; otherwise runs locally.
 
-If no seal key is provided, an ephemeral key is generated for one-time use.
-
-Examples:
-  # Reseal with a key file (auto-uploaded to cluster)
-  caib reseal quay.io/org/my-os:prepared quay.io/org/my-os:resealed \
-    --server https://build-api.example.com --key /path/to/seal-key.pem -w -f
-
-  # Reseal with an existing cluster secret
-  caib reseal quay.io/org/my-os:prepared quay.io/org/my-os:resealed \
-    --server https://build-api.example.com --key-secret my-seal-key -w -f
-
-  # Reseal without a key (ephemeral key)
-  caib reseal quay.io/org/my-os:prepared quay.io/org/my-os:resealed \
-    --server https://build-api.example.com -w -f`,
-		Args: cobra.ExactArgs(2),
+Input and output can be given as positionals or via --input and --output (any order).
+If no seal key is provided, an ephemeral key is generated for one-time use.`,
+		Args: cobra.RangeArgs(0, 2),
 		Run:  runReseal,
 	}
 
 	extractForSigningCmd := &cobra.Command{
-		Use:   "extract-for-signing <source-container> <output-artifact>",
+		Use:   "extract-for-signing [source-container] [output-artifact]",
 		Short: "Extract components from a container image for external signing",
 		Long: `Extract components that need to be signed (e.g. for secure boot) from a
 container image. Sign the extracted contents externally, then use inject-signed.
 
-With --server, source is a container registry ref and output is an OCI artifact ref.
-Locally, paths are relative to --workspace.
-
-Examples:
-  # Run on cluster
-  caib extract-for-signing quay.io/org/my-os:prepared \
-    quay.io/org/my-os/signing-artifacts:latest \
-    --server https://build-api.example.com -w -f
-
-  # Run locally
-  caib extract-for-signing ./input.qcow2 ./signing-output/ --workspace ./work`,
-		Args: cobra.ExactArgs(2),
+Input and output can be given as positionals or via --input and --output (any order).`,
+		Args: cobra.RangeArgs(0, 2),
 		Run:  runExtractForSigning,
 	}
 
 	injectSignedCmd := &cobra.Command{
-		Use:   "inject-signed <source-container> <signed-artifact> <output-container>",
+		Use:   "inject-signed [source-container] [signed-artifact] [output-container]",
 		Short: "Inject signed components back into a container image",
 		Long: `Inject externally signed components (from extract-for-signing) back into the
 container image. Optionally reseals in the same step with --key.
 
-With --server, source/output are container registry refs and signed-artifact is an OCI ref.
-Locally, paths are relative to --workspace.
-
-Examples:
-  # Inject signed files on cluster
-  caib inject-signed quay.io/org/my-os:prepared \
-    quay.io/org/my-os/signing-artifacts:latest \
-    quay.io/org/my-os:signed \
-    --server https://build-api.example.com -w -f
-
-  # Inject and reseal in one step
-  caib inject-signed quay.io/org/my-os:prepared \
-    quay.io/org/my-os/signing-artifacts:latest \
-    quay.io/org/my-os:signed-resealed \
-    --server https://build-api.example.com --key /path/to/seal-key.pem -w -f`,
-		Args: cobra.ExactArgs(3),
+Input, signed artifact, and output can be given as positionals or via --input, --signed, --output (any order).`,
+		Args: cobra.RangeArgs(0, 3),
 		Run:  runInjectSigned,
 	}
 
@@ -790,6 +756,8 @@ Examples:
 	addSealedFlags := func(cmd *cobra.Command) {
 		cmd.Flags().StringVar(&serverURL, "server", config.DefaultServer(), "Build API server URL")
 		cmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication")
+		cmd.Flags().StringVar(&sealedInputRef, "input", "", "Input/source container or artifact ref")
+		cmd.Flags().StringVar(&sealedOutputRef, "output", "", "Output container or artifact ref")
 		cmd.Flags().StringVar(
 			&automotiveImageBuilder, "aib-image",
 			"quay.io/centos-sig-automotive/automotive-image-builder:latest", "AIB container image",
@@ -809,6 +777,7 @@ Examples:
 	addSealedFlags(resealCmd)
 	addSealedFlags(extractForSigningCmd)
 	addSealedFlags(injectSignedCmd)
+	injectSignedCmd.Flags().StringVar(&sealedSignedRef, "signed", "", "Signed artifact ref for inject-signed")
 
 	// Add all commands
 	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, showCmd, downloadCmd, flashCmd, logsCmd, loginCmd,
@@ -3208,29 +3177,98 @@ func sealedStreamLogs(op buildapitypes.SealedOperation, name string) error {
 
 // ── Sealed command runners ──
 
+// resolveSealedTwoRefs returns input and output refs from --input/--output flags or positionals (any order).
+func resolveSealedTwoRefs(args []string) (inputRef, outputRef string, err error) {
+	in := strings.TrimSpace(sealedInputRef)
+	out := strings.TrimSpace(sealedOutputRef)
+	if in != "" && out != "" {
+		return in, out, nil
+	}
+	if in != "" && len(args) >= 1 {
+		return in, strings.TrimSpace(args[0]), nil
+	}
+	if out != "" && len(args) >= 1 {
+		return strings.TrimSpace(args[0]), out, nil
+	}
+	if len(args) >= 2 {
+		return strings.TrimSpace(args[0]), strings.TrimSpace(args[1]), nil
+	}
+	return "", "", fmt.Errorf("need two refs: use positionals (source output) or --input and --output in any order")
+}
+
+// resolveSealedThreeRefs returns input, signed, and output refs from --input/--signed/--output flags or positionals (any order).
+func resolveSealedThreeRefs(args []string) (inputRef, signedRef, outputRef string, err error) {
+	in := strings.TrimSpace(sealedInputRef)
+	signed := strings.TrimSpace(sealedSignedRef)
+	out := strings.TrimSpace(sealedOutputRef)
+	if in != "" && signed != "" && out != "" {
+		return in, signed, out, nil
+	}
+	// Count how many from flags; remaining from args in order: input, signed, output
+	fromFlags := 0
+	if in != "" {
+		fromFlags++
+	}
+	if signed != "" {
+		fromFlags++
+	}
+	if out != "" {
+		fromFlags++
+	}
+	need := 3 - fromFlags
+	if len(args) < need {
+		return "", "", "", fmt.Errorf("need three refs (source, signed-artifact, output): use positionals or --input, --signed, --output in any order")
+	}
+	idx := 0
+	if in == "" {
+		in = strings.TrimSpace(args[idx])
+		idx++
+	}
+	if signed == "" {
+		signed = strings.TrimSpace(args[idx])
+		idx++
+	}
+	if out == "" {
+		out = strings.TrimSpace(args[idx])
+	}
+	return in, signed, out, nil
+}
+
 func runPrepareReseal(_ *cobra.Command, args []string) {
+	inputRef, outputRef, err := resolveSealedTwoRefs(args)
+	if err != nil {
+		handleError(err)
+	}
 	if strings.TrimSpace(serverURL) != "" {
-		sealedRunViaAPI(buildapitypes.SealedPrepareReseal, args[0], args[1], "")
+		sealedRunViaAPI(buildapitypes.SealedPrepareReseal, inputRef, outputRef, "")
 		return
 	}
-	if err := sealedRunLocalTwoArgOp("prepare-reseal", ".", args[0], args[1]); err != nil {
+	if err := sealedRunLocalTwoArgOp("prepare-reseal", ".", inputRef, outputRef); err != nil {
 		handleError(err)
 	}
 }
 
 func runReseal(_ *cobra.Command, args []string) {
+	inputRef, outputRef, err := resolveSealedTwoRefs(args)
+	if err != nil {
+		handleError(err)
+	}
 	if strings.TrimSpace(serverURL) != "" {
-		sealedRunViaAPI(buildapitypes.SealedReseal, args[0], args[1], "")
+		sealedRunViaAPI(buildapitypes.SealedReseal, inputRef, outputRef, "")
 		return
 	}
-	if err := sealedRunLocalTwoArgOp("reseal", ".", args[0], args[1]); err != nil {
+	if err := sealedRunLocalTwoArgOp("reseal", ".", inputRef, outputRef); err != nil {
 		handleError(err)
 	}
 }
 
 func runExtractForSigning(_ *cobra.Command, args []string) {
+	inputRef, outputRef, err := resolveSealedTwoRefs(args)
+	if err != nil {
+		handleError(err)
+	}
 	if strings.TrimSpace(serverURL) != "" {
-		sealedRunViaAPI(buildapitypes.SealedExtractForSigning, args[0], args[1], "")
+		sealedRunViaAPI(buildapitypes.SealedExtractForSigning, inputRef, outputRef, "")
 		return
 	}
 	workDir := "."
@@ -3238,14 +3276,14 @@ func runExtractForSigning(_ *cobra.Command, args []string) {
 	if err != nil {
 		handleError(fmt.Errorf("workspace: %w", err))
 	}
-	inPath, err := sealedEnsurePathInWorkspace(absWork, args[0])
+	inPath, err := sealedEnsurePathInWorkspace(absWork, inputRef)
 	if err != nil {
 		handleError(err)
 	}
 	if _, err := os.Stat(inPath); err != nil {
 		handleError(fmt.Errorf("input disk: %w", err))
 	}
-	outPath, err := sealedEnsurePathInWorkspace(absWork, args[1])
+	outPath, err := sealedEnsurePathInWorkspace(absWork, outputRef)
 	if err != nil {
 		handleError(err)
 	}
@@ -3266,8 +3304,12 @@ func runExtractForSigning(_ *cobra.Command, args []string) {
 }
 
 func runInjectSigned(_ *cobra.Command, args []string) {
+	inputRef, signedRef, outputRef, err := resolveSealedThreeRefs(args)
+	if err != nil {
+		handleError(err)
+	}
 	if strings.TrimSpace(serverURL) != "" {
-		sealedRunViaAPI(buildapitypes.SealedInjectSigned, args[0], args[2], args[1])
+		sealedRunViaAPI(buildapitypes.SealedInjectSigned, inputRef, outputRef, signedRef)
 		return
 	}
 	workDir := "."
@@ -3275,7 +3317,7 @@ func runInjectSigned(_ *cobra.Command, args []string) {
 	if err != nil {
 		handleError(fmt.Errorf("workspace: %w", err))
 	}
-	input, signedDir, output := args[0], args[1], args[2]
+	input, signedDir, output := inputRef, signedRef, outputRef
 	inPath, err := sealedEnsurePathInWorkspace(absWork, input)
 	if err != nil {
 		handleError(err)
