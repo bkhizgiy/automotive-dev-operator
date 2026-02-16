@@ -449,34 +449,6 @@ Examples:
 		Run:  runBuildDev,
 	}
 
-	// Deprecated aliases (hidden but functional for backwards compatibility)
-	buildBootcAliasCmd := &cobra.Command{
-		Use:        "build-bootc <manifest.aib.yml>",
-		Short:      "Build bootc container image (deprecated: use 'build' instead)",
-		Args:       cobra.ExactArgs(1),
-		Run:        runBuild,
-		Deprecated: "use 'build' instead (bootc is now the default)",
-		Hidden:     true,
-	}
-
-	buildLegacyAliasCmd := &cobra.Command{
-		Use:        "build-legacy <manifest.aib.yml>",
-		Short:      "Build disk image (deprecated: use 'build-dev' instead)",
-		Args:       cobra.ExactArgs(1),
-		Run:        runBuildDev,
-		Deprecated: "use 'build-dev' instead",
-		Hidden:     true,
-	}
-
-	buildTraditionalAliasCmd := &cobra.Command{
-		Use:        "build-traditional <manifest.aib.yml>",
-		Short:      "Build traditional disk image (deprecated: use 'build-dev' instead)",
-		Args:       cobra.ExactArgs(1),
-		Run:        runBuildDev,
-		Deprecated: "use 'build-dev' instead",
-		Hidden:     true,
-	}
-
 	// Flash command - flash a disk image to hardware via Jumpstarter
 	flashCmd := &cobra.Command{
 		Use:   "flash <oci-registry-reference>",
@@ -708,8 +680,6 @@ Example:
 
 	// Add all commands
 	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, showCmd, downloadCmd, flashCmd, logsCmd, loginCmd, catalog.NewCatalogCmd())
-	// Add deprecated aliases for backwards compatibility
-	rootCmd.AddCommand(buildBootcAliasCmd, buildLegacyAliasCmd, buildTraditionalAliasCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
