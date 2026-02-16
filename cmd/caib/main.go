@@ -95,7 +95,8 @@ var (
 	exportOCI      string
 	builderImage   string
 
-	containerRef string
+	containerRef   string
+	rebuildBuilder bool
 
 	// Flash options
 	flashAfterBuild   bool
@@ -565,6 +566,7 @@ Example:
 		"quay.io/centos-sig-automotive/automotive-image-builder:latest", "AIB container image",
 	)
 	buildCmd.Flags().StringVar(&builderImage, "builder-image", "", "custom builder container")
+	buildCmd.Flags().BoolVar(&rebuildBuilder, "rebuild-builder", false, "force rebuild of the bootc builder image")
 	buildCmd.Flags().StringVar(&storageClass, "storage-class", "", "Kubernetes storage class for build workspace")
 	buildCmd.Flags().StringArrayVarP(&customDefs, "define", "D", []string{}, "custom definition KEY=VALUE")
 	buildCmd.Flags().StringArrayVar(&aibExtraArgs, "extra-args", []string{}, "extra arguments to pass to AIB (can be repeated)")
@@ -937,6 +939,7 @@ func runBuild(cmd *cobra.Command, args []string) {
 		BuildDiskImage:         buildDiskImage,
 		ExportOCI:              exportOCI,
 		BuilderImage:           builderImage,
+		RebuildBuilder:         rebuildBuilder,
 	}
 
 	applyRegistryCredentialsToRequest(&req)

@@ -131,6 +131,7 @@ type BuildRequest struct {
 	BuildDiskImage bool   `json:"buildDiskImage,omitempty"` // Build disk image from bootc container
 	ExportOCI      string `json:"exportOci,omitempty"`      // Registry URL to push disk as OCI artifact
 	BuilderImage   string `json:"builderImage,omitempty"`   // Custom builder image
+	RebuildBuilder bool   `json:"rebuildBuilder,omitempty"` // Force rebuild of bootc builder image
 
 	// Internal registry push configuration
 	UseInternalRegistry       bool   `json:"useInternalRegistry,omitempty"`       // Push to OpenShift internal registry

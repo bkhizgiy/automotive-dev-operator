@@ -94,6 +94,10 @@ spec:
                     - bootc
                     - disk
                     type: string
+                  rebuildBuilder:
+                    description: RebuildBuilder forces rebuilding the bootc builder
+                      image even if a cached version exists in the registry.
+                    type: boolean
                   target:
                     description: Target specifies the build target platform (e.g.,
                       "qemu", "aws")
