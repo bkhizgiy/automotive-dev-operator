@@ -42,6 +42,11 @@ spec:
               aib:
                 description: AIB contains automotive-image-builder specific configuration
                 properties:
+                  aibExtraArgs:
+                    description: AIBExtraArgs are extra arguments to pass to automotive-image-builder
+                    items:
+                      type: string
+                    type: array
                   builderImage:
                     description: |-
                       BuilderImage specifies a custom osbuild builder container image
@@ -52,6 +57,12 @@ spec:
                       ContainerRef is the reference to an existing bootc container image
                       Required when mode=disk to create a disk image from an existing container
                     type: string
+                  customDefs:
+                    description: CustomDefs are custom environment variable definitions
+                      for the build
+                    items:
+                      type: string
+                    type: array
                   distro:
                     description: Distro specifies the distribution to build for (e.g.,
                       "autosd")
@@ -66,9 +77,13 @@ spec:
                       InputFilesServer indicates if an upload server should be created for local file references
                       When true, the build waits in "Uploading" phase until files are uploaded
                     type: boolean
-                  manifestConfigMap:
-                    description: ManifestConfigMap specifies the name of the ConfigMap
-                      containing the AIB manifest
+                  manifest:
+                    description: Manifest holds the inline AIB manifest YAML content
+                    type: string
+                  manifestFileName:
+                    description: |-
+                      ManifestFileName is the original filename of the manifest, used for naming the file
+                      when writing it to disk before invoking automotive-image-builder
                     type: string
                   mode:
                     default: image

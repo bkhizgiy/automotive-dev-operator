@@ -83,8 +83,12 @@ type AIBSpec struct {
 	// +kubebuilder:default=image
 	Mode string `json:"mode,omitempty"`
 
-	// ManifestConfigMap specifies the name of the ConfigMap containing the AIB manifest
-	ManifestConfigMap string `json:"manifestConfigMap,omitempty"`
+	// Manifest holds the inline AIB manifest YAML content
+	Manifest string `json:"manifest,omitempty" yaml:"manifest,omitempty"`
+
+	// ManifestFileName is the original filename of the manifest, used for naming the file
+	// when writing it to disk before invoking automotive-image-builder
+	ManifestFileName string `json:"manifestFileName,omitempty" yaml:"manifestFileName,omitempty"`
 
 	// Image specifies the automotive-image-builder container image to use
 	// If not specified, the default from OperatorConfig is used
@@ -101,6 +105,12 @@ type AIBSpec struct {
 	// ContainerRef is the reference to an existing bootc container image
 	// Required when mode=disk to create a disk image from an existing container
 	ContainerRef string `json:"containerRef,omitempty"`
+
+	// CustomDefs are custom environment variable definitions for the build
+	CustomDefs []string `json:"customDefs,omitempty"`
+
+	// AIBExtraArgs are extra arguments to pass to automotive-image-builder
+	AIBExtraArgs []string `json:"aibExtraArgs,omitempty"`
 }
 
 // ExportSpec defines the configuration for exporting build artifacts
@@ -241,10 +251,18 @@ func (s *ImageBuildSpec) GetMode() string {
 	return "image"
 }
 
-// GetManifestConfigMap returns the manifest ConfigMap name from AIB spec
-func (s *ImageBuildSpec) GetManifestConfigMap() string {
+// GetManifest returns the inline manifest YAML content from AIB spec
+func (s *ImageBuildSpec) GetManifest() string {
 	if s.AIB != nil {
-		return s.AIB.ManifestConfigMap
+		return s.AIB.Manifest
+	}
+	return ""
+}
+
+// GetManifestFileName returns the manifest filename from AIB spec
+func (s *ImageBuildSpec) GetManifestFileName() string {
+	if s.AIB != nil {
+		return s.AIB.ManifestFileName
 	}
 	return ""
 }
@@ -279,6 +297,22 @@ func (s *ImageBuildSpec) GetContainerRef() string {
 		return s.AIB.ContainerRef
 	}
 	return ""
+}
+
+// GetCustomDefs returns the custom environment variable definitions from AIB spec
+func (s *ImageBuildSpec) GetCustomDefs() []string {
+	if s.AIB != nil {
+		return s.AIB.CustomDefs
+	}
+	return nil
+}
+
+// GetAIBExtraArgs returns extra arguments to pass to automotive-image-builder
+func (s *ImageBuildSpec) GetAIBExtraArgs() []string {
+	if s.AIB != nil {
+		return s.AIB.AIBExtraArgs
+	}
+	return nil
 }
 
 // GetExportFormat returns the export format, or "qcow2" as default

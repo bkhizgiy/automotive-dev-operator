@@ -15,7 +15,8 @@ metadata:
             "aib": {
               "distro": "autosd",
               "image": "quay.io/centos-sig-automotive/automotive-image-builder:1.0.0",
-              "manifestConfigMap": "my-manifest",
+              "manifest": "# Sample AIB manifest\nname: sample-build\n",
+              "manifestFileName": "sample.aib.yml",
               "mode": "image",
               "target": "qemu"
             },

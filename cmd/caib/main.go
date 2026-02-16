@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -48,6 +49,10 @@ const (
 	errPrefixBuild = "build"
 	errPrefixFlash = "flash"
 	errPrefixPush  = "push"
+)
+
+var (
+	multiHyphenRe = regexp.MustCompile(`-{2,}`)
 )
 
 // getDefaultArch returns the current system architecture in caib format
@@ -898,8 +903,10 @@ func runBuild(cmd *cobra.Command, args []string) {
 	if buildName == "" {
 		base := strings.TrimSuffix(filepath.Base(manifest), ".aib.yml")
 		base = strings.TrimSuffix(base, ".yml")
-		buildName = fmt.Sprintf("%s-%s", base, time.Now().Format("20060102-150405"))
+		buildName = fmt.Sprintf("%s-%s", sanitizeBuildName(base), time.Now().Format("20060102-150405"))
 		fmt.Printf("Auto-generated build name: %s\n", buildName)
+	} else {
+		validateBuildName(buildName)
 	}
 
 	api, err := createBuildAPIClient(serverURL, &authToken)
@@ -1003,8 +1010,10 @@ func runDisk(cmd *cobra.Command, args []string) {
 		parts := strings.Split(containerRef, "/")
 		imagePart := parts[len(parts)-1]
 		imagePart = strings.Split(imagePart, ":")[0] // remove tag
-		buildName = fmt.Sprintf("disk-%s-%s", imagePart, time.Now().Format("20060102-150405"))
+		buildName = fmt.Sprintf("disk-%s-%s", sanitizeBuildName(imagePart), time.Now().Format("20060102-150405"))
 		fmt.Printf("Auto-generated build name: %s\n", buildName)
+	} else {
+		validateBuildName(buildName)
 	}
 
 	api, err := createBuildAPIClient(serverURL, &authToken)
@@ -1289,6 +1298,35 @@ func extractOCIArtifactBlob(ociLayoutPath, destPath string) error {
 	return copyFile(layerPath, destPath)
 }
 
+// sanitizeBuildName converts a string into a valid RFC 1123 subdomain name
+// suitable for use as a Kubernetes resource name. It lowercases the input,
+// replaces invalid characters (underscores, dots, etc.) with hyphens,
+// collapses consecutive hyphens, and trims leading/trailing hyphens.
+func sanitizeBuildName(name string) string {
+	name = strings.ToLower(name)
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('-')
+		}
+	}
+	// Collapse consecutive hyphens
+	result := multiHyphenRe.ReplaceAllString(b.String(), "-")
+	return strings.Trim(result, "-")
+}
+
+// validateBuildName checks a user-provided build name and exits if it
+// contains only invalid characters after sanitization.
+func validateBuildName(name string) {
+	if sanitizeBuildName(name) == "" {
+		fmt.Printf("Error: build name '%s' contains only invalid characters\n", name)
+		fmt.Println("Build names must contain at least one letter or number")
+		os.Exit(1)
+	}
+}
+
 // sanitizeFilename validates and sanitizes a filename from OCI layer annotations.
 // Returns a safe filename, falling back to "layer-N.bin" if the input is invalid.
 // This prevents path traversal attacks by rejecting:
@@ -1388,8 +1426,10 @@ func runBuildDev(cmd *cobra.Command, args []string) {
 	if buildName == "" {
 		base := strings.TrimSuffix(filepath.Base(manifest), ".aib.yml")
 		base = strings.TrimSuffix(base, ".yml")
-		buildName = fmt.Sprintf("%s-%s", base, time.Now().Format("20060102-150405"))
+		buildName = fmt.Sprintf("%s-%s", sanitizeBuildName(base), time.Now().Format("20060102-150405"))
 		fmt.Printf("Auto-generated build name: %s\n", buildName)
+	} else {
+		validateBuildName(buildName)
 	}
 
 	api, err := createBuildAPIClient(serverURL, &authToken)
