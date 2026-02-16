@@ -1347,6 +1347,7 @@ func buildAIBSpec(req *BuildRequest, manifest, manifestFileName string, inputFil
 		ManifestFileName: manifestFileName,
 		Image:            req.AutomotiveImageBuilder,
 		BuilderImage:     req.BuilderImage,
+		RebuildBuilder:   req.RebuildBuilder,
 		InputFilesServer: inputFilesServer,
 		ContainerRef:     req.ContainerRef,
 		CustomDefs:       req.CustomDefs,

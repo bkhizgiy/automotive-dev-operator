@@ -41,7 +41,11 @@ else
   REGISTRY="image-registry.openshift-image-registry.svc:5000"
 fi
 
-TARGET_IMAGE="${REGISTRY}/${NAMESPACE}/aib-build:${DISTRO}-${TARGET_ARCH}"
+# Include a short hash of the AIB image in the registry tag so that different
+# AIB versions cache their builder images separately and don't overwrite each other.
+AIB_HASH=$(echo -n "$AIB_IMAGE" | sha256sum | cut -c1-8)
+TARGET_IMAGE="${REGISTRY}/${NAMESPACE}/aib-build:${DISTRO}-${TARGET_ARCH}-${AIB_HASH}"
+echo "AIB image: $AIB_IMAGE (hash: $AIB_HASH)"
 
 mkdir -p $HOME/.config
 cat > $HOME/.authjson <<EOF
@@ -92,12 +96,16 @@ fi
 # Local image name (what we'll actually use - nested containers can access this)
 LOCAL_IMAGE="localhost/aib-build:${DISTRO}-${TARGET_ARCH}"
 
-# Check if image already exists in cluster registry
-echo "Checking if $TARGET_IMAGE exists in cluster registry..."
-if skopeo inspect --authfile="$REGISTRY_AUTH_FILE" "docker://$TARGET_IMAGE" >/dev/null 2>&1; then
-  echo "Builder image found in cluster registry: $TARGET_IMAGE"
-  echo -n "$TARGET_IMAGE" > "$RESULT_PATH"
-  exit 0
+# Check if image already exists in cluster registry (skip if rebuild requested)
+if [ "$REBUILD_BUILDER" = "true" ]; then
+  echo "Rebuild requested, skipping cache check"
+else
+  echo "Checking if $TARGET_IMAGE exists in cluster registry..."
+  if skopeo inspect --authfile="$REGISTRY_AUTH_FILE" "docker://$TARGET_IMAGE" >/dev/null 2>&1; then
+    echo "Builder image found in cluster registry: $TARGET_IMAGE"
+    echo -n "$TARGET_IMAGE" > "$RESULT_PATH"
+    exit 0
+  fi
 fi
 
 echo "Builder image not found, building..."

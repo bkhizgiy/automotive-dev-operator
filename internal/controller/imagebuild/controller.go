@@ -470,6 +470,13 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 			},
 		},
 		{
+			Name: "rebuild-builder",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: fmt.Sprintf("%t", imageBuild.Spec.GetRebuildBuilder()),
+			},
+		},
+		{
 			Name: "secret-ref",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,

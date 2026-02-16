@@ -603,6 +603,15 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 					},
 				},
 				{
+					Name:        "rebuild-builder",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Force rebuild of the bootc builder image (true/false)",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "false",
+					},
+				},
+				{
 					Name:        "container-ref",
 					Type:        tektonv1.ParamTypeString,
 					Description: "Container reference for disk mode (aib to-disk-image)",
@@ -764,6 +773,13 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 							Value: tektonv1.ParamValue{
 								Type:      tektonv1.ParamTypeString,
 								StringVal: "$(params.arch)",
+							},
+						},
+						{
+							Name: "rebuild-builder",
+							Value: tektonv1.ParamValue{
+								Type:      tektonv1.ParamTypeString,
+								StringVal: "$(params.rebuild-builder)",
 							},
 						},
 					},
@@ -1180,6 +1196,15 @@ func GeneratePrepareBuilderTask(namespace string, buildConfig *BuildConfig) *tek
 						StringVal: "amd64",
 					},
 				},
+				{
+					Name:        "rebuild-builder",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Force rebuild of the bootc builder image (true/false)",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "false",
+					},
+				},
 			},
 			Results: []tektonv1.TaskResult{
 				{
@@ -1228,6 +1253,14 @@ func GeneratePrepareBuilderTask(namespace string, buildConfig *BuildConfig) *tek
 						{
 							Name:  "TARGET_ARCH",
 							Value: "$(params.target-architecture)",
+						},
+						{
+							Name:  "REBUILD_BUILDER",
+							Value: "$(params.rebuild-builder)",
+						},
+						{
+							Name:  "AIB_IMAGE",
+							Value: "$(params.automotive-image-builder)",
 						},
 					},
 					Script: BuildBuilderScript,

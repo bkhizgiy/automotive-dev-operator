@@ -98,6 +98,9 @@ type AIBSpec struct {
 	// If not specified for bootc builds, one is automatically built and cached
 	BuilderImage string `json:"builderImage,omitempty"`
 
+	// RebuildBuilder forces rebuilding the bootc builder image even if a cached version exists in the registry.
+	RebuildBuilder bool `json:"rebuildBuilder,omitempty"`
+
 	// InputFilesServer indicates if an upload server should be created for local file references
 	// When true, the build waits in "Uploading" phase until files are uploaded
 	InputFilesServer bool `json:"inputFilesServer,omitempty"`
@@ -412,6 +415,14 @@ func (s *ImageBuildSpec) GetFlashClientConfigSecretRef() string {
 		return s.Flash.ClientConfigSecretRef
 	}
 	return ""
+}
+
+// GetRebuildBuilder returns whether the builder image should be forcibly rebuilt
+func (s *ImageBuildSpec) GetRebuildBuilder() bool {
+	if s.AIB != nil {
+		return s.AIB.RebuildBuilder
+	}
+	return false
 }
 
 // GetFlashLeaseDuration returns the flash lease duration, or default
