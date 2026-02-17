@@ -850,8 +850,8 @@ func displayBuildResults(ctx context.Context, api *buildapiclient.Client, buildN
 	labelColor := func(a ...any) string { return fmt.Sprint(a...) }
 	valueColor := func(a ...any) string { return fmt.Sprint(a...) }
 	if supportsColorOutput() {
-		labelColor = color.New(color.FgHiBlue, color.Bold).SprintFunc()
-		valueColor = color.New(color.FgCyan).SprintFunc()
+		labelColor = color.New(color.FgHiWhite, color.Bold).SprintFunc()
+		valueColor = color.New(color.FgHiGreen).SprintFunc()
 	}
 
 	if useInternalRegistry {
@@ -1638,9 +1638,9 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 					infoColor := func(a ...any) string { return fmt.Sprint(a...) }
 					commandColor := func(a ...any) string { return fmt.Sprint(a...) }
 					if supportsColorOutput() {
-						bannerColor = color.New(color.FgGreen, color.Bold).SprintFunc()
-						infoColor = color.New(color.FgHiGreen).SprintFunc()
-						commandColor = color.New(color.FgCyan, color.Bold).SprintFunc()
+						bannerColor = color.New(color.FgHiGreen, color.Bold).SprintFunc()
+						infoColor = color.New(color.FgHiWhite).SprintFunc()
+						commandColor = color.New(color.FgHiYellow, color.Bold).SprintFunc()
 					}
 
 					divider := strings.Repeat("=", 50)
@@ -1904,6 +1904,17 @@ func displayFlashInstructions(st *buildapitypes.BuildResponse, isFailure bool) {
 		return
 	}
 
+	// Only show instructions if this target actually has a mapping
+	// (i.e., there's a selector or flash command configured for it)
+	if st.Jumpstarter.ExporterSelector == "" && st.Jumpstarter.FlashCmd == "" {
+		return
+	}
+
+	// Don't show jumpstarter instructions if user requested a download - they have the artifact locally
+	if outputDir != "" {
+		return
+	}
+
 	colorsSupported := supportsColorOutput()
 
 	var headerColor, commandColor, infoColor func(...any) string
@@ -1911,9 +1922,9 @@ func displayFlashInstructions(st *buildapitypes.BuildResponse, isFailure bool) {
 
 	if isFailure {
 		if colorsSupported {
-			headerColor = color.New(color.FgRed, color.Bold).SprintFunc()
-			commandColor = color.New(color.FgYellow, color.Bold).SprintFunc()
-			infoColor = color.New(color.FgHiRed).SprintFunc()
+			headerColor = color.New(color.FgHiRed, color.Bold).SprintFunc()
+			commandColor = color.New(color.FgHiYellow, color.Bold).SprintFunc()
+			infoColor = color.New(color.FgHiWhite).SprintFunc()
 		} else {
 			headerColor = func(a ...any) string { return fmt.Sprint(a...) }
 			commandColor = func(a ...any) string { return fmt.Sprint(a...) }
@@ -1923,10 +1934,10 @@ func displayFlashInstructions(st *buildapitypes.BuildResponse, isFailure bool) {
 		}
 	} else {
 		if colorsSupported {
-			// Success mode: use calmer, informational colors
-			headerColor = color.New(color.FgBlue, color.Bold).SprintFunc()
-			commandColor = color.New(color.FgCyan, color.Bold).SprintFunc()
-			infoColor = color.New(color.FgHiBlue).SprintFunc()
+			// Success mode: use high-contrast, readable colors
+			headerColor = color.New(color.FgHiWhite, color.Bold).SprintFunc()
+			commandColor = color.New(color.FgHiGreen, color.Bold).SprintFunc()
+			infoColor = color.New(color.FgHiYellow).SprintFunc()
 		} else {
 			// Fallback with symbols for no-color terminals
 			headerColor = func(a ...any) string { return fmt.Sprint(a...) }
@@ -1941,7 +1952,6 @@ func displayFlashInstructions(st *buildapitypes.BuildResponse, isFailure bool) {
 		fmt.Printf("\n%s%s\n", headerPrefix, headerColor("Manual Flash Required"))
 		fmt.Printf("%s\n", infoColor("Flash failed, but you can flash manually using Jumpstarter:"))
 	} else {
-		fmt.Printf("\n%s%s\n", headerPrefix, headerColor("Jumpstarter Flash Available"))
 		fmt.Printf("%s\n", infoColor("Jumpstarter is available for flashing:"))
 	}
 
