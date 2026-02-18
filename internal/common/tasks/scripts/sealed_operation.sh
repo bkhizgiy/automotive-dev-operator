@@ -187,11 +187,15 @@ resolve_builder_from_annotation() {
 
   if [ -n "$resolved" ]; then
     # Rewrite external OpenShift registry route to internal service URL
-    # Annotations may contain the external route (default-route-openshift-image-registry.apps.*)
     if [[ "$resolved" == default-route-openshift-image-registry.apps.* ]]; then
       local path="${resolved#*/}"
       resolved="image-registry.openshift-image-registry.svc:5000/${path}"
       echo "Rewrote external registry route to internal URL"
+    fi
+    # Use builder image for current node arch (builder runs on the node; source image arch is irrelevant)
+    if [[ "$resolved" =~ :(autosd-(amd64|arm64))$ ]]; then
+      resolved="${resolved%-*}-${RESOLVED_ARCH}"
+      echo "Using builder image for node arch: $resolved"
     fi
     builder_image="$resolved"
     echo "Resolved builder image from source container label: $builder_image"
@@ -203,6 +207,18 @@ resolve_builder_from_annotation() {
   ns=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || echo "automotive-dev-operator-system")
   builder_image="image-registry.openshift-image-registry.svc:5000/${ns}/aib-build:autosd-${RESOLVED_ARCH}"
   echo "No annotation found, using default builder image: $builder_image"
+}
+
+# ── Set build container args from registry image ──
+# Uses the builder image reference directly (no pull; runtime pulls from registry when needed).
+ensure_builder_image() {
+  if [ -z "${builder_image:-}" ]; then
+    echo "Warning: builder-image not specified; aib may fail if it requires one"
+    BUILD_CONTAINER_ARGS=()
+    return
+  fi
+  echo "Using builder image from registry: $builder_image"
+  BUILD_CONTAINER_ARGS=("--build-container" "$builder_image")
 }
 
 validate_arg "${INPUT_REF}" "input-ref"
@@ -312,23 +328,9 @@ run_container_seal_op() {
   # Resolve builder image: explicit param > source annotation > default
   resolve_builder_from_annotation "$source_container"
 
-  # Build --build-container argument (required for reseal/prepare-reseal)
+  # Ensure builder image is available (pull or build if missing)
   declare -a BUILD_CONTAINER_ARGS=()
-  if [ -n "$builder_image" ]; then
-    LOCAL_BUILDER="localhost/aib-builder:local"
-    echo "Pulling builder image: $builder_image -> $LOCAL_BUILDER"
-    pull_builder_cmd=(skopeo copy --authfile="$REGISTRY_AUTH_FILE" "docker://$builder_image" "containers-storage:$LOCAL_BUILDER")
-    log_command "${pull_builder_cmd[@]}"
-    if ! "${pull_builder_cmd[@]}" 2>/dev/null; then
-      echo "Auth pull failed for builder, trying public pull..."
-      pull_builder_public=(skopeo copy "docker://$builder_image" "containers-storage:$LOCAL_BUILDER")
-      log_command "${pull_builder_public[@]}"
-      "${pull_builder_public[@]}"
-    fi
-    BUILD_CONTAINER_ARGS=("--build-container" "$LOCAL_BUILDER")
-  else
-    echo "Warning: builder-image not specified; aib may fail if it requires one"
-  fi
+  ensure_builder_image
 
   # Run the operation
   if [ -z "$SEAL_KEY_FILE" ] || [ ! -f "$SEAL_KEY_FILE" ]; then
@@ -439,21 +441,9 @@ run_inject_signed() {
   # Resolve builder image: explicit param > source annotation > default
   resolve_builder_from_annotation "$source_container"
 
-  # Build --build-container argument (from SHARED_RESEAL_ARGS in AIB)
+  # Ensure builder image is available (pull or build if missing)
   declare -a BUILD_CONTAINER_ARGS=()
-  if [ -n "$builder_image" ]; then
-    LOCAL_BUILDER="localhost/aib-builder:local"
-    echo "Pulling builder image: $builder_image -> $LOCAL_BUILDER"
-    pull_builder_cmd=(skopeo copy --authfile="$REGISTRY_AUTH_FILE" "docker://$builder_image" "containers-storage:$LOCAL_BUILDER")
-    log_command "${pull_builder_cmd[@]}"
-    if ! "${pull_builder_cmd[@]}" 2>/dev/null; then
-      echo "Auth pull failed for builder, trying public pull..."
-      pull_builder_public=(skopeo copy "docker://$builder_image" "containers-storage:$LOCAL_BUILDER")
-      log_command "${pull_builder_public[@]}"
-      "${pull_builder_public[@]}"
-    fi
-    BUILD_CONTAINER_ARGS=("--build-container" "$LOCAL_BUILDER")
-  fi
+  ensure_builder_image
 
   # Build --reseal-with-key argument (specific to inject-signed in AIB)
   # When a seal key is provided for inject-signed, AIB uses --reseal-with-key (not --key)
@@ -482,7 +472,8 @@ run_inject_signed() {
     echo "Extracting signed artifacts tarball: $TARBALL"
     tar -xzf "$TARBALL" -C signed_dir
   else
-    find signed_extract -type f -exec cp {} signed_dir/ \;
+    echo "Copying signed artifacts preserving directory structure"
+    cp -r signed_extract/. signed_dir/
   fi
   echo "Signed artifacts ready:"
   ls -la signed_dir/
