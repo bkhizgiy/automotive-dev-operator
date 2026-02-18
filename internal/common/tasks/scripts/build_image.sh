@@ -30,30 +30,16 @@ cat > /etc/containers/registries.conf << EOF
 registries = ['image-registry.openshift-image-registry.svc:5000']
 EOF
 
-if [ -e /dev/fuse ]; then
-  if ! command -v fuse-overlayfs >/dev/null 2>&1; then
-    echo "Installing fuse-overlayfs..."
-    dnf install -y fuse-overlayfs 2>/dev/null || yum install -y fuse-overlayfs 2>/dev/null || true
-  fi
-
-  if command -v fuse-overlayfs >/dev/null 2>&1; then
-    echo "Configuring fuse-overlayfs for container storage..."
-    cat > /etc/containers/storage.conf << EOF
+echo "Configuring kernel overlay storage driver"
+cat > /etc/containers/storage.conf << EOF
 [storage]
 driver = "overlay"
 runroot = "/run/containers/storage"
 graphroot = "/var/lib/containers/storage"
-
-[storage.options.overlay]
-mount_program = "/usr/bin/fuse-overlayfs"
 EOF
-  else
-    echo "Warning: fuse-overlayfs install failed, using vfs driver"
-    export STORAGE_DRIVER=vfs
-  fi
-else
-  echo "Warning: /dev/fuse not available, using vfs driver"
-  export STORAGE_DRIVER=vfs
+
+if ! mountpoint -q /var/tmp; then
+  mount -t tmpfs tmpfs /var/tmp
 fi
 
 umask 0077
