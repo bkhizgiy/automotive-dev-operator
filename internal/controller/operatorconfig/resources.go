@@ -308,6 +308,9 @@ func (r *OperatorConfigReconciler) buildBuildAPIRoute(namespace string) *routev1
 				"app.kubernetes.io/component": "build-api",
 				"app.kubernetes.io/part-of":   "automotive-dev-operator",
 			},
+			Annotations: map[string]string{
+				"haproxy.router.openshift.io/timeout": "15m",
+			},
 		},
 		Spec: routev1.RouteSpec{
 			To: routev1.RouteTargetReference{
@@ -707,6 +710,28 @@ func (r *OperatorConfigReconciler) buildBuildControllerClusterRole() *rbacv1.Clu
 			{
 				APIGroups: []string{"tekton.dev"},
 				Resources: []string{"tasks", "pipelines", "pipelineruns", "taskruns"},
+				Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+			},
+			// ContainerBuild controller RBAC
+			{
+				APIGroups: []string{"automotive.sdv.cloud.redhat.com"},
+				Resources: []string{"containerbuilds"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+			{
+				APIGroups: []string{"automotive.sdv.cloud.redhat.com"},
+				Resources: []string{"containerbuilds/status"},
+				Verbs:     []string{"get", "update", "patch"},
+			},
+			{
+				APIGroups: []string{"automotive.sdv.cloud.redhat.com"},
+				Resources: []string{"containerbuilds/finalizers"},
+				Verbs:     []string{"update"},
+			},
+			// Shipwright resources (used by ContainerBuild controller)
+			{
+				APIGroups: []string{"shipwright.io"},
+				Resources: []string{"builds", "buildruns"},
 				Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 			},
 		},

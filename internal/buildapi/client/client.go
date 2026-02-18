@@ -442,6 +442,141 @@ func (c *Client) UploadFiles(ctx context.Context, name string, files []Upload) e
 	return nil
 }
 
+// CreateContainerBuild submits a new container build request to the API server.
+//
+//nolint:dupl // Container build and regular build methods are intentionally similar but work with different types
+func (c *Client) CreateContainerBuild(ctx context.Context, req buildapi.ContainerBuildRequest) (*buildapi.ContainerBuildResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	endpoint := c.resolve("/v1/container-builds")
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if c.authToken != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
+		}
+	}()
+	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("create container build failed: %s: %s", resp.Status, string(b))
+	}
+	var out buildapi.ContainerBuildResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetContainerBuild retrieves the status of a specific container build by name.
+func (c *Client) GetContainerBuild(ctx context.Context, name string) (*buildapi.ContainerBuildResponse, error) {
+	endpoint := c.resolve(path.Join("/v1/container-builds", url.PathEscape(name)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
+		}
+	}()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("get container build failed: %s: %s", resp.Status, string(b))
+	}
+	var out buildapi.ContainerBuildResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListContainerBuilds retrieves a list of all container builds from the API server.
+func (c *Client) ListContainerBuilds(ctx context.Context) ([]buildapi.ContainerBuildListItem, error) {
+	var out []buildapi.ContainerBuildListItem
+	if err := c.listJSON(ctx, c.resolve("/v1/container-builds"), "list container builds", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// UploadContainerBuildContext uploads a tarball of the build context to the API server.
+func (c *Client) UploadContainerBuildContext(ctx context.Context, name string, tarball io.Reader) error {
+	endpoint := c.resolve(path.Join("/v1/container-builds", url.PathEscape(name), "upload"))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, tarball)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
+		}
+	}()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("upload context failed: %s: %s", resp.Status, string(b))
+	}
+	return nil
+}
+
+// StreamContainerBuildLogs streams logs from a container build.
+func (c *Client) StreamContainerBuildLogs(ctx context.Context, name string, follow bool) (io.ReadCloser, error) {
+	followStr := "0"
+	if follow {
+		followStr = "1"
+	}
+	endpoint := c.resolve(path.Join("/v1/container-builds", url.PathEscape(name), "logs"))
+	endpoint += "?follow=" + followStr
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
+			}
+		}()
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("stream logs failed: %s: %s", resp.Status, string(b))
+	}
+	return resp.Body, nil
+}
+
 // GetOperatorConfig retrieves the operator configuration for CLI validation.
 func (c *Client) GetOperatorConfig(ctx context.Context) (*buildapi.OperatorConfigResponse, error) {
 	endpoint := c.resolve("/v1/config")

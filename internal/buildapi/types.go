@@ -285,3 +285,46 @@ type BuildTemplateResponse struct {
 	BuildRequest `json:",inline"`
 	SourceFiles  []string `json:"sourceFiles,omitempty"`
 }
+
+// ContainerBuildRequest is the payload to create a container build via the REST API
+type ContainerBuildRequest struct {
+	// Name is the build identifier (auto-generated if omitted)
+	Name string `json:"name"`
+	// Output is the target image reference to push to (required)
+	Output string `json:"output"`
+	// Containerfile is the path within the context (default: "Containerfile")
+	Containerfile string `json:"containerfile,omitempty"`
+	// Strategy is the Shipwright build strategy name (default: "buildah")
+	Strategy string `json:"strategy,omitempty"`
+	// BuildArgs are --build-arg KEY=VALUE pairs
+	BuildArgs map[string]string `json:"buildArgs,omitempty"`
+	// Architecture is the target CPU architecture
+	Architecture string `json:"architecture,omitempty"`
+	// Timeout is the maximum build duration in minutes (default: 30)
+	Timeout int32 `json:"timeout,omitempty"`
+	// RegistryCredentials contains push authentication details
+	RegistryCredentials *RegistryCredentials `json:"registryCredentials,omitempty"`
+}
+
+// ContainerBuildResponse is returned by container build operations
+type ContainerBuildResponse struct {
+	Name           string `json:"name"`
+	Phase          string `json:"phase"`
+	Message        string `json:"message"`
+	RequestedBy    string `json:"requestedBy,omitempty"`
+	StartTime      string `json:"startTime,omitempty"`
+	CompletionTime string `json:"completionTime,omitempty"`
+	OutputImage    string `json:"outputImage,omitempty"`
+	ImageDigest    string `json:"imageDigest,omitempty"`
+}
+
+// ContainerBuildListItem represents a container build in the list API
+type ContainerBuildListItem struct {
+	Name           string `json:"name"`
+	Phase          string `json:"phase"`
+	Message        string `json:"message"`
+	RequestedBy    string `json:"requestedBy,omitempty"`
+	CreatedAt      string `json:"createdAt"`
+	CompletionTime string `json:"completionTime,omitempty"`
+	OutputImage    string `json:"outputImage,omitempty"`
+}
