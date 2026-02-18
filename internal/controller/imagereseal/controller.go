@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/containers/image/v5/docker"
+	containertypes "github.com/containers/image/v5/types"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -32,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	pod "github.com/tektoncd/pipeline/pkg/apis/pipeline/pod"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
@@ -56,6 +59,7 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=imagereseals/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=imagereseals/finalizers,verbs=update
 // +kubebuilder:rbac:groups=tekton.dev,resources=tasks;taskruns;pipelineruns,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 // Reconcile handles reconciliation of ImageReseal resources.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -92,6 +96,17 @@ func (r *Reconciler) handlePending(ctx context.Context, sealed *automotivev1alph
 		return r.updateStatus(ctx, sealed, phaseFailed, err.Error())
 	}
 	logger.Info("Starting reseal operation", "name", sealed.Name, "stages", stages)
+
+	// Auto-detect architecture from source container image if not specified
+	if sealed.Spec.Architecture == "" && sealed.Spec.InputRef != "" {
+		arch, err := r.detectImageArch(ctx, sealed.Spec.InputRef, sealed.Namespace, sealed.Spec.SecretRef)
+		if err != nil {
+			logger.Info("Could not auto-detect architecture from source image, will rely on node detection", "error", err)
+		} else if arch != "" {
+			logger.Info("Auto-detected architecture from source image", "arch", arch)
+			sealed.Spec.Architecture = arch
+		}
+	}
 
 	if err := r.ensureSealedTasks(ctx, sealed.Namespace); err != nil {
 		return r.updateStatus(ctx, sealed, phaseFailed, fmt.Sprintf("Failed to ensure reseal tasks: %v", err))
@@ -261,6 +276,16 @@ func (r *Reconciler) createSealedTaskRun(ctx context.Context, sealed *automotive
 		{Name: "architecture", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: sealed.Spec.Architecture}},
 	}
 
+	trSpec := tektonv1.TaskRunSpec{
+		TaskRef:    &tektonv1.TaskRef{Name: tasks.SealedTaskName(operation)},
+		Params:     params,
+		Workspaces: workspaces,
+	}
+	if nodeArch := archToNodeArch(sealed.Spec.Architecture); nodeArch != "" {
+		trSpec.PodTemplate = &pod.Template{
+			NodeSelector: map[string]string{corev1.LabelArchStable: nodeArch},
+		}
+	}
 	tr := &tektonv1.TaskRun{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      taskRunName,
@@ -274,11 +299,7 @@ func (r *Reconciler) createSealedTaskRun(ctx context.Context, sealed *automotive
 				{APIVersion: automotivev1alpha1.GroupVersion.String(), Kind: "ImageReseal", Name: sealed.Name, UID: sealed.UID, Controller: ptr(true)},
 			},
 		},
-		Spec: tektonv1.TaskRunSpec{
-			TaskRef:    &tektonv1.TaskRef{Name: tasks.SealedTaskName(operation)},
-			Params:     params,
-			Workspaces: workspaces,
-		},
+		Spec: trSpec,
 	}
 	if err := r.Create(ctx, tr); err != nil {
 		return nil, fmt.Errorf("create TaskRun: %w", err)
@@ -371,6 +392,20 @@ func (r *Reconciler) createSealedPipelineRun(ctx context.Context, sealed *automo
 		prWorkspaces = append(prWorkspaces, tektonv1.PipelineWorkspaceDeclaration{Name: "sealing-key-password"})
 	}
 
+	prSpec := tektonv1.PipelineRunSpec{
+		PipelineSpec: &tektonv1.PipelineSpec{
+			Workspaces: prWorkspaces,
+			Tasks:      pipelineTasks,
+		},
+		Workspaces: workspaces,
+	}
+	if nodeArch := archToNodeArch(sealed.Spec.Architecture); nodeArch != "" {
+		prSpec.TaskRunTemplate = tektonv1.PipelineTaskRunTemplate{
+			PodTemplate: &pod.Template{
+				NodeSelector: map[string]string{corev1.LabelArchStable: nodeArch},
+			},
+		}
+	}
 	pr := &tektonv1.PipelineRun{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      prName,
@@ -383,18 +418,24 @@ func (r *Reconciler) createSealedPipelineRun(ctx context.Context, sealed *automo
 				{APIVersion: automotivev1alpha1.GroupVersion.String(), Kind: "ImageReseal", Name: sealed.Name, UID: sealed.UID, Controller: ptr(true)},
 			},
 		},
-		Spec: tektonv1.PipelineRunSpec{
-			PipelineSpec: &tektonv1.PipelineSpec{
-				Workspaces: prWorkspaces,
-				Tasks:      pipelineTasks,
-			},
-			Workspaces: workspaces,
-		},
+		Spec: prSpec,
 	}
 	if err := r.Create(ctx, pr); err != nil {
 		return nil, fmt.Errorf("create PipelineRun: %w", err)
 	}
 	return pr, nil
+}
+
+// archToNodeArch maps ImageReseal.Spec.Architecture to Kubernetes node label (kubernetes.io/arch).
+func archToNodeArch(arch string) string {
+	switch strings.ToLower(strings.TrimSpace(arch)) {
+	case "amd64", "x86_64":
+		return "amd64"
+	case "arm64", "aarch64":
+		return "arm64"
+	default:
+		return ""
+	}
 }
 
 // validateStages checks that every entry in stages is a known sealed operation.
@@ -494,6 +535,52 @@ func (r *Reconciler) deleteSecretWithRetry(ctx context.Context, namespace, secre
 
 func ptr(b bool) *bool {
 	return &b
+}
+
+// detectImageArch inspects a container image and returns its architecture (e.g. "amd64", "arm64").
+// Uses registry credentials from SecretRef when available.
+func (r *Reconciler) detectImageArch(ctx context.Context, imageRef, namespace, secretRef string) (string, error) {
+	sysCtx := &containertypes.SystemContext{
+		DockerInsecureSkipTLSVerify: containertypes.OptionalBoolTrue,
+	}
+
+	if secretRef != "" {
+		auth, err := r.readRegistryAuth(ctx, namespace, secretRef)
+		if err == nil && auth != nil {
+			sysCtx.DockerAuthConfig = auth
+		}
+	}
+
+	ref, err := docker.ParseReference("//" + imageRef)
+	if err != nil {
+		return "", fmt.Errorf("parse image ref %q: %w", imageRef, err)
+	}
+
+	img, err := ref.NewImage(ctx, sysCtx)
+	if err != nil {
+		return "", fmt.Errorf("open image %q: %w", imageRef, err)
+	}
+	defer func() { _ = img.Close() }()
+
+	info, err := img.Inspect(ctx)
+	if err != nil {
+		return "", fmt.Errorf("inspect image %q: %w", imageRef, err)
+	}
+	return info.Architecture, nil
+}
+
+// readRegistryAuth reads registry credentials (REGISTRY_USERNAME / REGISTRY_PASSWORD) from a secret.
+func (r *Reconciler) readRegistryAuth(ctx context.Context, namespace, secretName string) (*containertypes.DockerAuthConfig, error) {
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, client.ObjectKey{Name: secretName, Namespace: namespace}, secret); err != nil {
+		return nil, err
+	}
+	username := string(secret.Data["REGISTRY_USERNAME"])
+	password := string(secret.Data["REGISTRY_PASSWORD"])
+	if username != "" && password != "" {
+		return &containertypes.DockerAuthConfig{Username: username, Password: password}, nil
+	}
+	return nil, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
