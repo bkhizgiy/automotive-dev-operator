@@ -334,8 +334,8 @@ fi
 
 # Common build arguments used across all modes
 declare -a COMMON_BUILD_ARGS=(
-  --build-dir=/output/_build
-  --osbuild-manifest=/output/image.json
+  --build-dir=/_build
+  --osbuild-manifest=/_build/image.json
 )
 
 case "$BUILD_MODE" in
@@ -490,7 +490,7 @@ else
     echo "No disk image created (container-only build)"
 fi
 
-cp -v /output/image.json $(workspaces.shared-workspace.path)/image.json || echo "Failed to copy image.json"
+cp -v /_build/image.json $(workspaces.shared-workspace.path)/image.json || echo "Failed to copy image.json"
 
 echo "Contents of shared workspace:"
 ls -la $(workspaces.shared-workspace.path)/
