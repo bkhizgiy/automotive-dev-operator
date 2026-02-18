@@ -75,7 +75,11 @@ graphroot = "/var/lib/containers/storage"
 EOF
 
 if ! mountpoint -q /var/tmp; then
-  mount -t tmpfs tmpfs /var/tmp
+  VAR_TMP_SIZE="${VAR_TMP_SIZE:-20G}"
+  echo "Creating loopback ext4 filesystem for /var/tmp (${VAR_TMP_SIZE} sparse)"
+  truncate -s "$VAR_TMP_SIZE" /tmp/var-tmp.img
+  mkfs.ext4 -q /tmp/var-tmp.img
+  mount -o loop /tmp/var-tmp.img /var/tmp
 fi
 
 # Local image name (what we'll actually use - nested containers can access this)
