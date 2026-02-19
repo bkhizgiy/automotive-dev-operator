@@ -175,7 +175,7 @@ target="$(params.target)"
 arch="$(params.arch)"
 builder_image_used="$(params.builder-image)"
 
-config_file="/etc/partition-config/partition-rules.yaml"
+config_file="/etc/target-defaults/target-defaults.yaml"
 default_partitions=""
 if [ -f "$config_file" ]; then
   # Use yq to extract included partitions for target (using bracket notation for safety)
