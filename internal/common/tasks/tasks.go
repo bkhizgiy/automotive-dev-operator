@@ -15,11 +15,10 @@ import (
 // BuildConfig defines configuration options for build operations
 // This is an internal type used for task generation
 type BuildConfig struct {
-	UseMemoryVolumes          bool
-	UseMemoryContainerStorage bool
-	MemoryVolumeSize          string
-	PVCSize                   string
-	RuntimeClassName          string
+	UseMemoryVolumes bool
+	MemoryVolumeSize string
+	PVCSize          string
+	RuntimeClassName string
 }
 
 // DefaultInternalRegistryURL is the standard in-cluster URL for the OpenShift internal image registry.
@@ -422,34 +421,12 @@ func GenerateBuildAutomotiveImageTask(namespace string, buildConfig *BuildConfig
 		for i := range task.Spec.Volumes {
 			vol := &task.Spec.Volumes[i]
 
-			if vol.Name == "build-dir" || vol.Name == "run-dir" {
+			if vol.Name == "build-dir" || vol.Name == "run-dir" || vol.Name == "container-storage" {
 				vol.EmptyDir = &corev1.EmptyDirVolumeSource{
 					Medium: corev1.StorageMediumMemory,
 				}
 
 				if buildConfig.MemoryVolumeSize != "" {
-					sizeLimit := resource.MustParse(buildConfig.MemoryVolumeSize)
-					vol.EmptyDir.SizeLimit = &sizeLimit
-				}
-			}
-		}
-	}
-
-	// Configure container storage volumes based on UseMemoryContainerStorage
-	// Default to disk storage; set UseMemoryContainerStorage=true to use memory-backed volumes
-	useMemoryContainerStorage := false
-	if buildConfig != nil {
-		useMemoryContainerStorage = buildConfig.UseMemoryContainerStorage
-	}
-	if useMemoryContainerStorage {
-		for i := range task.Spec.Volumes {
-			vol := &task.Spec.Volumes[i]
-
-			if vol.Name == "container-storage" || vol.Name == "run-dir" {
-				vol.EmptyDir = &corev1.EmptyDirVolumeSource{
-					Medium: corev1.StorageMediumMemory, // tmpfs supports xattrs for SELinux
-				}
-				if buildConfig != nil && buildConfig.MemoryVolumeSize != "" {
 					sizeLimit := resource.MustParse(buildConfig.MemoryVolumeSize)
 					vol.EmptyDir.SizeLimit = &sizeLimit
 				}
@@ -1331,21 +1308,15 @@ func GeneratePrepareBuilderTask(namespace string, buildConfig *BuildConfig) *tek
 		},
 	}
 
-	// Configure container storage volumes based on UseMemoryContainerStorage
-	// Default to disk storage; set UseMemoryContainerStorage=true to use memory-backed volumes
-	useMemoryContainerStorage := false
-	if buildConfig != nil {
-		useMemoryContainerStorage = buildConfig.UseMemoryContainerStorage
-	}
-	if useMemoryContainerStorage {
+	if buildConfig != nil && buildConfig.UseMemoryVolumes {
 		for i := range task.Spec.Volumes {
 			vol := &task.Spec.Volumes[i]
 
 			if vol.Name == "container-storage" || vol.Name == "run-osbuild" || vol.Name == "var-tmp" {
 				vol.EmptyDir = &corev1.EmptyDirVolumeSource{
-					Medium: corev1.StorageMediumMemory, // tmpfs supports xattrs for SELinux
+					Medium: corev1.StorageMediumMemory,
 				}
-				if buildConfig != nil && buildConfig.MemoryVolumeSize != "" {
+				if buildConfig.MemoryVolumeSize != "" {
 					sizeLimit := resource.MustParse(buildConfig.MemoryVolumeSize)
 					vol.EmptyDir.SizeLimit = &sizeLimit
 				}

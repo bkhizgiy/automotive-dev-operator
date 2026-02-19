@@ -482,7 +482,7 @@ spec:
                   memoryVolumeSize:
                     description: |-
                       MemoryVolumeSize specifies the size limit for memory-backed volumes
-                      Only used when UseMemoryVolumes or UseMemoryContainerStorage is true
+                      Only used when UseMemoryVolumes is true
                       Example: "2Gi"
                     type: string
                   nodeSelector:
@@ -552,15 +552,10 @@ spec:
                       Default: 30
                     format: int32
                     type: integer
-                  useMemoryContainerStorage:
-                    description: |-
-                      UseMemoryContainerStorage determines whether to use memory-backed volumes for container storage
-                      This controls /var/lib/containers/storage, /run/osbuild, and /var/tmp volumes
-                      Default: false (disk-backed)
-                    type: boolean
                   useMemoryVolumes:
                     description: |-
                       UseMemoryVolumes determines whether to use memory-backed volumes for build operations
+                      When true, all emptyDir volumes (build-dir, run-dir, container-storage, etc.) use tmpfs
                       Default: false (disk-backed)
                     type: boolean
                 required:
