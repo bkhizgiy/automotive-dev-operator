@@ -360,6 +360,10 @@ func GenerateBuildAutomotiveImageTask(namespace string, buildConfig *BuildConfig
 							MountPath: "/etc/pki/ca-trust/custom",
 							ReadOnly:  true,
 						},
+						{
+							Name:      "sysfs",
+							MountPath: "/sys",
+						},
 					},
 				},
 			},
@@ -410,6 +414,14 @@ func GenerateBuildAutomotiveImageTask(namespace string, buildConfig *BuildConfig
 								Name: "rhivos-ca-bundle",
 							},
 							Optional: ptr.To(true),
+						},
+					},
+				},
+				{
+					Name: "sysfs",
+					VolumeSource: corev1.VolumeSource{
+						HostPath: &corev1.HostPathVolumeSource{
+							Path: "/sys",
 						},
 					},
 				},
