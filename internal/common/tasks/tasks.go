@@ -2,6 +2,7 @@ package tasks
 
 import (
 	_ "embed" // Required for go:embed directives
+	"fmt"
 	"time"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
@@ -328,6 +329,10 @@ func GenerateBuildAutomotiveImageTask(namespace string, buildConfig *BuildConfig
 						{
 							Name:  "TARGET_ARCH",
 							Value: "$(params.target-architecture)",
+						},
+						{
+							Name:  "USE_MEMORY_VOLUMES",
+							Value: fmt.Sprintf("%t", buildConfig != nil && buildConfig.UseMemoryVolumes),
 						},
 					},
 					VolumeMounts: []corev1.VolumeMount{
@@ -1250,6 +1255,10 @@ func GeneratePrepareBuilderTask(namespace string, buildConfig *BuildConfig) *tek
 						{
 							Name:  "AIB_IMAGE",
 							Value: "$(params.automotive-image-builder)",
+						},
+						{
+							Name:  "USE_MEMORY_VOLUMES",
+							Value: fmt.Sprintf("%t", buildConfig != nil && buildConfig.UseMemoryVolumes),
 						},
 					},
 					Script: BuildBuilderScript,
