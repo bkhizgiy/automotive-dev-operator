@@ -1,8 +1,10 @@
 #!/bin/bash
 set -e
 
-# Global variable to track saved config location
+# Global variables
 SAVED_CONFIG=""
+ORIG_CATALOGSOURCE=""
+ORIG_KUSTOMIZATION=""
 
 # Cleanup function for error handling
 cleanup() {
@@ -21,8 +23,18 @@ cleanup() {
         echo "  yq eval 'del(.items[].metadata.resourceVersion, .items[].metadata.uid, .items[].metadata.creationTimestamp, .items[].metadata.generation, .items[].metadata.managedFields, .items[].status)' \"$SAVED_CONFIG\" | oc apply -f -"
         echo ""
         echo "Or copy to a safe location before next deployment attempt:"
-        echo "  cp \"$SAVED_CONFIG\" ./my-operatorconfig.yaml"
+        echo "  cp \"$SAVED_CONFIG\" ~/my-operatorconfig.yaml"
         echo "========================================================"
+    fi
+
+    # Restore git-tracked files modified during build
+    if [ -n "$ORIG_CATALOGSOURCE" ] && [ -f "$ORIG_CATALOGSOURCE" ]; then
+        cp "$ORIG_CATALOGSOURCE" catalogsource.yaml
+        rm -f "$ORIG_CATALOGSOURCE"
+    fi
+    if [ -n "$ORIG_KUSTOMIZATION" ] && [ -f "$ORIG_KUSTOMIZATION" ]; then
+        cp "$ORIG_KUSTOMIZATION" config/manager/kustomization.yaml
+        rm -f "$ORIG_KUSTOMIZATION"
     fi
 }
 
@@ -43,7 +55,7 @@ Commands:
 Flags:
   -y, --yes        Skip confirmation prompt
   --keep-config    Save and restore OperatorConfig during redeploy
-                   (backup saved to ./operatorconfig-backup-YYYYMMDD-HHMMSS.yaml)
+                   (backup saved to /tmp/operatorconfig-backup-YYYYMMDD-HHMMSS.yaml)
 
 Examples:
   $0              # Full redeploy (most common)
@@ -150,8 +162,7 @@ uninstall_operator() {
 
         # Check if any OperatorConfig exists first
         if oc get operatorconfig -n ${NAMESPACE} --no-headers 2>/dev/null | grep -q .; then
-            # Use current directory for easier access and recovery
-            SAVED_CONFIG="./operatorconfig-backup-$(date +%Y%m%d-%H%M%S).yaml"
+            SAVED_CONFIG="/tmp/operatorconfig-backup-$(date +%Y%m%d-%H%M%S).yaml"
             if oc get operatorconfig -n ${NAMESPACE} -o yaml > "$SAVED_CONFIG" 2>/dev/null; then
                 echo "  ✓ Saved to $SAVED_CONFIG"
             else
@@ -237,6 +248,17 @@ echo "Operator Image: ${OPERATOR_IMG}"
 echo "Bundle Image: ${BUNDLE_IMG}"
 echo "Catalog Image: ${CATALOG_IMG}"
 echo "=========================================="
+
+echo ""
+echo "Saving originals of git-tracked files modified during build..."
+ORIG_CATALOGSOURCE=$(mktemp /tmp/catalogsource-orig.XXXXXX.yaml)
+if ! cp catalogsource.yaml "$ORIG_CATALOGSOURCE"; then
+    rm -f "$ORIG_CATALOGSOURCE"; ORIG_CATALOGSOURCE=""; exit 1
+fi
+ORIG_KUSTOMIZATION=$(mktemp /tmp/kustomization-orig.XXXXXX.yaml)
+if ! cp config/manager/kustomization.yaml "$ORIG_KUSTOMIZATION"; then
+    rm -f "$ORIG_KUSTOMIZATION"; ORIG_KUSTOMIZATION=""; exit 1
+fi
 
 echo ""
 echo "Ensuring push permissions..."
