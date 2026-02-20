@@ -373,6 +373,7 @@ ls -la "$WORKSPACE_PATH/"
 
 COMPRESSION="$(params.compression)"
 echo "Requested compression: $COMPRESSION"
+GZIP_COMPRESSOR="gzip"
 
 ensure_lz4() {
   if ! command -v lz4 >/dev/null 2>&1; then
@@ -393,8 +394,19 @@ ensure_lz4() {
   fi
 }
 
+setup_gzip_compressor() {
+  if command -v pigz >/dev/null 2>&1; then
+    GZIP_COMPRESSOR="pigz"
+    echo "Using pigz for gzip compression"
+  else
+    echo "pigz not found; using gzip for compression"
+  fi
+}
+
 if [ "$COMPRESSION" = "lz4" ]; then
   ensure_lz4
+elif [ "$COMPRESSION" = "gzip" ]; then
+  setup_gzip_compressor
 fi
 
 # Simplified compression functions - no unnecessary dispatching
@@ -402,7 +414,7 @@ compress_file() {
   local src="$1" dest="$2"
   case "$COMPRESSION" in
     lz4) lz4 -z -f -q "$src" "$dest" ;;
-    gzip|*) gzip -c "$src" > "$dest" ;;
+    gzip|*) "$GZIP_COMPRESSOR" -c "$src" > "$dest" ;;
   esac
 }
 
@@ -410,7 +422,7 @@ tar_dir() {
   local dir="$1" out="$2"
   case "$COMPRESSION" in
     lz4) tar -C "$WORKSPACE_PATH" -cf - "$dir" | lz4 -z -f -q > "$out" ;;
-    gzip|*) tar -C "$WORKSPACE_PATH" -czf "$out" "$dir" ;;
+    gzip|*) tar -C "$WORKSPACE_PATH" -cf - "$dir" | "$GZIP_COMPRESSOR" -c > "$out" ;;
   esac
 }
 
