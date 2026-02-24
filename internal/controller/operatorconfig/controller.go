@@ -578,7 +578,6 @@ func (r *OperatorConfigReconciler) deployOSBuilds(
 	tektonTasks := []*tektonv1.Task{
 		tasks.GenerateBuildAutomotiveImageTask(config.Namespace, buildConfig, ""),
 		tasks.GeneratePushArtifactRegistryTask(config.Namespace),
-		tasks.GeneratePrepareBuilderTask(config.Namespace, buildConfig),
 		tasks.GenerateFlashTask(config.Namespace),
 	}
 

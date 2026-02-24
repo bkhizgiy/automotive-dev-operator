@@ -509,7 +509,7 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 			},
 		})
 
-		// Let prepare-builder task handle building the image automatically
+		// build-image handles building the builder image inline
 		// when builder-image is empty for bootc builds
 	}
 
