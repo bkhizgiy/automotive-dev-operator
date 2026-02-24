@@ -131,6 +131,26 @@ paths:
             text/plain:
               schema:
                 type: string
+  /v1/builds/{name}/progress:
+    parameters:
+      - in: path
+        name: name
+        schema:
+          type: string
+        required: true
+    get:
+      summary: Get build progress
+      operationId: getBuildProgress
+      description: Returns the current build phase and, for active builds, the latest progress step from build script markers.
+      responses:
+        '200':
+          description: Build progress
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BuildProgress'
+        '404':
+          description: Not found
   /v1/builds/{name}/template:
     parameters:
       - in: path
@@ -218,6 +238,33 @@ components:
         requestedBy:
           type: string
           nullable: true
+    BuildProgress:
+      type: object
+      properties:
+        phase:
+          type: string
+          description: ImageBuild phase (Pending, Building, Completed, Failed, etc.)
+        step:
+          $ref: '#/components/schemas/BuildStep'
+      required:
+        - phase
+    BuildStep:
+      type: object
+      description: A progress checkpoint emitted by the build script
+      properties:
+        stage:
+          type: string
+          description: Human-readable stage name
+        done:
+          type: integer
+          description: Number of steps completed
+        total:
+          type: integer
+          description: Total number of steps
+      required:
+        - stage
+        - done
+        - total
     BuildTemplateResponse:
       allOf:
         - $ref: '#/components/schemas/BuildRequest'

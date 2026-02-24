@@ -314,6 +314,8 @@ type APIServer struct {
 	oidcClientID        string
 	authConfigMu        sync.RWMutex // Protects externalJWT, authConfig, internalPrefix, oidcClientID
 	lastAuthConfigCheck time.Time    // Last time we checked OperatorConfig
+	progressCache       map[string]progressCacheEntry
+	progressCacheMu     sync.RWMutex
 }
 
 //go:embed openapi.yaml
@@ -503,6 +505,7 @@ func (a *APIServer) createRouter() *gin.Engine {
 			buildsGroup.GET("", a.handleListBuilds)
 			buildsGroup.GET("/:name", a.handleGetBuild)
 			buildsGroup.GET("/:name/logs", a.handleStreamLogs)
+			buildsGroup.GET("/:name/progress", a.handleGetProgress)
 			buildsGroup.GET("/:name/template", a.handleGetBuildTemplate)
 			buildsGroup.POST("/:name/uploads", a.handleUploadFiles)
 		}

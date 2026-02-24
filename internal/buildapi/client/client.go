@@ -167,6 +167,40 @@ func (c *Client) GetBuild(ctx context.Context, name string) (*buildapi.BuildResp
 	return &out, nil
 }
 
+// GetBuildProgress retrieves the current progress of a build.
+// Returns nil, nil (no error) on 404 to handle older servers gracefully.
+func (c *Client) GetBuildProgress(ctx context.Context, name string) (*buildapi.BuildProgress, error) {
+	endpoint := c.resolve(path.Join("/v1/builds", url.PathEscape(name), "progress"))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
+		}
+	}()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("get build progress failed: %s: %s", resp.Status, string(b))
+	}
+	var out buildapi.BuildProgress
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // GetBuildTemplate retrieves a build template reconstructed from ImageBuild inputs.
 func (c *Client) GetBuildTemplate(ctx context.Context, name string) (*buildapi.BuildTemplateResponse, error) {
 	endpoint := c.resolve(path.Join("/v1/builds", url.PathEscape(name), "template"))

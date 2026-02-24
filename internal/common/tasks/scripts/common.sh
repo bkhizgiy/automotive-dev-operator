@@ -2,7 +2,19 @@
 set -e
 
 # Common constants and functions shared between build scripts.
-# This file is prepended to build_image.sh and build_builder.sh at embed time.
+# This file is prepended to task scripts at embed time.
+
+emit_progress() {
+  local stage="$1" done="$2" total="$3"
+  curl -s --connect-timeout 3 --max-time 5 \
+    --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+    -X PATCH \
+    -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+    -H "Content-Type: application/merge-patch+json" \
+    "https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}/api/v1/namespaces/$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)/pods/${HOSTNAME}" \
+    -d "{\"metadata\":{\"annotations\":{\"automotive.sdv.cloud.redhat.com/progress\":\"${stage}|${done}|${total}\"}}}" \
+    > /dev/null 2>&1 || true
+}
 
 INTERNAL_REGISTRY="image-registry.openshift-image-registry.svc:5000"
 OSBUILD_PATH="/usr/bin/osbuild"

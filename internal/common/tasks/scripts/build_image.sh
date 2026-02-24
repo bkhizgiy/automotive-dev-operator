@@ -1,12 +1,5 @@
 # NOTE: common.sh is prepended to this script at embed time.
 
-# Emit a structured progress marker to stdout for the progress API.
-# Format: ##progress:{"stage":"...","done":N,"total":N}
-emit_progress() {
-  local stage="$1" done="$2" total="$3"
-  echo "##progress:{\"stage\":\"$stage\",\"done\":$done,\"total\":$total}"
-}
-
 # Initialize optimizations
 echo "DEBUG: Starting build script"
 WORKSPACE_PATH="$(workspaces.shared-workspace.path)"
@@ -229,19 +222,7 @@ with open(f, 'w') as fh: json.dump(d, fh)
   if [ "$BUILDER_CACHED" = "false" ]; then
     echo "Builder image not found, building..."
     echo "Running: aib build-builder --distro $(params.distro) --build-dir /_build --cache /_build/dnf-cache ${CUSTOM_DEFS_ARGS[*]} $LOCAL_BUILDER_IMAGE"
-    aib --verbose build-builder --build-dir /_build --cache /_build/dnf-cache --distro "$(params.distro)" "${CUSTOM_DEFS_ARGS[@]}" "$LOCAL_BUILDER_IMAGE" &
-    AIB_PID=$!
-    while kill -0 "$AIB_PID" 2>/dev/null; do
-      emit_progress "Preparing builder" 2 "$PROGRESS_TOTAL"
-      sleep 30
-    done &
-    HEARTBEAT_PID=$!
-    wait "$AIB_PID"
-    AIB_RC=$?
-    kill "$HEARTBEAT_PID" 2>/dev/null; wait "$HEARTBEAT_PID" 2>/dev/null || true
-    if [ "$AIB_RC" -ne 0 ]; then
-      exit "$AIB_RC"
-    fi
+    aib --verbose build-builder --build-dir /_build --cache /_build/dnf-cache --distro "$(params.distro)" "${CUSTOM_DEFS_ARGS[@]}" "$LOCAL_BUILDER_IMAGE"
 
     echo "Built local image: $LOCAL_BUILDER_IMAGE"
     echo "Pushing to cluster registry: $TARGET_BUILDER_IMAGE"
@@ -319,19 +300,7 @@ case "$BUILD_MODE" in
         "${AIB_EXTRA_ARGS[@]}" \
         "$MANIFEST_FILE" \
         "$BOOTC_CONTAINER_NAME" \
-        "${DISK_OUTPUT_ARGS[@]}" &
-      AIB_PID=$!
-      while kill -0 "$AIB_PID" 2>/dev/null; do
-        emit_progress "Building image" "$STEP_BUILD" "$PROGRESS_TOTAL"
-        sleep 30
-      done &
-      HEARTBEAT_PID=$!
-      wait "$AIB_PID"
-      AIB_RC=$?
-      kill "$HEARTBEAT_PID" 2>/dev/null; wait "$HEARTBEAT_PID" 2>/dev/null || true
-      if [ "$AIB_RC" -ne 0 ]; then
-        exit "$AIB_RC"
-      fi
+        "${DISK_OUTPUT_ARGS[@]}"
 
       if [ -n "$CONTAINER_PUSH" ]; then
         emit_progress "Pushing container" "$((STEP_BUILD + 1))" "$PROGRESS_TOTAL"
@@ -406,19 +375,7 @@ PYEOF
         "${COMMON_BUILD_ARGS[@]}" \
         "${AIB_EXTRA_ARGS[@]}" \
         "$MANIFEST_FILE" \
-        "/output/${exportFile}" &
-      AIB_PID=$!
-      while kill -0 "$AIB_PID" 2>/dev/null; do
-        emit_progress "Building image" "$STEP_BUILD" "$PROGRESS_TOTAL"
-        sleep 30
-      done &
-      HEARTBEAT_PID=$!
-      wait "$AIB_PID"
-      AIB_RC=$?
-      kill "$HEARTBEAT_PID" 2>/dev/null; wait "$HEARTBEAT_PID" 2>/dev/null || true
-      if [ "$AIB_RC" -ne 0 ]; then
-        exit "$AIB_RC"
-      fi
+        "/output/${exportFile}"
       ;;
     disk)
       # Disk mode: create disk image from existing bootc container
@@ -446,19 +403,7 @@ PYEOF
         "${BUILD_CONTAINER_ARGS[@]}" \
         "${AIB_EXTRA_ARGS[@]}" \
         "$CONTAINER_REF" \
-        "/output/${exportFile}" &
-      AIB_PID=$!
-      while kill -0 "$AIB_PID" 2>/dev/null; do
-        emit_progress "Building image" "$STEP_BUILD" "$PROGRESS_TOTAL"
-        sleep 30
-      done &
-      HEARTBEAT_PID=$!
-      wait "$AIB_PID"
-      AIB_RC=$?
-      kill "$HEARTBEAT_PID" 2>/dev/null; wait "$HEARTBEAT_PID" 2>/dev/null || true
-      if [ "$AIB_RC" -ne 0 ]; then
-        exit "$AIB_RC"
-      fi
+        "/output/${exportFile}"
 
       # Note: Disk image push to OCI registry is handled by the separate push-disk-artifact task
       ;;
@@ -509,7 +454,9 @@ echo "Contents of shared workspace:"
 ls -la "$WORKSPACE_PATH/"
 
 COMPRESSION="$(params.compression)"
-emit_progress "Compressing artifacts" "$((STEP_FINALIZE - 1))" "$PROGRESS_TOTAL"
+if [ "$BUILD_DISK_IMAGE" = "true" ] || [ "$BUILD_MODE" = "image" ] || [ "$BUILD_MODE" = "package" ] || [ "$BUILD_MODE" = "disk" ]; then
+  emit_progress "Compressing artifacts" "$((STEP_FINALIZE - 1))" "$PROGRESS_TOTAL"
+fi
 echo "Requested compression: $COMPRESSION"
 GZIP_COMPRESSOR="gzip"
 

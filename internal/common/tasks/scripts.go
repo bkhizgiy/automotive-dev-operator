@@ -21,23 +21,26 @@ var buildImageScript string
 var BuildImageScript = ""
 
 //go:embed scripts/push_artifact.sh
+var pushArtifactScript string
 
 // PushArtifactScript contains the embedded shell script for pushing artifacts.
-var PushArtifactScript string
+var PushArtifactScript = ""
 
 //go:embed scripts/build_builder.sh
 var buildBuilderScript string
 
 // BuildBuilderScript contains the embedded shell script for building the builder image.
-// It is the concatenation of common.sh and build_builder.sh.
 var BuildBuilderScript = ""
 
 //go:embed scripts/flash_image.sh
+var flashImageScript string
 
 // FlashImageScript contains the embedded shell script for flashing images via Jumpstarter.
-var FlashImageScript string
+var FlashImageScript = ""
 
 func init() {
 	BuildImageScript = commonScript + "\n" + buildImageScript
 	BuildBuilderScript = commonScript + "\n" + buildBuilderScript
+	PushArtifactScript = commonScript + "\n" + pushArtifactScript
+	FlashImageScript = commonScript + "\n" + flashImageScript
 }
