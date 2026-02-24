@@ -1,7 +1,7 @@
-ARG TARGETOS
-ARG TARGETARCH
 ARG BUILDPLATFORM
 FROM --platform=$BUILDPLATFORM registry.access.redhat.com/ubi9/go-toolset:1.24.6 AS builder
+ARG TARGETOS=linux
+ARG TARGETARCH
 
 WORKDIR /workspace
 
