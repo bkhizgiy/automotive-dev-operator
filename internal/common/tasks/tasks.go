@@ -262,6 +262,15 @@ func GenerateBuildAutomotiveImageTask(namespace string, buildConfig *BuildConfig
 						StringVal: "",
 					},
 				},
+				{
+					Name:        "rebuild-builder",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Force rebuild of the bootc builder image (true/false)",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "false",
+					},
+				},
 			},
 			Results: []tektonv1.TaskResult{
 				{
@@ -696,93 +705,6 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 			},
 			Tasks: []tektonv1.PipelineTask{
 				{
-					Name: "prepare-builder",
-					TaskRef: &tektonv1.TaskRef{
-						ResolverRef: tektonv1.ResolverRef{
-							Resolver: "cluster",
-							Params: []tektonv1.Param{
-								{
-									Name: "kind",
-									Value: tektonv1.ParamValue{
-										Type:      tektonv1.ParamTypeString,
-										StringVal: "task",
-									},
-								},
-								{
-									Name: "name",
-									Value: tektonv1.ParamValue{
-										Type:      tektonv1.ParamTypeString,
-										StringVal: "prepare-builder",
-									},
-								},
-								{
-									Name: "namespace",
-									Value: tektonv1.ParamValue{
-										Type:      tektonv1.ParamTypeString,
-										StringVal: namespace,
-									},
-								},
-							},
-						},
-					},
-					// Only run prepare-builder for bootc builds
-					When: []tektonv1.WhenExpression{
-						{
-							Input:    "$(params.mode)",
-							Operator: "in",
-							Values:   []string{"bootc"},
-						},
-					},
-					Params: []tektonv1.Param{
-						{
-							Name: "distro",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.distro)",
-							},
-						},
-						{
-							Name: "builder-image",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.builder-image)",
-							},
-						},
-						{
-							Name: "cluster-registry-route",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.cluster-registry-route)",
-							},
-						},
-						{
-							Name: "automotive-image-builder",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.automotive-image-builder)",
-							},
-						},
-						{
-							Name: "target-architecture",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.arch)",
-							},
-						},
-						{
-							Name: "rebuild-builder",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.rebuild-builder)",
-							},
-						},
-					},
-					Workspaces: []tektonv1.WorkspacePipelineTaskBinding{
-						{Name: "manifest-config-workspace", Workspace: "manifest-config-workspace"},
-					},
-					Timeout: &metav1.Duration{Duration: 30 * time.Minute},
-				},
-				{
 					Name: "build-image",
 					TaskRef: &tektonv1.TaskRef{
 						ResolverRef: tektonv1.ResolverRef{
@@ -812,8 +734,6 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 							},
 						},
 					},
-					// Wait for prepare-builder task (when it runs for bootc mode)
-					RunAfter: []string{"prepare-builder"},
 					Params: []tektonv1.Param{
 						{
 							Name: "target-architecture",
@@ -890,7 +810,7 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 							Value: tektonv1.ParamValue{
 								Type: tektonv1.ParamTypeString,
 								// Use pipeline param directly - controller sets this based on mode
-								// For bootc: points to cluster registry where prepare-builder cached the image
+								// For bootc: points to cluster registry where build-image cached the builder
 								// For traditional: empty (not needed)
 								StringVal: "$(params.builder-image)",
 							},
@@ -909,13 +829,20 @@ func GenerateTektonPipeline(name, namespace string) *tektonv1.Pipeline {
 								StringVal: "$(params.container-ref)",
 							},
 						},
+						{
+							Name: "rebuild-builder",
+							Value: tektonv1.ParamValue{
+								Type:      tektonv1.ParamTypeString,
+								StringVal: "$(params.rebuild-builder)",
+							},
+						},
 					},
 					Workspaces: []tektonv1.WorkspacePipelineTaskBinding{
 						{Name: "shared-workspace", Workspace: "shared-workspace"},
 						{Name: "manifest-config-workspace", Workspace: "manifest-config-workspace"},
 						{Name: "registry-auth", Workspace: "registry-auth"},
 					},
-					Timeout: &metav1.Duration{Duration: 1 * time.Hour},
+					Timeout: &metav1.Duration{Duration: 90 * time.Minute},
 				},
 				{
 					Name: "push-disk-artifact",
@@ -1130,222 +1057,6 @@ func buildEnvFrom(envSecretRef string) []corev1.EnvFromSource {
 			},
 		},
 	}
-}
-
-// GeneratePrepareBuilderTask creates a Tekton Task that checks for/builds the aib-build helper container
-func GeneratePrepareBuilderTask(namespace string, buildConfig *BuildConfig) *tektonv1.Task {
-	task := &tektonv1.Task{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "tekton.dev/v1",
-			Kind:       "Task",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "prepare-builder",
-			Namespace: namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "automotive-dev-operator",
-				"app.kubernetes.io/part-of":    "automotive-dev",
-			},
-		},
-		Spec: tektonv1.TaskSpec{
-			Params: []tektonv1.ParamSpec{
-				{
-					Name:        "distro",
-					Type:        tektonv1.ParamTypeString,
-					Description: "Distribution to build helper for",
-				},
-				{
-					Name:        "builder-image",
-					Type:        tektonv1.ParamTypeString,
-					Description: "Optional: use this builder image instead of auto-building",
-					Default: &tektonv1.ParamValue{
-						Type:      tektonv1.ParamTypeString,
-						StringVal: "",
-					},
-				},
-				{
-					Name:        "automotive-image-builder",
-					Type:        tektonv1.ParamTypeString,
-					Description: "AIB container image to use for building",
-					Default: &tektonv1.ParamValue{
-						Type:      tektonv1.ParamTypeString,
-						StringVal: AutomotiveImageBuilder,
-					},
-				},
-				{
-					Name:        "cluster-registry-route",
-					Type:        tektonv1.ParamTypeString,
-					Description: "External route for cluster image registry (for nested container access)",
-					Default: &tektonv1.ParamValue{
-						Type:      tektonv1.ParamTypeString,
-						StringVal: "",
-					},
-				},
-				{
-					Name:        "target-architecture",
-					Type:        tektonv1.ParamTypeString,
-					Description: "Target architecture for the builder image (amd64, arm64)",
-					Default: &tektonv1.ParamValue{
-						Type:      tektonv1.ParamTypeString,
-						StringVal: "amd64",
-					},
-				},
-				{
-					Name:        "rebuild-builder",
-					Type:        tektonv1.ParamTypeString,
-					Description: "Force rebuild of the bootc builder image (true/false)",
-					Default: &tektonv1.ParamValue{
-						Type:      tektonv1.ParamTypeString,
-						StringVal: "false",
-					},
-				},
-			},
-			Results: []tektonv1.TaskResult{
-				{
-					Name:        "builder-image-ref",
-					Description: "The builder image reference to use for disk builds",
-				},
-			},
-			StepTemplate: &tektonv1.StepTemplate{
-				SecurityContext: &corev1.SecurityContext{
-					Privileged: ptr.To(true),
-					SELinuxOptions: &corev1.SELinuxOptions{
-						Type: "unconfined_t",
-					},
-				},
-			},
-			Workspaces: []tektonv1.WorkspaceDeclaration{
-				{
-					Name:        "manifest-config-workspace",
-					Description: "Workspace for manifest configuration (custom definitions)",
-					MountPath:   "/workspace/manifest-config",
-					Optional:    true,
-				},
-			},
-			Steps: []tektonv1.Step{
-				{
-					Name:    "prepare-builder",
-					Image:   "$(params.automotive-image-builder)",
-					Timeout: &metav1.Duration{Duration: 30 * time.Minute},
-					Env: []corev1.EnvVar{
-						{
-							Name:  "DISTRO",
-							Value: "$(params.distro)",
-						},
-						{
-							Name:  "BUILDER_IMAGE",
-							Value: "$(params.builder-image)",
-						},
-						{
-							Name:  "RESULT_PATH",
-							Value: "$(results.builder-image-ref.path)",
-						},
-						{
-							Name:  "CLUSTER_REGISTRY_ROUTE",
-							Value: "$(params.cluster-registry-route)",
-						},
-						{
-							Name:  "TARGET_ARCH",
-							Value: "$(params.target-architecture)",
-						},
-						{
-							Name:  "REBUILD_BUILDER",
-							Value: "$(params.rebuild-builder)",
-						},
-						{
-							Name:  "AIB_IMAGE",
-							Value: "$(params.automotive-image-builder)",
-						},
-						{
-							Name:  "USE_MEMORY_VOLUMES",
-							Value: fmt.Sprintf("%t", buildConfig != nil && buildConfig.UseMemoryVolumes),
-						},
-					},
-					Script: BuildBuilderScript,
-					VolumeMounts: []corev1.VolumeMount{
-						{
-							Name:      "dev",
-							MountPath: "/dev",
-						},
-						{
-							Name:      "container-storage",
-							MountPath: "/var/lib/containers/storage",
-						},
-						{
-							Name:      "run-osbuild",
-							MountPath: "/run/osbuild",
-						},
-						{
-							Name:      "var-tmp",
-							MountPath: "/var/tmp",
-						},
-						{
-							Name:      "custom-ca",
-							MountPath: "/etc/pki/ca-trust/custom",
-							ReadOnly:  true,
-						},
-					},
-				},
-			},
-			Volumes: []corev1.Volume{
-				{
-					Name: "dev",
-					VolumeSource: corev1.VolumeSource{
-						HostPath: &corev1.HostPathVolumeSource{
-							Path: "/dev",
-						},
-					},
-				},
-				{
-					Name: "container-storage",
-					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{},
-					},
-				},
-				{
-					Name: "run-osbuild",
-					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{},
-					},
-				},
-				{
-					Name: "var-tmp",
-					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{},
-					},
-				},
-				{
-					Name: "custom-ca",
-					VolumeSource: corev1.VolumeSource{
-						ConfigMap: &corev1.ConfigMapVolumeSource{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "rhivos-ca-bundle",
-							},
-							Optional: ptr.To(true),
-						},
-					},
-				},
-			},
-		},
-	}
-
-	if buildConfig != nil && buildConfig.UseMemoryVolumes {
-		for i := range task.Spec.Volumes {
-			vol := &task.Spec.Volumes[i]
-
-			if vol.Name == "container-storage" || vol.Name == "run-osbuild" || vol.Name == "var-tmp" {
-				vol.EmptyDir = &corev1.EmptyDirVolumeSource{
-					Medium: corev1.StorageMediumMemory,
-				}
-				if buildConfig.MemoryVolumeSize != "" {
-					sizeLimit := resource.MustParse(buildConfig.MemoryVolumeSize)
-					vol.EmptyDir.SizeLimit = &sizeLimit
-				}
-			}
-		}
-	}
-
-	return task
 }
 
 // GenerateFlashTask creates a Tekton Task for flashing images to hardware via Jumpstarter

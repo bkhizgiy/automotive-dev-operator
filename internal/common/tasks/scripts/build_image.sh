@@ -145,6 +145,37 @@ echo "BUILD_DISK_IMAGE: $BUILD_DISK_IMAGE"
 echo "EXPORT_OCI: ${EXPORT_OCI:-<empty>}"
 echo "==========================="
 
+REBUILD_BUILDER="$(params.rebuild-builder)"
+
+# Calculate total progress steps based on build options.
+# SYNC: keep in sync with internal/buildapi/progress.go (estimateBuildSteps).
+# Base steps: 1=Preparing, 2=Building, 3=Finalizing
+PROGRESS_TOTAL=3
+STEP_BUILD=2
+STEP_FINALIZE=3
+# Builder preparation steps (bootc/disk without explicit builder + cluster registry available)
+# 2 extra steps: "Preparing builder" (cache check + optional build/push) + "Pulling builder"
+if [ -z "$BUILDER_IMAGE" ] && { [ "$BUILD_MODE" = "bootc" ] || [ "$BUILD_MODE" = "disk" ]; } && [ -n "$CLUSTER_REGISTRY_ROUTE" ]; then
+  PROGRESS_TOTAL=$((PROGRESS_TOTAL + 2))
+  STEP_BUILD=$((STEP_BUILD + 2))
+  STEP_FINALIZE=$((STEP_FINALIZE + 2))
+elif [ -n "$BUILDER_IMAGE" ] && { [ "$BUILD_MODE" = "bootc" ] || [ "$BUILD_MODE" = "disk" ]; }; then
+  PROGRESS_TOTAL=$((PROGRESS_TOTAL + 1))
+  STEP_BUILD=$((STEP_BUILD + 1))
+  STEP_FINALIZE=$((STEP_FINALIZE + 1))
+fi
+if [ -n "$CONTAINER_PUSH" ] && [ "$BUILD_MODE" = "bootc" ]; then
+  PROGRESS_TOTAL=$((PROGRESS_TOTAL + 1))
+  STEP_FINALIZE=$((STEP_FINALIZE + 1))
+fi
+# Compression step (for disk image builds)
+if [ "$BUILD_DISK_IMAGE" = "true" ] || [ "$BUILD_MODE" = "image" ] || [ "$BUILD_MODE" = "package" ] || [ "$BUILD_MODE" = "disk" ]; then
+  PROGRESS_TOTAL=$((PROGRESS_TOTAL + 1))
+  STEP_FINALIZE=$((STEP_FINALIZE + 1))
+fi
+
+emit_progress "Preparing build" 1 "$PROGRESS_TOTAL"
+
 # Use parameter expansion for cleaner default value assignment
 BOOTC_CONTAINER_NAME="${CONTAINER_PUSH:-localhost/aib-build:$(params.distro)-$(params.target)}"
 
@@ -154,10 +185,55 @@ AIB_HASH=$(echo -n "$(params.automotive-image-builder)" | sha256sum | cut -c1-8)
 LOCAL_BUILDER_IMAGE="localhost/aib-build:$(params.distro)-${TARGET_ARCH}-${AIB_HASH}"
 
 # For bootc/disk builds, if no builder-image is provided but cluster-registry-route is set,
-# use the image that prepare-builder cached in the cluster registry
+# prepare the builder image inline (previously done by separate prepare-builder task)
 if [ -z "$BUILDER_IMAGE" ] && { [ "$BUILD_MODE" = "bootc" ] || [ "$BUILD_MODE" = "disk" ]; } && [ -n "$CLUSTER_REGISTRY_ROUTE" ]; then
-  BUILDER_IMAGE="${CLUSTER_REGISTRY_ROUTE}/${NAMESPACE}/aib-build:$(params.distro)-${TARGET_ARCH}-${AIB_HASH}"
-  echo "Using builder image from cluster registry: $BUILDER_IMAGE"
+  TARGET_BUILDER_IMAGE="${CLUSTER_REGISTRY_ROUTE}/${NAMESPACE}/aib-build:$(params.distro)-${TARGET_ARCH}-${AIB_HASH}"
+
+  # Add auth entry for the external registry route hostname.
+  # setup_cluster_auth only created an entry for the internal registry;
+  # skopeo needs credentials for the route hostname too.
+  ROUTE_HOST=$(echo "$CLUSTER_REGISTRY_ROUTE" | cut -d'/' -f1)
+  TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null || echo "")
+  if [ -n "$TOKEN" ] && [ -n "$REGISTRY_AUTH_FILE" ]; then
+    ROUTE_AUTH=$(echo -n "serviceaccount:$TOKEN" | base64 -w0)
+    python3 -c "
+import json, sys
+f = sys.argv[1]
+with open(f) as fh: d = json.load(fh)
+d['auths'][sys.argv[2]] = {'auth': sys.argv[3]}
+with open(f, 'w') as fh: json.dump(d, fh)
+" "$REGISTRY_AUTH_FILE" "$ROUTE_HOST" "$ROUTE_AUTH"
+    echo "Added auth entry for registry route: $ROUTE_HOST"
+  fi
+
+  emit_progress "Preparing builder" 2 "$PROGRESS_TOTAL"
+
+  BUILDER_CACHED=false
+  if [ "$REBUILD_BUILDER" = "true" ]; then
+    echo "Rebuild requested, skipping cache check"
+  else
+    echo "Checking if $TARGET_BUILDER_IMAGE exists in cluster registry..."
+    if skopeo inspect --authfile="$REGISTRY_AUTH_FILE" "docker://$TARGET_BUILDER_IMAGE" >/dev/null 2>&1; then
+      echo "Builder image found in cluster registry: $TARGET_BUILDER_IMAGE"
+      BUILDER_CACHED=true
+    fi
+  fi
+
+  if [ "$BUILDER_CACHED" = "false" ]; then
+    echo "Builder image not found, building..."
+    echo "Running: aib build-builder --distro $(params.distro) --build-dir /_build --cache /_build/dnf-cache ${CUSTOM_DEFS_ARGS[*]} $LOCAL_BUILDER_IMAGE"
+    aib --verbose build-builder --build-dir /_build --cache /_build/dnf-cache --distro "$(params.distro)" "${CUSTOM_DEFS_ARGS[@]}" "$LOCAL_BUILDER_IMAGE"
+
+    echo "Built local image: $LOCAL_BUILDER_IMAGE"
+    echo "Pushing to cluster registry: $TARGET_BUILDER_IMAGE"
+    skopeo copy --authfile="$REGISTRY_AUTH_FILE" \
+      "containers-storage:$LOCAL_BUILDER_IMAGE" \
+      "docker://$TARGET_BUILDER_IMAGE"
+    echo "Builder image pushed: $TARGET_BUILDER_IMAGE"
+  fi
+
+  BUILDER_IMAGE="$TARGET_BUILDER_IMAGE"
+  echo "Using builder image: $BUILDER_IMAGE"
 fi
 
 # Record the effective builder image used for annotation
@@ -166,6 +242,7 @@ echo -n "${BUILDER_IMAGE:-}" > /tekton/results/builder-image
 # Set up builder image if needed (consolidated logic)
 declare -a BUILD_CONTAINER_ARGS=()
 if [ -n "$BUILDER_IMAGE" ] && { [ "$BUILD_MODE" = "bootc" ] || [ "$BUILD_MODE" = "disk" ]; }; then
+  emit_progress "Pulling builder image" $((STEP_BUILD - 1)) "$PROGRESS_TOTAL"
   echo "Pulling builder image to local storage: $BUILDER_IMAGE"
 
   TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null || echo "")
@@ -197,6 +274,7 @@ fi
 # Common build arguments used across all modes
 declare -a COMMON_BUILD_ARGS=(
   --build-dir=/_build
+  --cache=/_build/dnf-cache
   --osbuild-manifest=/_build/image.json
 )
 
@@ -210,6 +288,7 @@ case "$BUILD_MODE" in
       fi
 
       echo "Running bootc build"
+      emit_progress "Building image" "$STEP_BUILD" "$PROGRESS_TOTAL"
       aib --verbose build \
         --distro "$(params.distro)" \
         --target "$(params.target)" \
@@ -224,6 +303,7 @@ case "$BUILD_MODE" in
         "${DISK_OUTPUT_ARGS[@]}"
 
       if [ -n "$CONTAINER_PUSH" ]; then
+        emit_progress "Pushing container" "$((STEP_BUILD + 1))" "$PROGRESS_TOTAL"
         PUSH_SRC="containers-storage:$BOOTC_CONTAINER_NAME"
 
         # Add builder-image as manifest annotation + config label
@@ -285,6 +365,7 @@ PYEOF
       ;;
     image|package)
       echo "Running $BUILD_MODE build"
+      emit_progress "Building image" "$STEP_BUILD" "$PROGRESS_TOTAL"
       aib-dev --verbose build \
         "${CUSTOM_DEFS_ARGS[@]}" \
         --distro "$(params.distro)" \
@@ -316,6 +397,7 @@ PYEOF
       fi
 
       echo "Running to-disk-image"
+      emit_progress "Building image" "$STEP_BUILD" "$PROGRESS_TOTAL"
       aib --verbose to-disk-image \
         "${FORMAT_ARGS[@]}" \
         "${BUILD_CONTAINER_ARGS[@]}" \
@@ -372,6 +454,9 @@ echo "Contents of shared workspace:"
 ls -la "$WORKSPACE_PATH/"
 
 COMPRESSION="$(params.compression)"
+if [ "$BUILD_DISK_IMAGE" = "true" ] || [ "$BUILD_MODE" = "image" ] || [ "$BUILD_MODE" = "package" ] || [ "$BUILD_MODE" = "disk" ]; then
+  emit_progress "Compressing artifacts" "$((STEP_FINALIZE - 1))" "$PROGRESS_TOTAL"
+fi
 echo "Requested compression: $COMPRESSION"
 GZIP_COMPRESSOR="gzip"
 
@@ -515,6 +600,8 @@ if [ -z "$final_name" ]; then
     echo "Fallback: using found artifact: $final_name"
   fi
 fi
+
+emit_progress "Finalizing build" "$PROGRESS_TOTAL" "$PROGRESS_TOTAL"
 
 if [ -n "$final_name" ]; then
   echo "Writing artifact filename to Tekton result: $final_name"

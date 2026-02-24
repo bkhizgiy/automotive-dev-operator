@@ -1,5 +1,7 @@
-#!/bin/bash
-set -euo pipefail
+# NOTE: common.sh is prepended to this script at embed time.
+set -uo pipefail
+
+emit_progress "Flashing device" 0 1
 
 echo "=== Jumpstarter Flash Operation ==="
 echo "Image: ${IMAGE_REF}"
@@ -99,3 +101,4 @@ if [ ${FLASH_EXIT} -ne 0 ]; then
 fi
 
 FLASH_SUCCESS=true
+emit_progress "Flashing device" 1 1

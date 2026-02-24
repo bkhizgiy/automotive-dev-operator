@@ -1,5 +1,4 @@
-#!/bin/sh
-set -e
+# NOTE: common.sh is prepended to this script at embed time.
 
 ORAS_VERSION="1.2.0"
 # Detect container architecture
@@ -312,6 +311,8 @@ if [ -d "${parts_dir}" ] && [ -n "$(ls -A "${parts_dir}" 2>/dev/null)" ]; then
 }
 EOF
 
+  emit_progress "Pushing artifact" 0 1
+
   echo ""
   echo "Pushing multi-layer artifact to ${repo_url}"
   echo "  Artifact type: ${artifact_type}"
@@ -331,6 +332,8 @@ EOF
 
   # Clean up annotation file (also handled by trap)
   rm -f "$annotations_file"
+
+  emit_progress "Pushing artifact" 1 1
 
   echo ""
   echo "=== Multi-layer artifact pushed successfully ==="
@@ -360,6 +363,8 @@ else
     annotation_args="${annotation_args} --annotation automotive.sdv.cloud.redhat.com/builder-image=${builder_image_used}"
   fi
 
+  emit_progress "Pushing artifact" 0 1
+
   echo "Pushing single-file artifact to ${repo_url}"
   echo "  File: ${exportFile}"
   echo "  Media type: ${media_type}"
@@ -374,6 +379,8 @@ else
     ${annotation_args} \
     "${repo_url}" \
     "${exportFile}:${media_type}"
+
+  emit_progress "Pushing artifact" 1 1
 
   echo ""
   echo "=== Artifact pushed successfully ==="

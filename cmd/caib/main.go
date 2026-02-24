@@ -21,6 +21,7 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode/utf8"
 
 	"github.com/containers/image/v5/copy"
 	"github.com/containers/image/v5/docker"
@@ -572,7 +573,7 @@ Example:
 	buildCmd.Flags().StringArrayVar(&aibExtraArgs, "extra-args", []string{}, "extra arguments to pass to AIB (can be repeated)")
 	buildCmd.Flags().IntVar(&timeout, "timeout", 60, "timeout in minutes")
 	buildCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", false, "wait for build to complete")
-	buildCmd.Flags().BoolVarP(&followLogs, "follow", "f", true, "follow build logs")
+	buildCmd.Flags().BoolVarP(&followLogs, "follow", "f", false, "follow build logs (shows full log output instead of progress bar)")
 	// Note: --push is optional when --disk is used (disk image becomes the output)
 	// Jumpstarter flash options
 	buildCmd.Flags().BoolVar(&flashAfterBuild, "flash", false, "flash the image to device after build completes")
@@ -622,7 +623,7 @@ Example:
 	diskCmd.Flags().StringArrayVar(&aibExtraArgs, "extra-args", []string{}, "extra arguments to pass to AIB (can be repeated)")
 	diskCmd.Flags().IntVar(&timeout, "timeout", 60, "timeout in minutes")
 	diskCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", false, "wait for build to complete")
-	diskCmd.Flags().BoolVarP(&followLogs, "follow", "f", true, "follow build logs")
+	diskCmd.Flags().BoolVarP(&followLogs, "follow", "f", false, "follow build logs (shows full log output instead of progress bar)")
 	// Jumpstarter flash options
 	diskCmd.Flags().BoolVar(&flashAfterBuild, "flash", false, "flash the image to device after build completes")
 	diskCmd.Flags().StringVar(&jumpstarterClient, "client", "", "path to Jumpstarter client config file (required for --flash)")
@@ -653,7 +654,7 @@ Example:
 	buildDevCmd.Flags().StringArrayVar(&aibExtraArgs, "extra-args", []string{}, "extra arguments to pass to AIB (can be repeated)")
 	buildDevCmd.Flags().IntVar(&timeout, "timeout", 60, "timeout in minutes")
 	buildDevCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", false, "wait for build to complete")
-	buildDevCmd.Flags().BoolVarP(&followLogs, "follow", "f", true, "follow build logs")
+	buildDevCmd.Flags().BoolVarP(&followLogs, "follow", "f", false, "follow build logs (shows full log output instead of progress bar)")
 	// Jumpstarter flash options
 	buildDevCmd.Flags().BoolVar(&flashAfterBuild, "flash", false, "flash the image to device after build completes")
 	buildDevCmd.Flags().StringVar(&jumpstarterClient, "client", "", "path to Jumpstarter client config file (required for --flash)")
@@ -681,7 +682,7 @@ Example:
 	flashCmd.Flags().StringVarP(&target, "target", "t", "", "target platform for exporter lookup")
 	flashCmd.Flags().StringVar(&exporterSelector, "exporter", "", "direct exporter selector (alternative to --target)")
 	flashCmd.Flags().StringVar(&leaseDuration, "lease", "03:00:00", "device lease duration (HH:MM:SS)")
-	flashCmd.Flags().BoolVarP(&followLogs, "follow", "f", true, "follow flash logs")
+	flashCmd.Flags().BoolVarP(&followLogs, "follow", "f", false, "follow flash logs (shows full log output instead of progress bar)")
 	flashCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", true, "wait for flash to complete")
 	_ = flashCmd.MarkFlagRequired("client")
 
@@ -1607,10 +1608,12 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 		Transport: logTransport,
 	}
 	streamState := &logStreamState{}
+	pb := newProgressBar()
 
 	for {
 		select {
 		case <-timeoutCtx.Done():
+			pb.clear()
 			handleError(fmt.Errorf("timed out waiting for build"))
 		case <-ticker.C:
 			reqCtx, cancelReq := context.WithTimeout(ctx, 2*time.Minute)
@@ -1621,8 +1624,23 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 				continue
 			}
 
-			// Update status display (only when not streaming)
-			if !streamState.active && (!userFollowRequested || !streamState.canRetry()) {
+			// Progress bar mode: when not following logs, poll progress endpoint
+			if !followLogs && !streamState.active {
+				progressCtx, progressCancel := context.WithTimeout(ctx, 10*time.Second)
+				progress, _ := api.GetBuildProgress(progressCtx, name)
+				progressCancel()
+				// Use phase from progress response (fresher than GetBuild)
+				displayPhase := st.Phase
+				var step *buildapitypes.BuildStep
+				if progress != nil {
+					step = progress.Step
+					if progress.Phase != "" {
+						displayPhase = progress.Phase
+					}
+				}
+				pb.render(displayPhase, step)
+			} else if !streamState.active && (!userFollowRequested || !streamState.canRetry()) {
+				// Fallback: text status when streaming is not active
 				if st.Phase != lastPhase || st.Message != lastMessage {
 					fmt.Printf("status: %s - %s\n", st.Phase, st.Message)
 					lastPhase = st.Phase
@@ -1632,6 +1650,7 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 
 			// Handle terminal build states
 			if st.Phase == phaseCompleted {
+				pb.clear()
 				flashWasExecuted := strings.Contains(st.Message, "flash")
 				if flashWasExecuted {
 					bannerColor := func(a ...any) string { return fmt.Sprint(a...) }
@@ -1682,6 +1701,7 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 				return
 			}
 			if st.Phase == phaseFailed {
+				pb.clear()
 				// Provide phase-specific error messages
 				errPrefix := errPrefixBuild
 				isFlashFailure := false
@@ -1782,6 +1802,97 @@ func (s *logStreamState) reset() {
 
 func isBuildActive(phase string) bool {
 	return phase == "Building" || phase == "Running" || phase == "Uploading" || phase == phaseFlashing
+}
+
+// progressBar renders build progress. In a TTY it uses \r overwrite with a
+// visual bar; in non-TTY mode it prints one line per status change.
+// Progress is monotonic: once a higher done count is rendered, lower values
+// are ignored to prevent regressions from transient log read failures.
+type progressBar struct {
+	lastLine string
+	isTTY    bool
+	highStep *buildapitypes.BuildStep // highest progress seen so far
+}
+
+func newProgressBar() *progressBar {
+	return &progressBar{isTTY: term.IsTerminal(int(os.Stdout.Fd()))}
+}
+
+func (pb *progressBar) render(phase string, step *buildapitypes.BuildStep) {
+	// Enforce monotonic progress: never go backwards in Done or Total
+	if step != nil && pb.highStep != nil {
+		if step.Done < pb.highStep.Done {
+			step.Done = pb.highStep.Done
+		}
+		if step.Total < pb.highStep.Total {
+			step.Total = pb.highStep.Total
+		}
+	}
+	if step != nil {
+		pb.highStep = step
+	}
+
+	if pb.isTTY {
+		pb.renderTTY(phase, step)
+	} else {
+		pb.renderPlain(phase, step)
+	}
+}
+
+func (pb *progressBar) renderTTY(phase string, step *buildapitypes.BuildStep) {
+	var line string
+	if step == nil {
+		line = fmt.Sprintf("\r%-10s \u25cc waiting for progress...", phase)
+	} else {
+		barWidth := 30
+		filled := 0
+		if step.Total > 0 {
+			filled = min(barWidth, barWidth*step.Done/step.Total)
+		}
+		bar := strings.Repeat("\u2588", filled) + strings.Repeat("\u2591", barWidth-filled)
+		line = fmt.Sprintf("\r%-10s \u2502%s\u2502 %2d/%-2d %s", phase, bar, step.Done, step.Total, step.Stage)
+	}
+	if line == pb.lastLine {
+		return
+	}
+	width, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || width <= 0 {
+		width = 80
+	}
+	// Use rune count (not byte length) because the bar contains multi-byte
+	// UTF-8 characters (█, ░, │) that are 3 bytes each but 1 display column.
+	displayWidth := utf8.RuneCountInString(line) - 1 // subtract 1 for \r
+	if displayWidth < width {
+		line += strings.Repeat(" ", width-displayWidth)
+	}
+	_, _ = fmt.Fprint(os.Stdout, line)
+	pb.lastLine = line
+}
+
+func (pb *progressBar) renderPlain(phase string, step *buildapitypes.BuildStep) {
+	var line string
+	if step == nil {
+		line = fmt.Sprintf("%s: waiting for progress...", phase)
+	} else {
+		line = fmt.Sprintf("%s: [%d/%d] %s", phase, step.Done, step.Total, step.Stage)
+	}
+	if line == pb.lastLine {
+		return
+	}
+	fmt.Println(line)
+	pb.lastLine = line
+}
+
+func (pb *progressBar) clear() {
+	if !pb.isTTY || pb.lastLine == "" {
+		return
+	}
+	width, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || width <= 0 {
+		width = 80
+	}
+	_, _ = fmt.Fprint(os.Stdout, "\r"+strings.Repeat(" ", width)+"\r")
+	pb.lastLine = ""
 }
 
 // tryLogStreaming attempts to stream logs and returns error if it fails
