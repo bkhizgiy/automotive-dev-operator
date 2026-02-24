@@ -328,9 +328,23 @@ run_container_seal_op() {
   # Resolve builder image: explicit param > source annotation > default
   resolve_builder_from_annotation "$source_container"
 
-  # Ensure builder image is available (pull or build if missing)
+  # Pre-pull builder image to a local name in system storage
   declare -a BUILD_CONTAINER_ARGS=()
-  ensure_builder_image
+  if [ -n "${builder_image:-}" ]; then
+    LOCAL_BUILDER="localhost/aib-builder:local"
+    echo "Pulling builder image: $builder_image -> $LOCAL_BUILDER"
+    pull_builder_cmd=(skopeo copy --authfile="$REGISTRY_AUTH_FILE" "docker://$builder_image" "containers-storage:$LOCAL_BUILDER")
+    log_command "${pull_builder_cmd[@]}"
+    if ! "${pull_builder_cmd[@]}" 2>/dev/null; then
+      echo "Auth pull failed for builder, trying public pull..."
+      pull_builder_public=(skopeo copy "docker://$builder_image" "containers-storage:$LOCAL_BUILDER")
+      log_command "${pull_builder_public[@]}"
+      "${pull_builder_public[@]}"
+    fi
+    BUILD_CONTAINER_ARGS=("--build-container" "$LOCAL_BUILDER")
+  else
+    echo "Warning: builder-image not specified; aib may fail if it requires one"
+  fi
 
   # Run the operation
   if [ -z "$SEAL_KEY_FILE" ] || [ ! -f "$SEAL_KEY_FILE" ]; then
@@ -441,9 +455,23 @@ run_inject_signed() {
   # Resolve builder image: explicit param > source annotation > default
   resolve_builder_from_annotation "$source_container"
 
-  # Ensure builder image is available (pull or build if missing)
+  # Pre-pull builder image to a local name in system storage
   declare -a BUILD_CONTAINER_ARGS=()
-  ensure_builder_image
+  if [ -n "${builder_image:-}" ]; then
+    LOCAL_BUILDER="localhost/aib-builder:local"
+    echo "Pulling builder image: $builder_image -> $LOCAL_BUILDER"
+    pull_builder_cmd=(skopeo copy --authfile="$REGISTRY_AUTH_FILE" "docker://$builder_image" "containers-storage:$LOCAL_BUILDER")
+    log_command "${pull_builder_cmd[@]}"
+    if ! "${pull_builder_cmd[@]}" 2>/dev/null; then
+      echo "Auth pull failed for builder, trying public pull..."
+      pull_builder_public=(skopeo copy "docker://$builder_image" "containers-storage:$LOCAL_BUILDER")
+      log_command "${pull_builder_public[@]}"
+      "${pull_builder_public[@]}"
+    fi
+    BUILD_CONTAINER_ARGS=("--build-container" "$LOCAL_BUILDER")
+  else
+    echo "Warning: builder-image not specified; aib may fail if it requires one"
+  fi
 
   # Build --reseal-with-key argument (specific to inject-signed in AIB)
   # When a seal key is provided for inject-signed, AIB uses --reseal-with-key (not --key)
