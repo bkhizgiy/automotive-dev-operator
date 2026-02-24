@@ -228,8 +228,8 @@ with open(f, 'w') as fh: json.dump(d, fh)
 
   if [ "$BUILDER_CACHED" = "false" ]; then
     echo "Builder image not found, building..."
-    echo "Running: aib build-builder --distro $(params.distro) ${CUSTOM_DEFS_ARGS[*]} $LOCAL_BUILDER_IMAGE"
-    aib --verbose build-builder --distro "$(params.distro)" "${CUSTOM_DEFS_ARGS[@]}" "$LOCAL_BUILDER_IMAGE" &
+    echo "Running: aib build-builder --distro $(params.distro) --build-dir /_build --cache /_build/dnf-cache ${CUSTOM_DEFS_ARGS[*]} $LOCAL_BUILDER_IMAGE"
+    aib --verbose build-builder --build-dir /_build --cache /_build/dnf-cache --distro "$(params.distro)" "${CUSTOM_DEFS_ARGS[@]}" "$LOCAL_BUILDER_IMAGE" &
     AIB_PID=$!
     while kill -0 "$AIB_PID" 2>/dev/null; do
       emit_progress "Preparing builder" 2 "$PROGRESS_TOTAL"
@@ -293,6 +293,7 @@ fi
 # Common build arguments used across all modes
 declare -a COMMON_BUILD_ARGS=(
   --build-dir=/_build
+  --cache=/_build/dnf-cache
   --osbuild-manifest=/_build/image.json
 )
 
