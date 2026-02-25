@@ -57,6 +57,11 @@ type ContainerBuildSpec struct {
 	// Timeout is the maximum build duration in minutes. Defaults to 30.
 	// +optional
 	Timeout int32 `json:"timeout,omitempty"`
+
+	// UseServiceAccountAuth indicates the build should authenticate to the registry
+	// using a service account token (e.g. for the OpenShift internal registry).
+	// +optional
+	UseServiceAccountAuth bool `json:"useServiceAccountAuth,omitempty"`
 }
 
 // ContainerBuildStatus defines the observed state of ContainerBuild
@@ -84,6 +89,8 @@ type ContainerBuildStatus struct {
 
 	// Conditions represent the latest available observations of the build's state.
 	// +optional
+	// +listType=map
+	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
@@ -137,6 +144,14 @@ func (s *ContainerBuildSpec) GetStrategyKind() string {
 		return "ClusterBuildStrategy"
 	}
 	return s.StrategyKind
+}
+
+// GetArchitecture returns the target architecture, defaulting to "amd64".
+func (s *ContainerBuildSpec) GetArchitecture() string {
+	if s.Architecture == "" {
+		return "amd64"
+	}
+	return s.Architecture
 }
 
 // GetTimeout returns the timeout in minutes, defaulting to 30.

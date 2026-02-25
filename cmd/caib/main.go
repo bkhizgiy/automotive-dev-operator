@@ -21,19 +21,19 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
-	"unicode/utf8"
 
 	"github.com/containers/image/v5/copy"
 	"github.com/containers/image/v5/docker"
 	"github.com/containers/image/v5/oci/layout"
 	"github.com/containers/image/v5/signature"
 	"github.com/containers/image/v5/types"
-	containersarchive "github.com/containers/storage/pkg/archive"
 	"gopkg.in/yaml.v3"
 
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/auth"
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/catalog"
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/config"
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/container"
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/ui"
 	buildapitypes "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi"
 	buildapiclient "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi/client"
 	"github.com/fatih/color"
@@ -116,13 +116,6 @@ var (
 
 	// TLS options
 	insecureSkipTLS bool
-
-	// Container build options
-	containerBuildPush     string
-	containerBuildFile     string
-	containerBuildStrategy string
-	containerBuildArgs     []string
-	containerBuildTimeout  int
 )
 
 // envBool parses a boolean from environment variable
@@ -355,6 +348,38 @@ func extractRegistryCredentials(primaryRef, secondaryRef string) (string, string
 		return parts[0], username, password
 	}
 	return "docker.io", username, password
+}
+
+// writeAuthFile writes a Docker auth config JSON string to a mode-0600 temp file and returns its path.
+func writeAuthFile(authJSON string) (string, error) {
+	f, err := os.CreateTemp("", "caib-auth-*.json")
+	if err != nil {
+		return "", err
+	}
+	name := f.Name()
+	if _, err := f.WriteString(authJSON); err != nil {
+		_ = f.Close()
+		_ = os.Remove(name)
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(name)
+		return "", err
+	}
+	if err := os.Chmod(name, 0600); err != nil {
+		_ = os.Remove(name)
+		return "", err
+	}
+	return name, nil
+}
+
+// extractRegistryHost returns the hostname (with optional port) from a container image reference.
+func extractRegistryHost(imageRef string) string {
+	parts := strings.SplitN(imageRef, "/", 2)
+	if len(parts) > 1 && (strings.Contains(parts[0], ".") || strings.Contains(parts[0], ":") || parts[0] == "localhost") {
+		return parts[0]
+	}
+	return "docker.io"
 }
 
 func buildDockerConfigJSON(registryURL, username, password string) (string, error) {
@@ -715,39 +740,10 @@ Example:
 	_ = flashCmd.MarkFlagRequired("client")
 
 	// build-container command (Shipwright-based container builds)
-	buildContainerCmd := &cobra.Command{
-		Use:   "build-container [context-dir]",
-		Short: "Build a container image from a Containerfile using Shipwright",
-		Long: `Build a container image from a Containerfile/Dockerfile using Shipwright (OpenShift Builds)
-on the cluster. The build context directory is uploaded to the cluster and the image
-is built and pushed to the specified registry.
-
-Examples:
-  # Build from current directory
-  caib build-container --push quay.io/myorg/myimage:latest
-
-  # Build from a specific directory with custom Containerfile
-  caib build-container ./my-app --push quay.io/myorg/myimage:v1 -f Dockerfile.prod
-
-  # Build with build args
-  caib build-container --push quay.io/myorg/myimage:latest --build-arg VERSION=1.0 --build-arg ENV=prod`,
-		Args: cobra.MaximumNArgs(1),
-		Run:  runBuildContainer,
-	}
-	buildContainerCmd.Flags().StringVar(&serverURL, "server", config.DefaultServer(), "REST API server base URL")
-	buildContainerCmd.Flags().StringVar(&authToken, "token", os.Getenv("CAIB_TOKEN"), "Bearer token for authentication")
-	buildContainerCmd.Flags().StringVarP(&buildName, "name", "n", "", "name for the build (auto-generated if omitted)")
-	buildContainerCmd.Flags().StringVar(&containerBuildPush, "push", "", "push built image to registry (required)")
-	buildContainerCmd.Flags().StringVarP(&containerBuildFile, "containerfile", "f", "", "path to Containerfile (default: auto-detect in context dir)")
-	buildContainerCmd.Flags().StringVar(&containerBuildStrategy, "strategy", "buildah", "Shipwright build strategy name")
-	buildContainerCmd.Flags().StringArrayVar(&containerBuildArgs, "build-arg", []string{}, "build argument KEY=VALUE (can be repeated)")
-	buildContainerCmd.Flags().StringVarP(&architecture, "arch", "a", getDefaultArch(), "target architecture (amd64, arm64)")
-	buildContainerCmd.Flags().IntVar(&containerBuildTimeout, "timeout", 30, "build timeout in minutes")
-	buildContainerCmd.Flags().BoolVarP(&followLogs, "follow", "w", true, "follow build logs")
-	_ = buildContainerCmd.MarkFlagRequired("push")
+	containerCmd := container.NewContainerCmd()
 
 	// Add all commands
-	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, showCmd, downloadCmd, flashCmd, logsCmd, loginCmd, buildContainerCmd, catalog.NewCatalogCmd())
+	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, showCmd, downloadCmd, flashCmd, logsCmd, loginCmd, containerCmd, catalog.NewCatalogCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
@@ -781,416 +777,6 @@ func runLogin(_ *cobra.Command, args []string) {
 	} else if token != "" {
 		fmt.Println("Using existing or kubeconfig token. You can run build/list/disk commands without --server.")
 	}
-}
-
-func runBuildContainer(_ *cobra.Command, args []string) {
-	ctx := context.Background()
-
-	contextDir := "."
-	if len(args) > 0 {
-		contextDir = args[0]
-	}
-
-	absContextDir, containerfile := resolveContainerBuildContext(contextDir)
-
-	if serverURL == "" {
-		handleError(fmt.Errorf("--server is required (or set CAIB_SERVER, or run 'caib login <server-url>')"))
-	}
-
-	if buildName == "" {
-		dirName := filepath.Base(absContextDir)
-		buildName = fmt.Sprintf("cb-%s-%s", sanitizeBuildName(dirName), time.Now().Format("20060102-150405"))
-		fmt.Printf("Auto-generated build name: %s\n", buildName)
-	} else {
-		validateBuildName(buildName)
-	}
-
-	buildArgs := parseContainerBuildArgs(containerBuildArgs)
-	effectiveRegistryURL, registryUsername, registryPassword := extractRegistryCredentials(containerBuildPush, "")
-	if err := validateRegistryCredentials(effectiveRegistryURL, registryUsername, registryPassword); err != nil {
-		handleError(err)
-	}
-
-	var registryCreds *buildapitypes.RegistryCredentials
-	if effectiveRegistryURL != "" && registryUsername != "" && registryPassword != "" {
-		dockerConfig, err := buildDockerConfigJSON(effectiveRegistryURL, registryUsername, registryPassword)
-		if err != nil {
-			handleError(fmt.Errorf("failed to create registry credentials payload: %w", err))
-		}
-		registryCreds = &buildapitypes.RegistryCredentials{
-			Enabled:      true,
-			AuthType:     "username-password",
-			RegistryURL:  effectiveRegistryURL,
-			Username:     registryUsername,
-			Password:     registryPassword,
-			DockerConfig: dockerConfig,
-		}
-	}
-
-	// Create the container build
-	fmt.Println("Creating container build...")
-	var createResp *buildapitypes.ContainerBuildResponse
-	err := executeWithReauth(serverURL, &authToken, func(client *buildapiclient.Client) error {
-		resp, cerr := client.CreateContainerBuild(ctx, buildapitypes.ContainerBuildRequest{
-			Name:                buildName,
-			Output:              containerBuildPush,
-			Containerfile:       containerfile,
-			Strategy:            containerBuildStrategy,
-			BuildArgs:           buildArgs,
-			Architecture:        architecture,
-			Timeout:             int32(containerBuildTimeout),
-			RegistryCredentials: registryCreds,
-		})
-		if cerr != nil {
-			return cerr
-		}
-		createResp = resp
-		return nil
-	})
-	if err != nil {
-		handleError(fmt.Errorf("failed to create container build: %w", err))
-	}
-	fmt.Printf("Build %s accepted: %s - %s\n", createResp.Name, createResp.Phase, createResp.Message)
-
-	// Create tarball and upload
-	fmt.Printf("Packaging context directory: %s\n", absContextDir)
-	tarball, err := createContextTarball(absContextDir)
-	if err != nil {
-		handleError(fmt.Errorf("failed to create context tarball: %w", err))
-	}
-	tarballPath := tarball.Name()
-	defer func() {
-		if err := tarball.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to close tarball: %v\n", err)
-		}
-		if err := os.Remove(tarballPath); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to remove temp tarball: %v\n", err)
-		}
-	}()
-
-	waitForContainerBuildUploadReady(ctx, createResp.Name)
-	uploadContainerBuildContext(ctx, createResp.Name, tarballPath)
-
-	if followLogs {
-		followContainerBuildLogs(ctx, createResp.Name)
-	}
-
-	finalStatus := waitForContainerBuildCompletion(ctx, createResp.Name)
-	displayContainerBuildResult(finalStatus)
-}
-
-// resolveContainerBuildContext validates and resolves the context directory and Containerfile.
-func resolveContainerBuildContext(contextDir string) (string, string) {
-	absContextDir, err := filepath.Abs(contextDir)
-	if err != nil {
-		handleError(fmt.Errorf("invalid context directory: %w", err))
-	}
-	info, err := os.Stat(absContextDir)
-	if err != nil || !info.IsDir() {
-		handleError(fmt.Errorf("context directory does not exist or is not a directory: %s", absContextDir))
-	}
-
-	containerfile := containerBuildFile
-	if containerfile == "" {
-		if _, err := os.Stat(filepath.Join(absContextDir, "Containerfile")); err == nil {
-			containerfile = "Containerfile"
-		} else if _, err := os.Stat(filepath.Join(absContextDir, "Dockerfile")); err == nil {
-			containerfile = "Dockerfile"
-		} else {
-			handleError(fmt.Errorf("no Containerfile or Dockerfile found in %s", absContextDir))
-		}
-	} else {
-		cfPath := containerfile
-		if !filepath.IsAbs(cfPath) {
-			cfPath = filepath.Join(absContextDir, cfPath)
-		}
-		if _, err := os.Stat(cfPath); err != nil {
-			handleError(fmt.Errorf("containerfile not found: %s", cfPath))
-		}
-	}
-	return absContextDir, containerfile
-}
-
-// parseContainerBuildArgs parses KEY=VALUE build arguments.
-func parseContainerBuildArgs(rawArgs []string) map[string]string {
-	buildArgs := make(map[string]string, len(rawArgs))
-	for _, arg := range rawArgs {
-		parts := strings.SplitN(arg, "=", 2)
-		if len(parts) != 2 {
-			handleError(fmt.Errorf("invalid --build-arg format: %q (expected KEY=VALUE)", arg))
-		}
-		buildArgs[parts[0]] = parts[1]
-	}
-	return buildArgs
-}
-
-// waitForContainerBuildUploadReady polls until the build is ready to accept source upload.
-func waitForContainerBuildUploadReady(ctx context.Context, name string) {
-	fmt.Println("Waiting for build to be ready for upload...")
-	uploadTimeout := time.After(2 * time.Minute)
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-uploadTimeout:
-			handleError(fmt.Errorf("timed out waiting for build to reach Uploading phase"))
-		case <-ticker.C:
-			var status *buildapitypes.ContainerBuildResponse
-			err := executeWithReauth(serverURL, &authToken, func(client *buildapiclient.Client) error {
-				s, serr := client.GetContainerBuild(ctx, name)
-				if serr != nil {
-					return serr
-				}
-				status = s
-				return nil
-			})
-			if err != nil {
-				fmt.Printf("Status check failed: %v\n", err)
-				continue
-			}
-			if status.Phase == phaseFailed {
-				handleError(fmt.Errorf("build failed: %s", status.Message))
-			}
-			if status.Phase == phaseUploading || status.Phase == phasePending {
-				return
-			}
-		}
-	}
-}
-
-// uploadContainerBuildContext uploads the tarball to the build API, retrying on 503 (waiter not ready).
-func uploadContainerBuildContext(ctx context.Context, name string, tarballPath string) {
-	fmt.Println("Uploading build context...")
-	uploadTimeout := time.After(3 * time.Minute)
-	ticker := time.NewTicker(3 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		tarball, err := os.Open(tarballPath)
-		if err != nil {
-			handleError(fmt.Errorf("failed to open tarball: %w", err))
-		}
-
-		uploadErr := executeWithReauth(serverURL, &authToken, func(client *buildapiclient.Client) error {
-			return client.UploadContainerBuildContext(ctx, name, tarball)
-		})
-		_ = tarball.Close()
-
-		if uploadErr == nil {
-			fmt.Println("Context uploaded successfully")
-			return
-		}
-
-		if !strings.Contains(uploadErr.Error(), "503") {
-			handleError(fmt.Errorf("failed to upload context: %w", uploadErr))
-		}
-
-		fmt.Println("Waiter container not ready, retrying...")
-		select {
-		case <-uploadTimeout:
-			handleError(fmt.Errorf("timed out waiting for source waiter to start: %w", uploadErr))
-		case <-ticker.C:
-		}
-	}
-}
-
-// followContainerBuildLogs streams build logs to stdout.
-func followContainerBuildLogs(ctx context.Context, name string) {
-	fmt.Println("Following build logs...")
-	reconnectTicker := time.NewTicker(3 * time.Second)
-	defer reconnectTicker.Stop()
-
-	for {
-		err := executeWithReauth(serverURL, &authToken, func(client *buildapiclient.Client) error {
-			logReader, lerr := client.StreamContainerBuildLogs(ctx, name, true)
-			if lerr != nil {
-				return lerr
-			}
-			defer func() {
-				if err := logReader.Close(); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to close log stream: %v\n", err)
-				}
-			}()
-			if _, err := io.Copy(os.Stdout, logReader); err != nil {
-				return fmt.Errorf("log stream interrupted: %w", err)
-			}
-			return nil
-		})
-		if err != nil {
-			fmt.Printf("Warning: log streaming failed: %v\n", err)
-		}
-
-		status, statusErr := getContainerBuildStatus(ctx, name)
-		if statusErr != nil {
-			fmt.Printf("Status check failed after log stream interruption: %v\n", statusErr)
-		} else if isContainerBuildTerminal(status.Phase) {
-			return
-		}
-
-		fmt.Println("Log stream interrupted, reconnecting...")
-		select {
-		case <-ctx.Done():
-			return
-		case <-reconnectTicker.C:
-		}
-	}
-}
-
-func isContainerBuildTerminal(phase string) bool {
-	return phase == phaseCompleted || phase == phaseFailed
-}
-
-func getContainerBuildStatus(ctx context.Context, name string) (*buildapitypes.ContainerBuildResponse, error) {
-	var status *buildapitypes.ContainerBuildResponse
-	err := executeWithReauth(serverURL, &authToken, func(client *buildapiclient.Client) error {
-		s, serr := client.GetContainerBuild(ctx, name)
-		if serr != nil {
-			return serr
-		}
-		status = s
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return status, nil
-}
-
-func waitForContainerBuildCompletion(ctx context.Context, name string) *buildapitypes.ContainerBuildResponse {
-	fmt.Println("Waiting for build to complete...")
-	// Add extra headroom for queueing and status propagation beyond task timeout.
-	waitTimeout := time.Duration(containerBuildTimeout+10) * time.Minute
-	if waitTimeout < 15*time.Minute {
-		waitTimeout = 15 * time.Minute
-	}
-	waitCtx, cancel := context.WithTimeout(ctx, waitTimeout)
-	defer cancel()
-
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	var lastPhase string
-	var lastMessage string
-
-	for {
-		status, err := getContainerBuildStatus(waitCtx, name)
-		if err != nil {
-			select {
-			case <-waitCtx.Done():
-				handleError(fmt.Errorf("timed out waiting for build to complete"))
-			case <-ticker.C:
-				fmt.Printf("Status check failed: %v\n", err)
-				continue
-			}
-		}
-
-		if status.Phase != lastPhase || status.Message != lastMessage {
-			fmt.Printf("Status: %s - %s\n", status.Phase, status.Message)
-			lastPhase = status.Phase
-			lastMessage = status.Message
-		}
-
-		if isContainerBuildTerminal(status.Phase) {
-			return status
-		}
-
-		select {
-		case <-waitCtx.Done():
-			handleError(fmt.Errorf("timed out waiting for build to complete"))
-		case <-ticker.C:
-		}
-	}
-}
-
-// displayContainerBuildResult shows the final build result.
-func displayContainerBuildResult(finalStatus *buildapitypes.ContainerBuildResponse) {
-	fmt.Printf("\nBuild %s: %s\n", finalStatus.Name, finalStatus.Phase)
-	if finalStatus.Message != "" {
-		fmt.Printf("Message: %s\n", finalStatus.Message)
-	}
-
-	if finalStatus.Phase == phaseCompleted {
-		if finalStatus.OutputImage != "" {
-			fmt.Printf("Image: %s\n", finalStatus.OutputImage)
-		}
-		if finalStatus.ImageDigest != "" {
-			fmt.Printf("Digest: %s\n", finalStatus.ImageDigest)
-		}
-	}
-
-	if finalStatus.Phase == phaseFailed {
-		os.Exit(1)
-	}
-}
-
-func loadDockerignorePatterns(contextDir string) ([]string, error) {
-	// Keep historical defaults for oversized/non-build metadata.
-	patterns := []string{".git", ".svn", "node_modules"}
-
-	dockerignorePath := filepath.Join(contextDir, ".dockerignore")
-	data, err := os.ReadFile(dockerignorePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return patterns, nil
-		}
-		return nil, fmt.Errorf("reading .dockerignore: %w", err)
-	}
-
-	for _, rawLine := range strings.Split(string(data), "\n") {
-		line := strings.TrimSpace(rawLine)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		patterns = append(patterns, filepath.ToSlash(line))
-	}
-
-	return patterns, nil
-}
-
-// createContextTarball creates a tar archive of a directory and returns a reader.
-func createContextTarball(contextDir string) (*os.File, error) {
-	tmpFile, err := os.CreateTemp("", "caib-context-*.tar")
-	if err != nil {
-		return nil, fmt.Errorf("creating temp file: %w", err)
-	}
-
-	patterns, err := loadDockerignorePatterns(contextDir)
-	if err != nil {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpFile.Name())
-		return nil, err
-	}
-
-	contextArchive, err := containersarchive.TarWithOptions(contextDir, &containersarchive.TarOptions{
-		Compression:     containersarchive.Uncompressed,
-		ExcludePatterns: patterns,
-	})
-	if err != nil {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpFile.Name())
-		return nil, fmt.Errorf("creating context archive: %w", err)
-	}
-	defer func() {
-		if err := contextArchive.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to close context archive: %v\n", err)
-		}
-	}()
-
-	if _, err := io.Copy(tmpFile, contextArchive); err != nil {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpFile.Name())
-		return nil, fmt.Errorf("writing context archive: %w", err)
-	}
-
-	// Seek back to beginning for reading
-	if _, err := tmpFile.Seek(0, 0); err != nil {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpFile.Name())
-		return nil, fmt.Errorf("seeking temp file: %w", err)
-	}
-
-	return tmpFile, nil
 }
 
 // validateBootcBuildFlags validates flag combinations for the build command
@@ -2078,12 +1664,12 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 		Transport: logTransport,
 	}
 	streamState := &logStreamState{}
-	pb := newProgressBar()
+	pb := ui.NewProgressBar()
 
 	for {
 		select {
 		case <-timeoutCtx.Done():
-			pb.clear()
+			pb.Clear()
 			handleError(fmt.Errorf("timed out waiting for build"))
 		case <-ticker.C:
 			reqCtx, cancelReq := context.WithTimeout(ctx, 2*time.Minute)
@@ -2108,7 +1694,7 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 						displayPhase = progress.Phase
 					}
 				}
-				pb.render(displayPhase, step)
+				pb.Render(displayPhase, step)
 			} else if !streamState.active && (!userFollowRequested || !streamState.canRetry()) {
 				// Fallback: text status when streaming is not active
 				if st.Phase != lastPhase || st.Message != lastMessage {
@@ -2120,7 +1706,7 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 
 			// Handle terminal build states
 			if st.Phase == phaseCompleted {
-				pb.clear()
+				pb.Clear()
 				flashWasExecuted := strings.Contains(st.Message, "flash")
 				if flashWasExecuted {
 					bannerColor := func(a ...any) string { return fmt.Sprint(a...) }
@@ -2171,7 +1757,7 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 				return
 			}
 			if st.Phase == phaseFailed {
-				pb.clear()
+				pb.Clear()
 				// Provide phase-specific error messages
 				errPrefix := errPrefixBuild
 				isFlashFailure := false
@@ -2274,96 +1860,6 @@ func isBuildActive(phase string) bool {
 	return phase == "Building" || phase == "Running" || phase == "Uploading" || phase == phaseFlashing
 }
 
-// progressBar renders build progress. In a TTY it uses \r overwrite with a
-// visual bar; in non-TTY mode it prints one line per status change.
-// Progress is monotonic: once a higher done count is rendered, lower values
-// are ignored to prevent regressions from transient log read failures.
-type progressBar struct {
-	lastLine string
-	isTTY    bool
-	highStep *buildapitypes.BuildStep // highest progress seen so far
-}
-
-func newProgressBar() *progressBar {
-	return &progressBar{isTTY: term.IsTerminal(int(os.Stdout.Fd()))}
-}
-
-func (pb *progressBar) render(phase string, step *buildapitypes.BuildStep) {
-	// Enforce monotonic progress: never go backwards in Done or Total
-	if step != nil && pb.highStep != nil {
-		if step.Done < pb.highStep.Done {
-			step.Done = pb.highStep.Done
-		}
-		if step.Total < pb.highStep.Total {
-			step.Total = pb.highStep.Total
-		}
-	}
-	if step != nil {
-		pb.highStep = step
-	}
-
-	if pb.isTTY {
-		pb.renderTTY(phase, step)
-	} else {
-		pb.renderPlain(phase, step)
-	}
-}
-
-func (pb *progressBar) renderTTY(phase string, step *buildapitypes.BuildStep) {
-	var line string
-	if step == nil {
-		line = fmt.Sprintf("\r%-10s \u25cc waiting for progress...", phase)
-	} else {
-		barWidth := 30
-		filled := 0
-		if step.Total > 0 {
-			filled = min(barWidth, barWidth*step.Done/step.Total)
-		}
-		bar := strings.Repeat("\u2588", filled) + strings.Repeat("\u2591", barWidth-filled)
-		line = fmt.Sprintf("\r%-10s \u2502%s\u2502 %2d/%-2d %s", phase, bar, step.Done, step.Total, step.Stage)
-	}
-	if line == pb.lastLine {
-		return
-	}
-	width, _, err := term.GetSize(int(os.Stdout.Fd()))
-	if err != nil || width <= 0 {
-		width = 80
-	}
-	// Use rune count (not byte length) because the bar contains multi-byte
-	// UTF-8 characters (█, ░, │) that are 3 bytes each but 1 display column.
-	displayWidth := utf8.RuneCountInString(line) - 1 // subtract 1 for \r
-	if displayWidth < width {
-		line += strings.Repeat(" ", width-displayWidth)
-	}
-	_, _ = fmt.Fprint(os.Stdout, line)
-	pb.lastLine = line
-}
-
-func (pb *progressBar) renderPlain(phase string, step *buildapitypes.BuildStep) {
-	var line string
-	if step == nil {
-		line = fmt.Sprintf("%s: waiting for progress...", phase)
-	} else {
-		line = fmt.Sprintf("%s: [%d/%d] %s", phase, step.Done, step.Total, step.Stage)
-	}
-	if line == pb.lastLine {
-		return
-	}
-	fmt.Println(line)
-	pb.lastLine = line
-}
-
-func (pb *progressBar) clear() {
-	if !pb.isTTY || pb.lastLine == "" {
-		return
-	}
-	width, _, err := term.GetSize(int(os.Stdout.Fd()))
-	if err != nil || width <= 0 {
-		width = 80
-	}
-	_, _ = fmt.Fprint(os.Stdout, "\r"+strings.Repeat(" ", width)+"\r")
-	pb.lastLine = ""
-}
 
 // tryLogStreaming attempts to stream logs and returns error if it fails
 func tryLogStreaming(ctx context.Context, logClient *http.Client, name string, state *logStreamState) error {

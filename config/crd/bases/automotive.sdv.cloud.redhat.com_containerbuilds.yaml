@@ -88,6 +88,11 @@ spec:
                   to 30.
                 format: int32
                 type: integer
+              useServiceAccountAuth:
+                description: |-
+                  UseServiceAccountAuth indicates the build should authenticate to the registry
+                  using a service account token (e.g. for the OpenShift internal registry).
+                type: boolean
             required:
             - output
             type: object
@@ -160,6 +165,9 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               imageDigest:
                 description: ImageDigest is the digest of the built and pushed image.
                 type: string

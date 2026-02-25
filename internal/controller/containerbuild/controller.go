@@ -323,6 +323,14 @@ func (r *ContainerBuildReconciler) buildShipwrightBuildRun(
 		})
 	}
 
+	// Pass architecture as build args so Dockerfiles can use TARGETARCH
+	arch := cb.Spec.GetArchitecture()
+	platformArg := fmt.Sprintf("TARGETARCH=%s", arch)
+	paramValues = append(paramValues, shipwrightv1beta1.ParamValue{
+		Name:   "build-args",
+		Values: []shipwrightv1beta1.SingleValue{{Value: &platformArg}},
+	})
+
 	// Build output
 	output := shipwrightv1beta1.Image{
 		Image: cb.Spec.Output,

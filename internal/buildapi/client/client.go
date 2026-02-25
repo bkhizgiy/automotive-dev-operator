@@ -545,38 +545,6 @@ func (c *Client) UploadContainerBuildContext(ctx context.Context, name string, t
 	return nil
 }
 
-// StreamContainerBuildLogs streams logs from a container build.
-func (c *Client) StreamContainerBuildLogs(ctx context.Context, name string, follow bool) (io.ReadCloser, error) {
-	followStr := "0"
-	if follow {
-		followStr = "1"
-	}
-	endpoint := c.resolve(path.Join("/v1/container-builds", url.PathEscape(name), "logs"))
-	endpoint += "?follow=" + followStr
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	if c.authToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.authToken)
-	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		defer func() {
-			if err := resp.Body.Close(); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to close response body: %v\n", err)
-			}
-		}()
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("stream logs failed: %s: %s", resp.Status, string(b))
-	}
-	return resp.Body, nil
-}
-
 // GetOperatorConfig retrieves the operator configuration for CLI validation.
 func (c *Client) GetOperatorConfig(ctx context.Context) (*buildapi.OperatorConfigResponse, error) {
 	endpoint := c.resolve("/v1/config")

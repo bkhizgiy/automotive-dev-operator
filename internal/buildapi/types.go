@@ -304,6 +304,8 @@ type ContainerBuildRequest struct {
 	Timeout int32 `json:"timeout,omitempty"`
 	// RegistryCredentials contains push authentication details
 	RegistryCredentials *RegistryCredentials `json:"registryCredentials,omitempty"`
+	// UseInternalRegistry indicates the build should push to the OpenShift internal registry
+	UseInternalRegistry bool `json:"useInternalRegistry,omitempty"`
 }
 
 // ContainerBuildResponse is returned by container build operations
@@ -316,6 +318,7 @@ type ContainerBuildResponse struct {
 	CompletionTime string `json:"completionTime,omitempty"`
 	OutputImage    string `json:"outputImage,omitempty"`
 	ImageDigest    string `json:"imageDigest,omitempty"`
+	RegistryToken  string `json:"registryToken,omitempty"`
 }
 
 // ContainerBuildListItem represents a container build in the list API

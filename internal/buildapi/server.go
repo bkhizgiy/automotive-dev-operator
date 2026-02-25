@@ -74,6 +74,8 @@ const (
 )
 
 var getClientFromRequestFn = getClientFromRequest
+var getRESTConfigFromRequestFn = getRESTConfigFromRequest
+var createInternalRegistrySecretFn = createInternalRegistrySecret
 var loadOperatorConfigFn = func(
 	ctx context.Context,
 	k8sClient client.Client,
@@ -534,7 +536,7 @@ func (a *APIServer) createRouter() *gin.Engine {
 			containerBuildsGroup.GET("", a.handleListContainerBuilds)
 			containerBuildsGroup.GET("/:name", a.handleGetContainerBuild)
 			containerBuildsGroup.POST("/:name/upload", a.handleContainerBuildUpload)
-			containerBuildsGroup.GET("/:name/logs", a.handleContainerBuildLogs)
+			containerBuildsGroup.GET("/:name/logs", a.handleStreamContainerBuildLogs)
 		}
 
 		// Register catalog routes with authentication
@@ -637,6 +639,12 @@ func (a *APIServer) handleStreamLogs(c *gin.Context) {
 	name := c.Param("name")
 	a.log.Info("logs requested", "build", name, "reqID", c.GetString("reqID"))
 	a.streamLogs(c, name)
+}
+
+func (a *APIServer) handleStreamContainerBuildLogs(c *gin.Context) {
+	name := c.Param("name")
+	a.log.Info("container build logs requested", "build", name, "reqID", c.GetString("reqID"))
+	a.streamContainerBuildLogs(c, name)
 }
 
 func (a *APIServer) handleGetBuildTemplate(c *gin.Context) {
@@ -995,6 +1003,143 @@ func writeLogStreamFooter(c *gin.Context, hadStream bool) {
 	if f, ok := c.Writer.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+func (a *APIServer) streamContainerBuildLogs(c *gin.Context, name string) {
+	namespace := resolveNamespace()
+
+	k8sClient, err := getClientFromRequest(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	sinceTime := parseSinceTime(c.Query("since"))
+	streamDuration := time.Duration(a.limits.MaxLogStreamDurationMinutes) * time.Minute
+	ctx, cancel := context.WithTimeout(c.Request.Context(), streamDuration)
+	defer cancel()
+
+	cb := &automotivev1alpha1.ContainerBuild{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, cb); err != nil {
+		if k8serrors.IsNotFound(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	buildRunName := strings.TrimSpace(cb.Status.BuildRunName)
+	if buildRunName == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "logs not available yet"})
+		return
+	}
+
+	restCfg, err := getRESTConfigFromRequest(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	cs, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	setupLogStreamHeaders(c)
+
+	buildRunSelector := "buildrun.shipwright.io/name=" + buildRunName
+	var hadStream bool
+	var lastKeepalive time.Time
+	streamedContainers := make(map[string]map[string]bool)
+	completedPods := make(map[string]bool)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		pods, err := cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: buildRunSelector})
+		if err != nil {
+			if _, writeErr := fmt.Fprintf(c.Writer, "\n[Error listing pods: %v]\n", err); writeErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to write error message: %v\n", writeErr)
+			}
+			c.Writer.Flush()
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		if len(pods.Items) == 0 {
+			if !hadStream {
+				_, _ = c.Writer.Write([]byte("."))
+				c.Writer.Flush()
+			}
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		sort.Slice(pods.Items, func(i, j int) bool {
+			if pods.Items[i].Status.StartTime == nil {
+				return false
+			}
+			if pods.Items[j].Status.StartTime == nil {
+				return true
+			}
+			return pods.Items[i].Status.StartTime.Before(pods.Items[j].Status.StartTime)
+		})
+
+		allPodsComplete := true
+		for _, pod := range pods.Items {
+			if completedPods[pod.Name] {
+				continue
+			}
+
+			if streamedContainers[pod.Name] == nil {
+				streamedContainers[pod.Name] = make(map[string]bool)
+			}
+
+			processPodLogs(ctx, c, cs, pod, namespace, sinceTime, streamedContainers[pod.Name], &hadStream)
+
+			stepNames := getStepContainerNames(pod)
+			if len(streamedContainers[pod.Name]) == len(stepNames) &&
+				(pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed) {
+				completedPods[pod.Name] = true
+			} else {
+				allPodsComplete = false
+			}
+		}
+
+		// Check if build is complete AND all pod logs have been streamed
+		if allPodsComplete {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, cb); err == nil {
+				if cb.Status.Phase == phaseCompleted || cb.Status.Phase == phaseFailed {
+					break
+				}
+			}
+		}
+
+		time.Sleep(2 * time.Second)
+
+		if !hadStream {
+			_, _ = c.Writer.Write([]byte("."))
+			if f, ok := c.Writer.(http.Flusher); ok {
+				f.Flush()
+			}
+		} else if allPodsComplete {
+			now := time.Now()
+			if now.Sub(lastKeepalive) >= 30*time.Second {
+				_, _ = c.Writer.Write([]byte("[Waiting for build to complete...]\n"))
+				if f, ok := c.Writer.(http.Flusher); ok {
+					f.Flush()
+				}
+				lastKeepalive = now
+			}
+		}
+	}
+
+	writeLogStreamFooter(c, hadStream)
 }
 
 func createRegistrySecret(
@@ -3142,7 +3287,7 @@ func (a *APIServer) handleListContainerBuilds(c *gin.Context) {
 func (a *APIServer) handleGetContainerBuild(c *gin.Context) {
 	name := c.Param("name")
 	a.log.Info("get container build", "build", name, "reqID", c.GetString("reqID"))
-	getContainerBuild(c, name)
+	a.getContainerBuild(c, name)
 }
 
 func (a *APIServer) handleContainerBuildUpload(c *gin.Context) {
@@ -3151,21 +3296,10 @@ func (a *APIServer) handleContainerBuildUpload(c *gin.Context) {
 	a.uploadContainerBuildContext(c, name)
 }
 
-func (a *APIServer) handleContainerBuildLogs(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("container build logs", "build", name, "reqID", c.GetString("reqID"))
-	a.streamContainerBuildLogs(c, name)
-}
-
 func (a *APIServer) createContainerBuild(c *gin.Context) {
 	var req ContainerBuildRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid request: %v", err)})
-		return
-	}
-
-	if req.Output == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "output image reference is required"})
 		return
 	}
 
@@ -3183,6 +3317,35 @@ func (a *APIServer) createContainerBuild(c *gin.Context) {
 	namespace := resolveNamespace()
 	requestedBy := a.resolveRequester(c)
 
+	// Handle internal registry: create SA token secret, ensure ImageStream, generate output ref
+	pushSecretName := ""
+	if req.UseInternalRegistry {
+		restCfg, err := getRESTConfigFromRequestFn(c)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to get REST config: %v", err)})
+			return
+		}
+
+		secretName, err := createInternalRegistrySecretFn(ctx, restCfg, namespace, req.Name)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to create internal registry secret: %v", err)})
+			return
+		}
+		pushSecretName = secretName
+
+		if err := ensureImageStream(ctx, k8sClient, namespace, req.Name); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to ensure ImageStream: %v", err)})
+			return
+		}
+
+		req.Output = generateRegistryImageRef(defaultInternalRegistryURL, namespace, req.Name, "latest")
+	}
+
+	if req.Output == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "output image reference is required"})
+		return
+	}
+
 	// Check for existing
 	existing := &automotivev1alpha1.ContainerBuild{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: namespace}, existing); err == nil {
@@ -3193,9 +3356,8 @@ func (a *APIServer) createContainerBuild(c *gin.Context) {
 		return
 	}
 
-	// Create push secret if registry credentials provided
-	pushSecretName := ""
-	if req.RegistryCredentials != nil && req.RegistryCredentials.Enabled {
+	// Create push secret if registry credentials provided (skipped when using internal registry)
+	if !req.UseInternalRegistry && req.RegistryCredentials != nil && req.RegistryCredentials.Enabled {
 		pushSecretName = req.Name + "-push-secret"
 		pushSecret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
@@ -3232,13 +3394,14 @@ func (a *APIServer) createContainerBuild(c *gin.Context) {
 			},
 		},
 		Spec: automotivev1alpha1.ContainerBuildSpec{
-			Output:        req.Output,
-			Containerfile: req.Containerfile,
-			Strategy:      req.Strategy,
-			BuildArgs:     req.BuildArgs,
-			Architecture:  req.Architecture,
-			Timeout:       req.Timeout,
-			PushSecretRef: pushSecretName,
+			Output:                req.Output,
+			Containerfile:         req.Containerfile,
+			Strategy:              req.Strategy,
+			BuildArgs:             req.BuildArgs,
+			Architecture:          req.Architecture,
+			Timeout:               req.Timeout,
+			PushSecretRef:         pushSecretName,
+			UseServiceAccountAuth: req.UseInternalRegistry,
 		},
 	}
 
@@ -3258,12 +3421,20 @@ func (a *APIServer) createContainerBuild(c *gin.Context) {
 		}
 	}
 
+	outputImage := req.Output
+	if req.UseInternalRegistry {
+		externalRoute, _ := getExternalRegistryRoute(ctx, k8sClient, namespace)
+		if externalRoute != "" {
+			outputImage = translateToExternalURL(outputImage, externalRoute)
+		}
+	}
+
 	writeJSON(c, http.StatusAccepted, ContainerBuildResponse{
 		Name:        req.Name,
 		Phase:       "Pending",
 		Message:     "Container build created",
 		RequestedBy: requestedBy,
-		OutputImage: req.Output,
+		OutputImage: outputImage,
 	})
 }
 
@@ -3304,7 +3475,7 @@ func listContainerBuilds(c *gin.Context) {
 	writeJSON(c, http.StatusOK, items)
 }
 
-func getContainerBuild(c *gin.Context, name string) {
+func (a *APIServer) getContainerBuild(c *gin.Context, name string) {
 	namespace := resolveNamespace()
 
 	k8sClient, err := getClientFromRequest(c)
@@ -3324,11 +3495,19 @@ func getContainerBuild(c *gin.Context, name string) {
 		return
 	}
 
+	outputImage := cb.Spec.Output
+	if cb.Spec.UseServiceAccountAuth {
+		externalRoute, _ := getExternalRegistryRoute(ctx, k8sClient, namespace)
+		if externalRoute != "" {
+			outputImage = translateToExternalURL(outputImage, externalRoute)
+		}
+	}
+
 	resp := ContainerBuildResponse{
 		Name:        cb.Name,
 		Phase:       cb.Status.Phase,
 		Message:     cb.Status.Message,
-		OutputImage: cb.Spec.Output,
+		OutputImage: outputImage,
 		ImageDigest: cb.Status.ImageDigest,
 	}
 	if v, ok := cb.Annotations["automotive.sdv.cloud.redhat.com/requested-by"]; ok {
@@ -3339,6 +3518,17 @@ func getContainerBuild(c *gin.Context, name string) {
 	}
 	if cb.Status.CompletionTime != nil {
 		resp.CompletionTime = cb.Status.CompletionTime.Format(time.RFC3339)
+	}
+
+	// Mint a fresh registry token for completed/failed internal registry builds
+	if cb.Spec.UseServiceAccountAuth &&
+		(cb.Status.Phase == phaseCompleted || cb.Status.Phase == phaseFailed) {
+		token, tokenErr := a.mintRegistryToken(ctx, c, namespace)
+		if tokenErr != nil {
+			a.log.Error(tokenErr, "failed to mint registry token for container build", "build", name)
+		} else {
+			resp.RegistryToken = token
+		}
 	}
 
 	writeJSON(c, http.StatusOK, resp)
@@ -3382,6 +3572,29 @@ func getWaiterLockFileFromPodSpec(pod *corev1.Pod, containerName string) (string
 	}
 
 	return "", false
+}
+
+// findWaiterContainer returns the name of the running source-local waiter container in a build pod.
+func findWaiterContainer(pod *corev1.Pod) string {
+	// Check init containers for backward compatibility
+	for _, initCS := range pod.Status.InitContainerStatuses {
+		if strings.Contains(initCS.Name, "source-local") && initCS.State.Running != nil {
+			return initCS.Name
+		}
+	}
+	// Modern Shipwright uses regular containers, not init containers
+	for _, cs := range pod.Status.ContainerStatuses {
+		if strings.Contains(cs.Name, "source-local") && cs.State.Running != nil {
+			return cs.Name
+		}
+	}
+	// Final fallback: any running init container
+	for _, initCS := range pod.Status.InitContainerStatuses {
+		if initCS.State.Running != nil {
+			return initCS.Name
+		}
+	}
+	return ""
 }
 
 func (a *APIServer) uploadContainerBuildContext(c *gin.Context, name string) {
@@ -3434,36 +3647,7 @@ func (a *APIServer) uploadContainerBuildContext(c *gin.Context, name string) {
 
 	buildPod := &podList.Items[0]
 
-	// Find the source-local init container that's waiting for upload
-	waiterContainer := ""
-	// First check init containers for backward compatibility
-	for _, initCS := range buildPod.Status.InitContainerStatuses {
-		if strings.Contains(initCS.Name, "source-local") && initCS.State.Running != nil {
-			waiterContainer = initCS.Name
-			break
-		}
-	}
-
-	// Check regular containers (modern Shipwright uses regular containers, not init containers)
-	if waiterContainer == "" {
-		for _, cs := range buildPod.Status.ContainerStatuses {
-			if strings.Contains(cs.Name, "source-local") && cs.State.Running != nil {
-				waiterContainer = cs.Name
-				break
-			}
-		}
-	}
-
-	if waiterContainer == "" {
-		// Final fallback: find any running init container
-		for _, initCS := range buildPod.Status.InitContainerStatuses {
-			if initCS.State.Running != nil {
-				waiterContainer = initCS.Name
-				break
-			}
-		}
-	}
-
+	waiterContainer := findWaiterContainer(buildPod)
 	if waiterContainer == "" {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "source waiter container not yet running, try again shortly"})
 		return
@@ -3482,7 +3666,9 @@ func (a *APIServer) uploadContainerBuildContext(c *gin.Context, name string) {
 		return
 	}
 
-	// Phase 1: Stream the tarball using the exact tar command that Shipwright expects
+	// Phase 1: Stream the tarball using the exact tar command that Shipwright expects.
+	// The client sends gzip-compressed data; decompress server-side since the
+	// waiter container's tar may not support -z.
 	tarCmd := []string{"tar", "--no-same-permissions", "--no-same-owner", "-xvf", "-", "-C", "/workspace/source"}
 
 	execReq := clientset.CoreV1().RESTClient().Post().
@@ -3564,135 +3750,4 @@ func (a *APIServer) uploadContainerBuildContext(c *gin.Context, name string) {
 	}
 
 	writeJSON(c, http.StatusOK, map[string]string{"status": "ok", "message": "context uploaded successfully"})
-}
-
-func (a *APIServer) streamContainerBuildLogs(c *gin.Context, name string) {
-	namespace := resolveNamespace()
-
-	streamDuration := time.Duration(a.limits.MaxLogStreamDurationMinutes) * time.Minute
-	ctx, cancel := context.WithTimeout(c.Request.Context(), streamDuration)
-	defer cancel()
-
-	type clientInitResult struct {
-		k8sClient client.Client
-		err       error
-	}
-
-	clientInitCh := make(chan clientInitResult, 1)
-	go func() {
-		k8sClient, err := getClientFromRequestFn(c)
-		clientInitCh <- clientInitResult{k8sClient: k8sClient, err: err}
-	}()
-
-	var k8sClient client.Client
-	select {
-	case <-ctx.Done():
-		c.JSON(http.StatusRequestTimeout, gin.H{"error": "request canceled"})
-		return
-	case <-time.After(10 * time.Second):
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "log stream setup timed out, try again shortly"})
-		return
-	case result := <-clientInitCh:
-		if result.err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": result.err.Error()})
-			return
-		}
-		k8sClient = result.k8sClient
-	}
-
-	cb := &automotivev1alpha1.ContainerBuild{}
-	setupCtx, setupCancel := context.WithTimeout(ctx, 10*time.Second)
-	defer setupCancel()
-	if err := k8sClient.Get(setupCtx, types.NamespacedName{Name: name, Namespace: namespace}, cb); err != nil {
-		if setupCtx.Err() == context.DeadlineExceeded {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "log stream setup timed out, try again shortly"})
-			return
-		}
-		if k8serrors.IsNotFound(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	buildRunName := cb.Status.BuildRunName
-	if buildRunName == "" {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "logs not available yet"})
-		return
-	}
-
-	restCfg, err := getRESTConfigFromRequest(c)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	cs, err := kubernetes.NewForConfig(restCfg)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	setupLogStreamHeaders(c)
-
-	sinceTime := parseSinceTime(c.Query("since"))
-
-	// Poll for build pod and stream logs
-	streamedContainers := make(map[string]bool)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		pods, err := cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-			LabelSelector: "buildrun.shipwright.io/name=" + buildRunName,
-		})
-		if err != nil {
-			_, _ = fmt.Fprintf(c.Writer, "\n[Error listing pods: %v]\n", err)
-			c.Writer.Flush()
-			time.Sleep(2 * time.Second)
-			continue
-		}
-
-		if len(pods.Items) == 0 {
-			_, _ = c.Writer.Write([]byte("."))
-			c.Writer.Flush()
-			time.Sleep(2 * time.Second)
-			continue
-		}
-
-		pod := pods.Items[0]
-		stepNames := getStepContainerNames(pod)
-		sort.SliceStable(stepNames, func(i, j int) bool {
-			iSourceLocal := strings.Contains(stepNames[i], "source-local")
-			jSourceLocal := strings.Contains(stepNames[j], "source-local")
-			if iSourceLocal != jSourceLocal {
-				return !iSourceLocal
-			}
-			return stepNames[i] < stepNames[j]
-		})
-
-		for _, containerName := range stepNames {
-			if streamedContainers[containerName] {
-				continue
-			}
-			followContainer := !strings.Contains(containerName, "source-local")
-			if streamContainerLogs(ctx, c, cs, namespace, pod.Name, containerName, name, sinceTime, followContainer) {
-				streamedContainers[containerName] = true
-			}
-		}
-
-		// Check if build is done
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, cb); err == nil {
-			if cb.Status.Phase == "Completed" || cb.Status.Phase == "Failed" {
-				_, _ = fmt.Fprintf(c.Writer, "\n[Build %s: %s]\n", cb.Status.Phase, cb.Status.Message)
-				c.Writer.Flush()
-				return
-			}
-		}
-
-		time.Sleep(3 * time.Second)
-	}
 }
