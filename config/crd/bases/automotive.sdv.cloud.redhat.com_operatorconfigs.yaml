@@ -418,6 +418,19 @@ spec:
                     format: int64
                     type: integer
                 type: object
+              containerBuilds:
+                description: ContainerBuilds defines configuration for container build
+                  operations
+                properties:
+                  uploadTimeoutMinutes:
+                    default: 10
+                    description: |-
+                      UploadTimeoutMinutes is the maximum time in minutes to wait for source uploads
+                      before failing the build. Increase this for large build contexts.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                type: object
               jumpstarter:
                 description: Jumpstarter defines configuration for Jumpstarter device
                   flashing integration

@@ -38,11 +38,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	securityv1 "github.com/openshift/api/security/v1"
+	shipwrightv1beta1 "github.com/shipwright-io/build/pkg/apis/build/v1beta1"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/catalogimage"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/containerbuild"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/image"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/imagebuild"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/operatorconfig"
@@ -68,6 +70,7 @@ func init() {
 	utilruntime.Must(tektonv1.AddToScheme(scheme))
 	utilruntime.Must(routev1.Install(scheme))
 	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
+	utilruntime.Must(shipwrightv1beta1.SchemeBuilder.AddToScheme(scheme))
 
 	// +kubebuilder:scaffold:scheme
 }
@@ -92,7 +95,7 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.StringVar(&mode, "mode", modeAll,
 		"Controller mode: 'platform' runs only OperatorConfig controller, "+
-			"'build' runs only ImageBuild/Image/CatalogImage controllers, "+
+			"'build' runs only ImageBuild/Image/CatalogImage/ContainerBuild controllers, "+
 			"'all' runs all controllers.")
 	opts := zap.Options{
 		Development: true,
@@ -189,7 +192,13 @@ func main() {
 		}
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), mgrOptions)
+	restConfig := ctrl.GetConfigOrDie()
+	// controller-runtime v0.21.0 no longer sets client-side rate limits by default.
+	// Restore the previous defaults to avoid throttling under the more restrictive
+	// client-go defaults (QPS=5, Burst=10).
+	restConfig.QPS = 20
+	restConfig.Burst = 30
+	mgr, err := ctrl.NewManager(restConfig, mgrOptions)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
@@ -242,6 +251,17 @@ func main() {
 
 		if err = catalogImageReconciler.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "CatalogImage")
+			os.Exit(1)
+		}
+
+		containerBuildReconciler := &containerbuild.ContainerBuildReconciler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+			Log:    ctrl.Log.WithName("controllers").WithName("ContainerBuild"),
+		}
+
+		if err = containerBuildReconciler.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "ContainerBuild")
 			os.Exit(1)
 		}
 	}

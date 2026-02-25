@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	"github.com/golang-jwt/jwt/v5"
 	routev1 "github.com/openshift/api/route/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -298,7 +299,20 @@ func (r *OperatorConfigReconciler) buildBuildAPIService(namespace string, isOpen
 	}
 }
 
-func (r *OperatorConfigReconciler) buildBuildAPIRoute(namespace string) *routev1.Route {
+func (r *OperatorConfigReconciler) buildBuildAPIRoute(namespace string, config *automotivev1alpha1.OperatorConfig) *routev1.Route {
+	// Derive route timeout from the longest configured upload timeout + buffer
+	routeTimeoutMinutes := int32(15)
+	if config.Spec.ContainerBuilds != nil && config.Spec.ContainerBuilds.UploadTimeoutMinutes > 0 {
+		if t := config.Spec.ContainerBuilds.UploadTimeoutMinutes + 2; t > routeTimeoutMinutes {
+			routeTimeoutMinutes = t
+		}
+	}
+	if config.Spec.OSBuilds != nil && config.Spec.OSBuilds.UploadTimeoutMinutes > 0 {
+		if t := config.Spec.OSBuilds.UploadTimeoutMinutes + 2; t > routeTimeoutMinutes {
+			routeTimeoutMinutes = t
+		}
+	}
+
 	return &routev1.Route{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "ado-build-api",
@@ -307,6 +321,9 @@ func (r *OperatorConfigReconciler) buildBuildAPIRoute(namespace string) *routev1
 				"app.kubernetes.io/name":      "automotive-dev-operator",
 				"app.kubernetes.io/component": "build-api",
 				"app.kubernetes.io/part-of":   "automotive-dev-operator",
+			},
+			Annotations: map[string]string{
+				"haproxy.router.openshift.io/timeout": fmt.Sprintf("%dm", routeTimeoutMinutes),
 			},
 		},
 		Spec: routev1.RouteSpec{
@@ -707,6 +724,28 @@ func (r *OperatorConfigReconciler) buildBuildControllerClusterRole() *rbacv1.Clu
 			{
 				APIGroups: []string{"tekton.dev"},
 				Resources: []string{"tasks", "pipelines", "pipelineruns", "taskruns"},
+				Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+			},
+			// ContainerBuild controller RBAC
+			{
+				APIGroups: []string{"automotive.sdv.cloud.redhat.com"},
+				Resources: []string{"containerbuilds"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+			{
+				APIGroups: []string{"automotive.sdv.cloud.redhat.com"},
+				Resources: []string{"containerbuilds/status"},
+				Verbs:     []string{"get", "update", "patch"},
+			},
+			{
+				APIGroups: []string{"automotive.sdv.cloud.redhat.com"},
+				Resources: []string{"containerbuilds/finalizers"},
+				Verbs:     []string{"update"},
+			},
+			// Shipwright resources (used by ContainerBuild controller)
+			{
+				APIGroups: []string{"shipwright.io"},
+				Resources: []string{"builds", "buildruns"},
 				Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 			},
 		},

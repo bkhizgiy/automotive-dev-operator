@@ -52,6 +52,8 @@ const (
 	phaseFailed    = "Failed"
 	phasePending   = "Pending"
 	phaseRunning   = "Running"
+	phaseUploading = "Uploading"
+	phaseBuilding  = "Building"
 
 	// Image format and compression constants
 	formatImage     = "image"
@@ -72,6 +74,8 @@ const (
 )
 
 var getClientFromRequestFn = getClientFromRequest
+var getRESTConfigFromRequestFn = getRESTConfigFromRequest
+var createInternalRegistrySecretFn = createInternalRegistrySecret
 var loadOperatorConfigFn = func(
 	ctx context.Context,
 	k8sClient client.Client,
@@ -218,7 +222,7 @@ func createInternalRegistrySecret(ctx context.Context, restCfg *rest.Config, nam
 
 // ensureImageStream creates an ImageStream if it doesn't already exist.
 // The OpenShift internal registry requires an ImageStream before oras can push to it.
-func ensureImageStream(ctx context.Context, k8sClient client.Client, namespace, name string) error {
+func ensureImageStream(ctx context.Context, k8sClient client.Client, namespace, name string) (bool, error) {
 	is := &unstructured.Unstructured{}
 	is.SetGroupVersionKind(schema.GroupVersionKind{
 		Group:   "image.openshift.io",
@@ -229,10 +233,10 @@ func ensureImageStream(ctx context.Context, k8sClient client.Client, namespace, 
 	// Check if it already exists
 	err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, is)
 	if err == nil {
-		return nil // already exists
+		return false, nil // already exists
 	}
 	if !k8serrors.IsNotFound(err) {
-		return fmt.Errorf("error checking ImageStream %s: %w", name, err)
+		return false, fmt.Errorf("error checking ImageStream %s: %w", name, err)
 	}
 
 	// Create it
@@ -252,11 +256,23 @@ func ensureImageStream(ctx context.Context, k8sClient client.Client, namespace, 
 
 	if err := k8sClient.Create(ctx, newIS); err != nil {
 		if k8serrors.IsAlreadyExists(err) {
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("error creating ImageStream %s: %w", name, err)
+		return false, fmt.Errorf("error creating ImageStream %s: %w", name, err)
 	}
-	return nil
+	return true, nil
+}
+
+func deleteImageStream(ctx context.Context, k8sClient client.Client, namespace, name string) error {
+	is := &unstructured.Unstructured{}
+	is.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "image.openshift.io",
+		Version: "v1",
+		Kind:    "ImageStream",
+	})
+	is.SetName(name)
+	is.SetNamespace(namespace)
+	return k8sClient.Delete(ctx, is)
 }
 
 // mintRegistryToken creates a fresh short-lived token for the pipeline SA
@@ -525,6 +541,16 @@ func (a *APIServer) createRouter() *gin.Engine {
 			configGroup.GET("", a.handleGetOperatorConfig)
 		}
 
+		containerBuildsGroup := v1.Group("/container-builds")
+		containerBuildsGroup.Use(a.authMiddleware())
+		{
+			containerBuildsGroup.POST("", a.handleCreateContainerBuild)
+			containerBuildsGroup.GET("", a.handleListContainerBuilds)
+			containerBuildsGroup.GET("/:name", a.handleGetContainerBuild)
+			containerBuildsGroup.POST("/:name/upload", a.handleContainerBuildUpload)
+			containerBuildsGroup.GET("/:name/logs", a.handleStreamContainerBuildLogs)
+		}
+
 		// Register catalog routes with authentication
 		catalogClient, err := a.getCatalogClient()
 		if err != nil {
@@ -673,15 +699,51 @@ func getStepContainerNames(pod corev1.Pod) []string {
 // Returns true if logs were successfully streamed, false if the stream could not be opened.
 func streamContainerLogs(
 	ctx context.Context, c *gin.Context, cs *kubernetes.Clientset,
-	namespace, podName, containerName, taskName string, sinceTime *metav1.Time,
+	namespace, podName, containerName, taskName string, sinceTime *metav1.Time, follow bool,
 ) bool {
 	req := cs.CoreV1().Pods(namespace).GetLogs(
-		podName, &corev1.PodLogOptions{Container: containerName, Follow: true, SinceTime: sinceTime},
+		podName, &corev1.PodLogOptions{Container: containerName, Follow: follow, SinceTime: sinceTime},
 	)
-	stream, err := req.Stream(ctx)
-	if err != nil {
-		return false
+
+	type streamOpenResult struct {
+		stream io.ReadCloser
+		err    error
 	}
+
+	openResultCh := make(chan streamOpenResult, 1)
+	go func() {
+		stream, err := req.Stream(ctx)
+		openResultCh <- streamOpenResult{stream: stream, err: err}
+	}()
+
+	openTicker := time.NewTicker(10 * time.Second)
+	defer openTicker.Stop()
+
+	var stream io.ReadCloser
+	for stream == nil {
+		select {
+		case <-ctx.Done():
+			// Drain any orphaned stream from the goroutine
+			select {
+			case result := <-openResultCh:
+				if result.stream != nil {
+					_ = result.stream.Close()
+				}
+			default:
+				// Goroutine may still be running; the stream will be GC'd
+			}
+			return true
+		case <-openTicker.C:
+			_, _ = c.Writer.Write([]byte("[Waiting for container log stream...]\n"))
+			c.Writer.Flush()
+		case result := <-openResultCh:
+			if result.err != nil {
+				return false
+			}
+			stream = result.stream
+		}
+	}
+
 	defer func() {
 		if err := stream.Close(); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to close stream: %v\n", err)
@@ -691,41 +753,73 @@ func streamContainerLogs(
 	scanner := bufio.NewScanner(stream)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 
+	lineCh := make(chan string)
+	scanErrCh := make(chan error, 1)
+	go func() {
+		defer close(lineCh)
+		for scanner.Scan() {
+			line := scanner.Text()
+			select {
+			case lineCh <- line:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if err := scanner.Err(); err != nil && err != io.EOF {
+			select {
+			case scanErrCh <- err:
+			default:
+			}
+		}
+	}()
+
 	headerWritten := false
-	for scanner.Scan() {
+	keepaliveTicker := time.NewTicker(20 * time.Second)
+	defer keepaliveTicker.Stop()
+
+	for {
 		select {
 		case <-ctx.Done():
 			return true
-		default:
-		}
+		case <-keepaliveTicker.C:
+			if !headerWritten {
+				_, _ = c.Writer.Write([]byte(".\n"))
+			} else {
+				_, _ = c.Writer.Write([]byte("[Waiting for container log output...]\n"))
+			}
+			c.Writer.Flush()
+		case line, ok := <-lineCh:
+			if !ok {
+				select {
+				case scanErr := <-scanErrCh:
+					var errMsg []byte
+					errMsg = fmt.Appendf(errMsg, "\n[Stream error: %v]\n", scanErr)
+					_, _ = c.Writer.Write(errMsg)
+					c.Writer.Flush()
+				default:
+				}
+				return true
+			}
 
-		// Write header only when the first line of actual content arrives.
-		// This avoids printing empty headers on reconnection for containers
-		// whose logs have already been streamed.
-		if !headerWritten {
-			_, _ = c.Writer.Write([]byte(
-				"\n===== Logs from " + taskName + "/" + strings.TrimPrefix(containerName, "step-") + " =====\n\n",
-			))
-			headerWritten = true
-		}
+			// Write header only when the first line of actual content arrives.
+			// This avoids printing empty headers on reconnection for containers
+			// whose logs have already been streamed.
+			if !headerWritten {
+				_, _ = c.Writer.Write([]byte(
+					"\n===== Logs from " + taskName + "/" + strings.TrimPrefix(containerName, "step-") + " =====\n\n",
+				))
+				headerWritten = true
+			}
 
-		line := scanner.Bytes()
-		if _, writeErr := c.Writer.Write(line); writeErr != nil {
-			return true
+			if _, writeErr := c.Writer.Write([]byte(line)); writeErr != nil {
+				return true
+			}
+			if _, writeErr := c.Writer.Write([]byte("\n")); writeErr != nil {
+				return true
+			}
+			c.Writer.Flush()
 		}
-		if _, writeErr := c.Writer.Write([]byte("\n")); writeErr != nil {
-			return true
-		}
-		c.Writer.Flush()
 	}
-
-	if err := scanner.Err(); err != nil && err != io.EOF {
-		var errMsg []byte
-		errMsg = fmt.Appendf(errMsg, "\n[Stream error: %v]\n", err)
-		_, _ = c.Writer.Write(errMsg)
-		c.Writer.Flush()
-	}
-	return true
 }
 
 // processPodLogs processes logs for all containers in a pod
@@ -749,7 +843,7 @@ func processPodLogs(
 			c.Writer.Flush()
 		}
 
-		if streamContainerLogs(ctx, c, cs, namespace, pod.Name, cName, taskName, sinceTime) {
+		if streamContainerLogs(ctx, c, cs, namespace, pod.Name, cName, taskName, sinceTime, true) {
 			*hadStream = true
 			streamedContainers[cName] = true
 		}
@@ -1337,7 +1431,7 @@ func (a *APIServer) setupInternalRegistryBuild(
 		imageStreams = append(imageStreams, imageName)
 	}
 	for _, isName := range imageStreams {
-		if err := ensureImageStream(ctx, k8sClient, namespace, isName); err != nil {
+		if _, err := ensureImageStream(ctx, k8sClient, namespace, isName); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error creating ImageStream: %v", err)})
 			return "", "", err
 		}
@@ -1524,7 +1618,7 @@ func (a *APIServer) createBuild(c *gin.Context) {
 
 	writeJSON(c, http.StatusAccepted, BuildResponse{
 		Name:        req.Name,
-		Phase:       "Building",
+		Phase:       phaseBuilding,
 		Message:     "Build triggered",
 		RequestedBy: requestedBy,
 	})

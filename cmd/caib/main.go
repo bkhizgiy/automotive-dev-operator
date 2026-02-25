@@ -21,7 +21,6 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
-	"unicode/utf8"
 
 	"github.com/containers/image/v5/copy"
 	"github.com/containers/image/v5/docker"
@@ -33,6 +32,8 @@ import (
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/auth"
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/catalog"
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/config"
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/container"
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/ui"
 	buildapitypes "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi"
 	buildapiclient "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi/client"
 	"github.com/fatih/color"
@@ -47,6 +48,8 @@ const (
 	phaseCompleted = "Completed"
 	phaseFailed    = "Failed"
 	phaseFlashing  = "Flashing"
+	phasePending   = "Pending"
+	phaseUploading = "Uploading"
 	errPrefixBuild = "build"
 	errPrefixFlash = "flash"
 	errPrefixPush  = "push"
@@ -686,8 +689,11 @@ Example:
 	flashCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", true, "wait for flash to complete")
 	_ = flashCmd.MarkFlagRequired("client")
 
+	// build-container command (Shipwright-based container builds)
+	containerCmd := container.NewContainerCmd()
+
 	// Add all commands
-	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, showCmd, downloadCmd, flashCmd, logsCmd, loginCmd, catalog.NewCatalogCmd())
+	rootCmd.AddCommand(buildCmd, diskCmd, buildDevCmd, listCmd, showCmd, downloadCmd, flashCmd, logsCmd, loginCmd, containerCmd, catalog.NewCatalogCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
@@ -1608,12 +1614,12 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 		Transport: logTransport,
 	}
 	streamState := &logStreamState{}
-	pb := newProgressBar()
+	pb := ui.NewProgressBar()
 
 	for {
 		select {
 		case <-timeoutCtx.Done():
-			pb.clear()
+			pb.Clear()
 			handleError(fmt.Errorf("timed out waiting for build"))
 		case <-ticker.C:
 			reqCtx, cancelReq := context.WithTimeout(ctx, 2*time.Minute)
@@ -1638,7 +1644,7 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 						displayPhase = progress.Phase
 					}
 				}
-				pb.render(displayPhase, step)
+				pb.Render(displayPhase, step)
 			} else if !streamState.active && (!userFollowRequested || !streamState.canRetry()) {
 				// Fallback: text status when streaming is not active
 				if st.Phase != lastPhase || st.Message != lastMessage {
@@ -1650,7 +1656,7 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 
 			// Handle terminal build states
 			if st.Phase == phaseCompleted {
-				pb.clear()
+				pb.Clear()
 				flashWasExecuted := strings.Contains(st.Message, "flash")
 				if flashWasExecuted {
 					bannerColor := func(a ...any) string { return fmt.Sprint(a...) }
@@ -1701,7 +1707,7 @@ func waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, nam
 				return
 			}
 			if st.Phase == phaseFailed {
-				pb.clear()
+				pb.Clear()
 				// Provide phase-specific error messages
 				errPrefix := errPrefixBuild
 				isFlashFailure := false
@@ -1802,97 +1808,6 @@ func (s *logStreamState) reset() {
 
 func isBuildActive(phase string) bool {
 	return phase == "Building" || phase == "Running" || phase == "Uploading" || phase == phaseFlashing
-}
-
-// progressBar renders build progress. In a TTY it uses \r overwrite with a
-// visual bar; in non-TTY mode it prints one line per status change.
-// Progress is monotonic: once a higher done count is rendered, lower values
-// are ignored to prevent regressions from transient log read failures.
-type progressBar struct {
-	lastLine string
-	isTTY    bool
-	highStep *buildapitypes.BuildStep // highest progress seen so far
-}
-
-func newProgressBar() *progressBar {
-	return &progressBar{isTTY: term.IsTerminal(int(os.Stdout.Fd()))}
-}
-
-func (pb *progressBar) render(phase string, step *buildapitypes.BuildStep) {
-	// Enforce monotonic progress: never go backwards in Done or Total
-	if step != nil && pb.highStep != nil {
-		if step.Done < pb.highStep.Done {
-			step.Done = pb.highStep.Done
-		}
-		if step.Total < pb.highStep.Total {
-			step.Total = pb.highStep.Total
-		}
-	}
-	if step != nil {
-		pb.highStep = step
-	}
-
-	if pb.isTTY {
-		pb.renderTTY(phase, step)
-	} else {
-		pb.renderPlain(phase, step)
-	}
-}
-
-func (pb *progressBar) renderTTY(phase string, step *buildapitypes.BuildStep) {
-	var line string
-	if step == nil {
-		line = fmt.Sprintf("\r%-10s \u25cc waiting for progress...", phase)
-	} else {
-		barWidth := 30
-		filled := 0
-		if step.Total > 0 {
-			filled = min(barWidth, barWidth*step.Done/step.Total)
-		}
-		bar := strings.Repeat("\u2588", filled) + strings.Repeat("\u2591", barWidth-filled)
-		line = fmt.Sprintf("\r%-10s \u2502%s\u2502 %2d/%-2d %s", phase, bar, step.Done, step.Total, step.Stage)
-	}
-	if line == pb.lastLine {
-		return
-	}
-	width, _, err := term.GetSize(int(os.Stdout.Fd()))
-	if err != nil || width <= 0 {
-		width = 80
-	}
-	// Use rune count (not byte length) because the bar contains multi-byte
-	// UTF-8 characters (█, ░, │) that are 3 bytes each but 1 display column.
-	displayWidth := utf8.RuneCountInString(line) - 1 // subtract 1 for \r
-	if displayWidth < width {
-		line += strings.Repeat(" ", width-displayWidth)
-	}
-	_, _ = fmt.Fprint(os.Stdout, line)
-	pb.lastLine = line
-}
-
-func (pb *progressBar) renderPlain(phase string, step *buildapitypes.BuildStep) {
-	var line string
-	if step == nil {
-		line = fmt.Sprintf("%s: waiting for progress...", phase)
-	} else {
-		line = fmt.Sprintf("%s: [%d/%d] %s", phase, step.Done, step.Total, step.Stage)
-	}
-	if line == pb.lastLine {
-		return
-	}
-	fmt.Println(line)
-	pb.lastLine = line
-}
-
-func (pb *progressBar) clear() {
-	if !pb.isTTY || pb.lastLine == "" {
-		return
-	}
-	width, _, err := term.GetSize(int(os.Stdout.Fd()))
-	if err != nil || width <= 0 {
-		width = 80
-	}
-	_, _ = fmt.Fprint(os.Stdout, "\r"+strings.Repeat(" ", width)+"\r")
-	pb.lastLine = ""
 }
 
 // tryLogStreaming attempts to stream logs and returns error if it fails

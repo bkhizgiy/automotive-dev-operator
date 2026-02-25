@@ -333,7 +333,7 @@ func (r *OperatorConfigReconciler) deployBuildAPI(ctx context.Context, owner *au
 
 	// Create/update build-api route (OpenShift)
 	r.Log.Info("Creating/updating build-api route")
-	buildAPIRoute := r.buildBuildAPIRoute(owner.Namespace)
+	buildAPIRoute := r.buildBuildAPIRoute(owner.Namespace, owner)
 	if err := r.createOrUpdate(ctx, buildAPIRoute, owner); err != nil {
 		r.Log.Error(err, "Failed to create/update build-api route (this is expected on non-OpenShift clusters)")
 	} else {
