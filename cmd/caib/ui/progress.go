@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package ui provides terminal progress rendering for build commands.
 package ui
 
 import (
@@ -43,23 +44,27 @@ func NewProgressBar() *ProgressBar {
 
 // Render displays the progress bar with monotonic progress enforcement
 func (pb *ProgressBar) Render(phase string, step *buildapitypes.BuildStep) {
-	// Enforce monotonic progress: never go backwards in Done or Total
-	if step != nil && pb.highStep != nil {
-		if step.Done < pb.highStep.Done {
-			step.Done = pb.highStep.Done
-		}
-		if step.Total < pb.highStep.Total {
-			step.Total = pb.highStep.Total
-		}
-	}
+	// Work on a local copy to avoid mutating the caller's BuildStep
+	var renderStep *buildapitypes.BuildStep
 	if step != nil {
-		pb.highStep = step
+		s := *step
+		// Enforce monotonic progress: never go backwards in Done or Total
+		if pb.highStep != nil {
+			if s.Done < pb.highStep.Done {
+				s.Done = pb.highStep.Done
+			}
+			if s.Total < pb.highStep.Total {
+				s.Total = pb.highStep.Total
+			}
+		}
+		pb.highStep = &s
+		renderStep = &s
 	}
 
 	if pb.isTTY {
-		pb.renderTTY(phase, step)
+		pb.renderTTY(phase, renderStep)
 	} else {
-		pb.renderPlain(phase, step)
+		pb.renderPlain(phase, renderStep)
 	}
 }
 
@@ -120,12 +125,4 @@ func (pb *ProgressBar) Clear() {
 	}
 	_, _ = fmt.Fprint(os.Stdout, "\r"+strings.Repeat(" ", width)+"\r")
 	pb.lastLine = ""
-}
-
-// min returns the minimum of two integers
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

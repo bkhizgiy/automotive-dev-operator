@@ -14,16 +14,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package container implements CLI commands for container image building.
 package container
 
 import (
-	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	containersarchive "github.com/containers/storage/pkg/archive"
@@ -96,8 +98,7 @@ Examples:
 	cmd.Flags().IntVar(&containerBuildTimeout, "timeout", 30, "build timeout in minutes")
 	cmd.Flags().BoolVar(&useInternalRegistry, "internal-registry", false, "push to OpenShift internal registry")
 
-	// Mark containerfile as required
-	cmd.MarkFlagRequired("containerfile")
+	_ = cmd.MarkFlagRequired("containerfile")
 
 	return cmd
 }
@@ -110,7 +111,8 @@ func getDefaultArch() string {
 
 // runBuildContainer handles the container build command
 func runBuildContainer(_ *cobra.Command, args []string) {
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	contextDir := "."
 	if len(args) > 0 {
@@ -342,7 +344,7 @@ func uploadContainerBuildContext(ctx context.Context, name string, tarballPath s
 			return client.UploadContainerBuildContext(ctx, name, tarball)
 		})
 
-		tarball.Close()
+		_ = tarball.Close()
 
 		if err == nil {
 			break
@@ -430,11 +432,13 @@ func displayContainerBuildResult(finalStatus *buildapitypes.ContainerBuildRespon
 	if finalStatus.OutputImage != "" {
 		fmt.Printf("%s %s\n", colorFormatter.LabelColor("Output image:"), colorFormatter.ValueColor(finalStatus.OutputImage))
 	}
-	if finalStatus.Phase == phaseFailed {
+	switch finalStatus.Phase {
+	case phaseFailed:
 		fmt.Printf("\n%s\n  %s\n", colorFormatter.LabelColor("View build logs:"), colorFormatter.CommandColor("caib container logs "+finalStatus.Name))
 		handleError(fmt.Errorf("build failed"))
-	} else if finalStatus.Phase == phaseCompleted {
+	case phaseCompleted:
 		fmt.Printf("\n%s %s\n", colorFormatter.ValueColor("✓"), colorFormatter.ValueColor("Build completed successfully!"))
+	default:
 	}
 }
 
@@ -456,13 +460,10 @@ func containerBuildPhaseStep(phase string) int {
 
 // createContextTarball creates a tar archive of a directory and returns a reader.
 func createContextTarball(contextDir string) (*os.File, error) {
-	tmpFile, err := os.CreateTemp("", "caib-context-*.tar.gz")
+	tmpFile, err := os.CreateTemp("", "caib-context-*.tar")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp file: %w", err)
 	}
-
-	gzWriter := gzip.NewWriter(tmpFile)
-	defer gzWriter.Close()
 
 	// Load ignore patterns with gitignore support
 	ignorePatterns, err := LoadIgnorePatterns(contextDir)
@@ -474,33 +475,27 @@ func createContextTarball(contextDir string) (*os.File, error) {
 	tarOpts := &containersarchive.TarOptions{
 		IncludeFiles:    []string{"."},
 		ExcludePatterns: ignorePatterns,
-		Compression:     containersarchive.Gzip,
+		Compression:     containersarchive.Uncompressed,
 	}
 
 	tarReader, err := containersarchive.TarWithOptions(contextDir, tarOpts)
 	if err != nil {
-		tmpFile.Close()
-		os.Remove(tmpFile.Name())
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpFile.Name())
 		return nil, fmt.Errorf("failed to create tar stream: %w", err)
 	}
-	defer tarReader.Close()
+	defer func() { _ = tarReader.Close() }()
 
-	_, err = io.Copy(gzWriter, tarReader)
+	_, err = io.Copy(tmpFile, tarReader)
 	if err != nil {
-		tmpFile.Close()
-		os.Remove(tmpFile.Name())
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpFile.Name())
 		return nil, fmt.Errorf("failed to create tar archive: %w", err)
 	}
 
-	if err = gzWriter.Close(); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpFile.Name())
-		return nil, fmt.Errorf("failed to close gzip writer: %w", err)
-	}
-
 	if _, err = tmpFile.Seek(0, io.SeekStart); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpFile.Name())
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpFile.Name())
 		return nil, fmt.Errorf("failed to seek to beginning of file: %w", err)
 	}
 

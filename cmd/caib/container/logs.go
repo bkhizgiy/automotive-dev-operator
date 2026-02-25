@@ -37,7 +37,6 @@ import (
 
 // logStreamState encapsulates state for log streaming with automatic reconnection
 type logStreamState struct {
-	active       bool
 	retryCount   int
 	warningShown bool
 	startTime    time.Time
@@ -99,9 +98,11 @@ func runContainerLogs(_ *cobra.Command, args []string) {
 	}
 
 	if isContainerBuildTerminal(status.Phase) {
-		// Build is finished — attempt to fetch logs once (pods may have been GC'd)
+		// Build is finished — fetch logs once without follow mode (pods may have been GC'd)
+		fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
 		streamState := &logStreamState{}
-		if err := tryContainerLogStreaming(ctx, logClient, name, streamState); err != nil {
+		if err := tryContainerLogStreaming(fetchCtx, logClient, name, streamState, false); err != nil {
 			fmt.Printf("Could not retrieve logs (pods may have been cleaned up): %v\n", err)
 		}
 		return
@@ -129,29 +130,44 @@ func runContainerLogs(_ *cobra.Command, args []string) {
 	// Stream logs
 	streamState := &logStreamState{}
 	for {
-		if err := tryContainerLogStreaming(ctx, logClient, name, streamState); err != nil {
-			if streamState.completed {
-				break
-			}
-			streamState.retryCount++
-			if streamState.retryCount > maxLogRetries {
-				fmt.Println("\nLog stream unavailable.")
-				break
-			}
-			time.Sleep(5 * time.Second)
-			continue
+		err := tryContainerLogStreaming(ctx, logClient, name, streamState, true)
+		if streamState.completed {
+			break
 		}
-		break
+		if ctx.Err() != nil {
+			break
+		}
+		if err != nil && isNonRetryableLogError(err) {
+			handleError(err)
+		}
+		// Stream ended (nil error with incomplete stream, or transient error) — retry
+		streamState.retryCount++
+		if streamState.retryCount > maxLogRetries {
+			handleError(fmt.Errorf("log stream unavailable after %d retries", maxLogRetries))
+		}
+		time.Sleep(5 * time.Second)
 	}
 }
 
-// tryContainerLogStreaming attempts to stream logs and returns error if it fails
-func tryContainerLogStreaming(ctx context.Context, logClient *http.Client, name string, state *logStreamState) error {
-	logURL := buildContainerBuildLogURL(name, state.startTime)
+// isNonRetryableLogError returns true for errors that should not be retried.
+func isNonRetryableLogError(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "HTTP 401") ||
+		strings.Contains(msg, "HTTP 403") ||
+		strings.Contains(msg, "HTTP 404")
+}
 
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, logURL, nil)
-	if authToken := strings.TrimSpace(authToken); authToken != "" {
-		req.Header.Set("Authorization", "Bearer "+authToken)
+// tryContainerLogStreaming attempts to stream logs and returns error if it fails.
+// When follow is true, the server keeps the connection open for live streaming.
+func tryContainerLogStreaming(ctx context.Context, logClient *http.Client, name string, state *logStreamState, follow bool) error {
+	logURL := buildContainerBuildLogURL(name, state.startTime, follow)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, logURL, nil)
+	if err != nil {
+		return fmt.Errorf("creating log request: %w", err)
+	}
+	if token := strings.TrimSpace(authToken); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	resp, err := logClient.Do(req)
@@ -172,25 +188,35 @@ func tryContainerLogStreaming(ctx context.Context, logClient *http.Client, name 
 }
 
 // buildContainerBuildLogURL builds the log streaming URL for container builds
-func buildContainerBuildLogURL(buildName string, startTime time.Time) string {
-	logURL := strings.TrimRight(serverURL, "/") + "/v1/container-builds/" + url.PathEscape(buildName) + "/logs?follow=1"
+func buildContainerBuildLogURL(buildName string, startTime time.Time, follow bool) string {
+	logURL := strings.TrimRight(serverURL, "/") + "/v1/container-builds/" + url.PathEscape(buildName) + "/logs"
+	if follow {
+		logURL += "?follow=1"
+	}
 	if !startTime.IsZero() {
-		logURL += "&since=" + url.QueryEscape(startTime.Format(time.RFC3339))
+		sep := "?"
+		if follow {
+			sep = "&"
+		}
+		logURL += sep + "since=" + url.QueryEscape(startTime.Format(time.RFC3339))
 	}
 	return logURL
 }
 
 // streamLogsToStdout streams logs from the response body to stdout
 func streamLogsToStdout(body io.Reader, state *logStreamState) error {
-	firstStream := state.startTime.IsZero()
-	if firstStream {
+	if state.startTime.IsZero() {
 		state.startTime = time.Now()
 	}
 
 	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		fmt.Println(line)
+
+		// Advance the cursor so reconnections resume from here
+		state.startTime = time.Now()
 
 		// Check for completion markers
 		if strings.Contains(line, "Build completed") || strings.Contains(line, "Build failed") {

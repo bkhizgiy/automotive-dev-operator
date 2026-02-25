@@ -30,7 +30,6 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-
 // handleError prints an error and exits
 func handleError(err error) {
 	fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -118,14 +117,15 @@ func createBuildAPIClient(serverURL string, authToken *string) (*buildapiclient.
 			// OIDC is configured but failed - don't silently fall back to kubeconfig
 			// This indicates a real authentication failure that should be reported
 			// Falling back could authenticate with an unexpected identity
-			fmt.Printf("Error: OIDC authentication failed: %v\n", err)
+			oidcErr := err
+			fmt.Printf("Error: OIDC authentication failed: %v\n", oidcErr)
 			// Only try kubeconfig as last resort, but warn the user
 			fmt.Println("Attempting kubeconfig fallback (this may use a different identity)")
-			if tok, err := loadTokenFromKubeconfig(); err == nil && strings.TrimSpace(tok) != "" {
+			if tok, kerr := loadTokenFromKubeconfig(); kerr == nil && strings.TrimSpace(tok) != "" {
 				*authToken = tok
 			} else {
 				// No kubeconfig available either - return error
-				return nil, fmt.Errorf("OIDC authentication failed and no kubeconfig token available: %w", err)
+				return nil, fmt.Errorf("OIDC authentication failed (%v) and no kubeconfig token available: %w", oidcErr, kerr)
 			}
 		} else if token != "" {
 			// OIDC succeeded
@@ -190,8 +190,9 @@ func loadTokenFromKubeconfig() (string, error) {
 
 // sanitizeBuildName sanitizes a build name
 func sanitizeBuildName(name string) string {
-	// Replace invalid characters with dashes and truncate
-	re := regexp.MustCompile(`[^a-zA-Z0-9-]`)
+	// Replace invalid characters with dashes, lowercase, and truncate
+	name = strings.ToLower(name)
+	re := regexp.MustCompile(`[^a-z0-9-]`)
 	sanitized := re.ReplaceAllString(name, "-")
 	if len(sanitized) > 50 {
 		sanitized = sanitized[:50]

@@ -350,56 +350,6 @@ func extractRegistryCredentials(primaryRef, secondaryRef string) (string, string
 	return "docker.io", username, password
 }
 
-// writeAuthFile writes a Docker auth config JSON string to a mode-0600 temp file and returns its path.
-func writeAuthFile(authJSON string) (string, error) {
-	f, err := os.CreateTemp("", "caib-auth-*.json")
-	if err != nil {
-		return "", err
-	}
-	name := f.Name()
-	if _, err := f.WriteString(authJSON); err != nil {
-		_ = f.Close()
-		_ = os.Remove(name)
-		return "", err
-	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(name)
-		return "", err
-	}
-	if err := os.Chmod(name, 0600); err != nil {
-		_ = os.Remove(name)
-		return "", err
-	}
-	return name, nil
-}
-
-// extractRegistryHost returns the hostname (with optional port) from a container image reference.
-func extractRegistryHost(imageRef string) string {
-	parts := strings.SplitN(imageRef, "/", 2)
-	if len(parts) > 1 && (strings.Contains(parts[0], ".") || strings.Contains(parts[0], ":") || parts[0] == "localhost") {
-		return parts[0]
-	}
-	return "docker.io"
-}
-
-func buildDockerConfigJSON(registryURL, username, password string) (string, error) {
-	authValue := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
-	payload := map[string]any{
-		"auths": map[string]map[string]string{
-			registryURL: {
-				"username": username,
-				"password": password,
-				"auth":     authValue,
-			},
-		},
-	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
-}
-
 // validateRegistryCredentials validates registry credentials and returns an error for partial credentials
 func validateRegistryCredentials(registryURL, username, password string) error {
 	// If no registry URL, no credentials needed
@@ -1859,7 +1809,6 @@ func (s *logStreamState) reset() {
 func isBuildActive(phase string) bool {
 	return phase == "Building" || phase == "Running" || phase == "Uploading" || phase == phaseFlashing
 }
-
 
 // tryLogStreaming attempts to stream logs and returns error if it fails
 func tryLogStreaming(ctx context.Context, logClient *http.Client, name string, state *logStreamState) error {

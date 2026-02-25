@@ -55,7 +55,7 @@ func readIgnoreFile(filePath string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	var patterns []string
 	scanner := bufio.NewScanner(file)
