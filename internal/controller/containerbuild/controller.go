@@ -28,6 +28,12 @@ const (
 	phaseBuilding  = "Building"
 
 	maxK8sNameLength = 63
+
+	// OperatorNamespace is the namespace where the operator is deployed.
+	OperatorNamespace = "automotive-dev-operator-system"
+
+	// defaultUploadTimeoutMinutes is the default source upload timeout for container builds.
+	defaultUploadTimeoutMinutes = 10
 )
 
 // safeDerivedName generates a Kubernetes-safe derived resource name.
@@ -61,6 +67,7 @@ type ContainerBuildReconciler struct {
 //+kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=containerbuilds,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=containerbuilds/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=containerbuilds/finalizers,verbs=update
+//+kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=operatorconfigs,verbs=get;list;watch
 //+kubebuilder:rbac:groups=shipwright.io,resources=buildruns,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=shipwright.io,resources=builds,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
@@ -109,7 +116,16 @@ func (r *ContainerBuildReconciler) reconcilePending(
 		return ctrl.Result{}, err
 	}
 
-	buildRun := r.buildShipwrightBuildRun(cb, buildRunName)
+	// Read upload timeout from OperatorConfig, falling back to default
+	uploadTimeout := time.Duration(defaultUploadTimeoutMinutes) * time.Minute
+	operatorConfig := &automotivev1alpha1.OperatorConfig{}
+	if err := r.Get(ctx, types.NamespacedName{Name: "config", Namespace: OperatorNamespace}, operatorConfig); err == nil {
+		if operatorConfig.Spec.ContainerBuilds != nil && operatorConfig.Spec.ContainerBuilds.UploadTimeoutMinutes > 0 {
+			uploadTimeout = time.Duration(operatorConfig.Spec.ContainerBuilds.UploadTimeoutMinutes) * time.Minute
+		}
+	}
+
+	buildRun := r.buildShipwrightBuildRun(cb, buildRunName, uploadTimeout)
 	if err := ctrl.SetControllerReference(cb, buildRun, r.Scheme); err != nil {
 		return ctrl.Result{}, fmt.Errorf("setting owner reference: %w", err)
 	}
@@ -293,6 +309,7 @@ func (r *ContainerBuildReconciler) updatePhase(
 func (r *ContainerBuildReconciler) buildShipwrightBuildRun(
 	cb *automotivev1alpha1.ContainerBuild,
 	buildRunName string,
+	uploadTimeout time.Duration,
 ) *shipwrightv1beta1.BuildRun {
 	strategyKind := shipwrightv1beta1.ClusterBuildStrategyKind
 	if cb.Spec.GetStrategyKind() == "BuildStrategy" {
@@ -314,21 +331,20 @@ func (r *ContainerBuildReconciler) buildShipwrightBuildRun(
 		})
 	}
 
-	// Add build args as params
+	// Collect all build args into a single ParamValue entry
+	buildArgValues := make([]shipwrightv1beta1.SingleValue, 0, len(cb.Spec.BuildArgs)+1)
 	for key, val := range cb.Spec.BuildArgs {
 		arg := fmt.Sprintf("%s=%s", key, val)
-		paramValues = append(paramValues, shipwrightv1beta1.ParamValue{
-			Name:   "build-args",
-			Values: []shipwrightv1beta1.SingleValue{{Value: &arg}},
-		})
+		buildArgValues = append(buildArgValues, shipwrightv1beta1.SingleValue{Value: &arg})
 	}
-
-	// Pass architecture as build args so Dockerfiles can use TARGETARCH
+	// Pass architecture as build arg so Dockerfiles can use TARGETARCH
 	arch := cb.Spec.GetArchitecture()
 	platformArg := fmt.Sprintf("TARGETARCH=%s", arch)
+	buildArgValues = append(buildArgValues, shipwrightv1beta1.SingleValue{Value: &platformArg})
+
 	paramValues = append(paramValues, shipwrightv1beta1.ParamValue{
 		Name:   "build-args",
-		Values: []shipwrightv1beta1.SingleValue{{Value: &platformArg}},
+		Values: buildArgValues,
 	})
 
 	// Build output
@@ -357,7 +373,7 @@ func (r *ContainerBuildReconciler) buildShipwrightBuildRun(
 						Type: shipwrightv1beta1.LocalType,
 						Local: &shipwrightv1beta1.Local{
 							Name:    localName,
-							Timeout: &metav1.Duration{Duration: 3 * time.Minute},
+							Timeout: &metav1.Duration{Duration: uploadTimeout},
 						},
 					},
 					Strategy: shipwrightv1beta1.Strategy{

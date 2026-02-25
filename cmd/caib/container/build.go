@@ -19,11 +19,13 @@ package container
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -103,10 +105,14 @@ Examples:
 	return cmd
 }
 
-// getDefaultArch returns the default architecture for builds
+// getDefaultArch returns the default architecture for builds based on the host runtime
 func getDefaultArch() string {
-	// Default to amd64 for consistency
-	return archAMD64
+	switch runtime.GOARCH {
+	case archARM64:
+		return archARM64
+	default:
+		return archAMD64
+	}
 }
 
 // runBuildContainer handles the container build command
@@ -404,7 +410,12 @@ func waitForContainerBuildCompletion(ctx context.Context, name string, pb *ui.Pr
 		case <-ticker.C:
 			status, err := getContainerBuildStatus(ctx, name)
 			if err != nil {
-				handleError(fmt.Errorf("failed to get build status: %w", err))
+				pb.Render("Building", &buildapitypes.BuildStep{
+					Done:  2,
+					Total: containerBuildTotalSteps,
+					Stage: fmt.Sprintf("Status check failed: %v", err),
+				})
+				continue
 			}
 
 			done := containerBuildPhaseStep(status.Phase)
@@ -432,6 +443,25 @@ func displayContainerBuildResult(finalStatus *buildapitypes.ContainerBuildRespon
 	if finalStatus.OutputImage != "" {
 		fmt.Printf("%s %s\n", colorFormatter.LabelColor("Output image:"), colorFormatter.ValueColor(finalStatus.OutputImage))
 	}
+	if finalStatus.RegistryToken != "" {
+		credsFile, err := writeRegistryCredentialsFile(finalStatus.RegistryToken)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to write registry credentials file: %v\n", err)
+			fmt.Printf("\n%s\n", colorFormatter.LabelColor("Registry credentials (valid ~4 hours):"))
+			fmt.Printf("  %s %s\n", colorFormatter.LabelColor("Username:"), colorFormatter.ValueColor("serviceaccount"))
+			fmt.Printf("  %s %s\n", colorFormatter.LabelColor("Token:"), colorFormatter.ValueColor(finalStatus.RegistryToken))
+			fmt.Printf("\n%s\n", colorFormatter.LabelColor("To pull this image:"))
+			fmt.Printf("  %s\n", colorFormatter.CommandColor(
+				fmt.Sprintf("podman pull --creds serviceaccount:<token> %s", finalStatus.OutputImage)))
+		} else {
+			fmt.Printf("\n%s %s (valid ~4 hours)\n",
+				colorFormatter.LabelColor("Registry credentials written to:"),
+				colorFormatter.ValueColor(credsFile))
+			fmt.Printf("\n%s\n", colorFormatter.LabelColor("To pull this image:"))
+			fmt.Printf("  %s\n", colorFormatter.CommandColor(
+				fmt.Sprintf("podman pull --creds serviceaccount:$(jq -r .token %s) %s", credsFile, finalStatus.OutputImage)))
+		}
+	}
 	switch finalStatus.Phase {
 	case phaseFailed:
 		fmt.Printf("\n%s\n  %s\n", colorFormatter.LabelColor("View build logs:"), colorFormatter.CommandColor("caib container logs "+finalStatus.Name))
@@ -440,6 +470,38 @@ func displayContainerBuildResult(finalStatus *buildapitypes.ContainerBuildRespon
 		fmt.Printf("\n%s %s\n", colorFormatter.ValueColor("✓"), colorFormatter.ValueColor("Build completed successfully!"))
 	default:
 	}
+}
+
+// writeRegistryCredentialsFile writes registry credentials to a temporary file.
+func writeRegistryCredentialsFile(token string) (string, error) {
+	creds, err := json.Marshal(map[string]string{
+		"username": "serviceaccount",
+		"token":    token,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	f, err := os.CreateTemp("", "caib-registry-creds-*.json")
+	if err != nil {
+		return "", err
+	}
+	name := f.Name()
+
+	if _, err := f.Write(creds); err != nil {
+		_ = f.Close()
+		_ = os.Remove(name)
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(name)
+		return "", err
+	}
+	if err := os.Chmod(name, 0600); err != nil {
+		_ = os.Remove(name)
+		return "", err
+	}
+	return name, nil
 }
 
 // containerBuildPhaseStep maps container build phases to progress step numbers.

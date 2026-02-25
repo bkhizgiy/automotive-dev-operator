@@ -129,11 +129,25 @@ type InternalAuthConfig struct {
 	Prefix string `json:"prefix,omitempty"`
 }
 
+// ContainerBuildsConfig defines configuration for container build operations
+type ContainerBuildsConfig struct {
+	// UploadTimeoutMinutes is the maximum time in minutes to wait for source uploads
+	// before failing the build. Increase this for large build contexts.
+	// +kubebuilder:default=10
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	UploadTimeoutMinutes int32 `json:"uploadTimeoutMinutes,omitempty"`
+}
+
 // OperatorConfigSpec defines the desired state of OperatorConfig
 type OperatorConfigSpec struct {
 	// OSBuilds defines the configuration for OS build operations
 	// +optional
 	OSBuilds *OSBuildsConfig `json:"osBuilds,omitempty"`
+
+	// ContainerBuilds defines configuration for container build operations
+	// +optional
+	ContainerBuilds *ContainerBuildsConfig `json:"containerBuilds,omitempty"`
 
 	// BuildAPI defines configuration for the Build API server
 	// +optional
