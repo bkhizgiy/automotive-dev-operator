@@ -306,15 +306,19 @@ case "$BUILD_MODE" in
         emit_progress "Pushing container" "$((STEP_BUILD + 1))" "$PROGRESS_TOTAL"
         PUSH_SRC="containers-storage:$BOOTC_CONTAINER_NAME"
 
-        # Add builder-image as manifest annotation + config label
-        if [ -n "$BUILDER_IMAGE" ]; then
-          echo "Annotating bootc container with builder image: $BUILDER_IMAGE"
-          OCI_DIR="/tmp/bootc-oci"
-          rm -rf "$OCI_DIR"
-          skopeo copy "$PUSH_SRC" "oci:${OCI_DIR}:latest"
+        if [ -z "$BUILDER_IMAGE" ]; then
+          echo "Error: BUILDER_IMAGE is empty; cannot annotate bootc container"
+          exit 1
+        fi
 
-          # Use inline Python for OCI annotation (extracted from original embedded code)
-          python3 - "$OCI_DIR" "$BUILDER_IMAGE" <<'PYEOF'
+        # Add builder-image as manifest annotation + config label.
+        echo "Annotating bootc container with builder image: $BUILDER_IMAGE"
+        OCI_DIR="/tmp/bootc-oci"
+        rm -rf "$OCI_DIR"
+        skopeo copy "$PUSH_SRC" "oci:${OCI_DIR}:latest"
+
+        # Use inline Python for OCI annotation (extracted from original embedded code)
+        python3 - "$OCI_DIR" "$BUILDER_IMAGE" <<'PYEOF'
 import json, sys, hashlib, os
 from pathlib import Path
 
@@ -349,8 +353,7 @@ manifest_entry["digest"], manifest_entry["size"] = update_blob(oci_dir, manifest
 
 index_path.write_text(json.dumps(index, indent=2))
 PYEOF
-          PUSH_SRC="oci:${OCI_DIR}:latest"
-        fi
+        PUSH_SRC="oci:${OCI_DIR}:latest"
 
         echo "Pushing container to registry: $CONTAINER_PUSH"
         skopeo copy --authfile="$REGISTRY_AUTH_FILE" "$PUSH_SRC" "docker://$CONTAINER_PUSH"

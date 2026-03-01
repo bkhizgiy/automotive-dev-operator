@@ -1521,6 +1521,7 @@ func sealedTaskSpec(operation string) tektonv1.TaskSpec {
 					{Name: "WORKSPACE", Value: "/workspace/shared"},
 					{Name: "REGISTRY_AUTH_PATH", Value: "/workspace/registry-auth"},
 					{Name: "BUILDER_IMAGE", Value: "$(params.builder-image)"},
+					{Name: "AIB_IMAGE", Value: "$(params.aib-image)"},
 					{Name: "ARCHITECTURE", Value: "$(params.architecture)"},
 					{Name: "RESULT_PATH", Value: "$(results.output-container.path)"},
 				},

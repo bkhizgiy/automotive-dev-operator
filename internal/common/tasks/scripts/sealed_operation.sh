@@ -139,6 +139,16 @@ else
 fi
 echo "Architecture: $RESOLVED_ARCH"
 
+# Build the same short AIB hash suffix used by builder image naming in build tasks.
+AIB_HASH=""
+if [ -n "${AIB_IMAGE:-}" ]; then
+  if command -v sha256sum >/dev/null 2>&1; then
+    AIB_HASH=$(echo -n "$AIB_IMAGE" | sha256sum | cut -c1-8)
+  elif command -v shasum >/dev/null 2>&1; then
+    AIB_HASH=$(echo -n "$AIB_IMAGE" | shasum -a 256 | cut -c1-8)
+  fi
+fi
+
 # ── Shared helpers ──
 
 pull_source_container() {
@@ -180,7 +190,11 @@ resolve_and_pull_builder() {
     else
       local ns
       ns=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || echo "automotive-dev-operator-system")
-      builder_image="image-registry.openshift-image-registry.svc:5000/${ns}/aib-build:autosd-${RESOLVED_ARCH}"
+      if [ -n "$AIB_HASH" ]; then
+        builder_image="image-registry.openshift-image-registry.svc:5000/${ns}/aib-build:autosd-${RESOLVED_ARCH}-${AIB_HASH}"
+      else
+        builder_image="image-registry.openshift-image-registry.svc:5000/${ns}/aib-build:autosd-${RESOLVED_ARCH}"
+      fi
       echo "No annotation found, using default builder image: $builder_image"
     fi
   else
