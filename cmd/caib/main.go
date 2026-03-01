@@ -549,7 +549,7 @@ Example:
 	buildCmd.Flags().StringArrayVarP(&customDefs, "define", "D", []string{}, "custom definition KEY=VALUE")
 	buildCmd.Flags().StringArrayVar(&aibExtraArgs, "extra-args", []string{}, "extra arguments to pass to AIB (can be repeated)")
 	buildCmd.Flags().IntVar(&timeout, "timeout", 60, "timeout in minutes")
-	buildCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", false, "wait for build to complete")
+	buildCmd.Flags().BoolVarP(&waitForBuild, "wait", "w", true, "wait for build to complete")
 	buildCmd.Flags().BoolVarP(&followLogs, "follow", "f", false, "follow build logs (shows full log output instead of progress bar)")
 	// Note: --push is optional when --disk is used (disk image becomes the output)
 	// Jumpstarter flash options
@@ -975,8 +975,22 @@ func displayBuildLogsCommand(buildName string) {
 	fmt.Printf("\n%s\n  %s\n\n", labelColor("View build logs:"), commandColor("caib logs "+buildName))
 }
 
+func applyWaitFollowDefaults(cmd *cobra.Command, defaultWait, defaultFollow bool) {
+	if cmd == nil {
+		return
+	}
+	if !cmd.Flags().Changed("wait") {
+		waitForBuild = defaultWait
+	}
+	if !cmd.Flags().Changed("follow") {
+		followLogs = defaultFollow
+	}
+}
+
 // runBuild handles the main 'build' command (bootc builds)
 func runBuild(cmd *cobra.Command, args []string) {
+	applyWaitFollowDefaults(cmd, true, false)
+
 	ctx := context.Background()
 	manifest = args[0]
 
@@ -1072,6 +1086,8 @@ func runBuild(cmd *cobra.Command, args []string) {
 }
 
 func runDisk(cmd *cobra.Command, args []string) {
+	applyWaitFollowDefaults(cmd, false, false)
+
 	ctx := context.Background()
 	containerRef = args[0]
 
@@ -1500,6 +1516,8 @@ func copyFile(srcPath, dstPath string) error {
 
 // runBuildDev handles the 'build-dev' command (traditional ostree/package builds)
 func runBuildDev(cmd *cobra.Command, args []string) {
+	applyWaitFollowDefaults(cmd, false, false)
+
 	ctx := context.Background()
 	manifest = args[0]
 
@@ -2693,7 +2711,9 @@ func parseLeaseDuration(duration string) time.Duration {
 }
 
 // runFlash handles the standalone 'flash' command
-func runFlash(_ *cobra.Command, args []string) {
+func runFlash(cmd *cobra.Command, args []string) {
+	applyWaitFollowDefaults(cmd, true, false)
+
 	ctx := context.Background()
 	imageRef := args[0]
 
@@ -3093,7 +3113,9 @@ func resolveSealedThreeRefs(args []string) (inputRef, signedRef, outputRef strin
 	return in, signed, out, nil
 }
 
-func runPrepareReseal(_ *cobra.Command, args []string) {
+func runPrepareReseal(cmd *cobra.Command, args []string) {
+	applyWaitFollowDefaults(cmd, false, true)
+
 	inputRef, outputRef, err := resolveSealedTwoRefs(args)
 	if err != nil {
 		handleError(err)
@@ -3101,7 +3123,9 @@ func runPrepareReseal(_ *cobra.Command, args []string) {
 	sealedRunViaAPI(buildapitypes.SealedPrepareReseal, inputRef, outputRef, "")
 }
 
-func runReseal(_ *cobra.Command, args []string) {
+func runReseal(cmd *cobra.Command, args []string) {
+	applyWaitFollowDefaults(cmd, false, true)
+
 	inputRef, outputRef, err := resolveSealedTwoRefs(args)
 	if err != nil {
 		handleError(err)
@@ -3109,7 +3133,9 @@ func runReseal(_ *cobra.Command, args []string) {
 	sealedRunViaAPI(buildapitypes.SealedReseal, inputRef, outputRef, "")
 }
 
-func runExtractForSigning(_ *cobra.Command, args []string) {
+func runExtractForSigning(cmd *cobra.Command, args []string) {
+	applyWaitFollowDefaults(cmd, false, true)
+
 	inputRef, outputRef, err := resolveSealedTwoRefs(args)
 	if err != nil {
 		handleError(err)
@@ -3117,7 +3143,9 @@ func runExtractForSigning(_ *cobra.Command, args []string) {
 	sealedRunViaAPI(buildapitypes.SealedExtractForSigning, inputRef, outputRef, "")
 }
 
-func runInjectSigned(_ *cobra.Command, args []string) {
+func runInjectSigned(cmd *cobra.Command, args []string) {
+	applyWaitFollowDefaults(cmd, false, true)
+
 	inputRef, signedRef, outputRef, err := resolveSealedThreeRefs(args)
 	if err != nil {
 		handleError(err)
