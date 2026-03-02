@@ -1,0 +1,70 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"net/url"
+	"strings"
+
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/auth"
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/config"
+	"github.com/spf13/cobra"
+)
+
+// runLogin saves the server URL and optionally performs OIDC authentication.
+func runLogin(_ *cobra.Command, args []string) {
+	raw := strings.TrimSpace(args[0])
+	if raw == "" {
+		handleError(fmt.Errorf("server URL is required"))
+		return
+	}
+	server := raw
+	if !strings.HasPrefix(server, "http://") && !strings.HasPrefix(server, "https://") {
+		server = "https://" + server
+	}
+
+	parsedURL, err := url.Parse(server)
+	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
+		handleError(fmt.Errorf("invalid server URL %q", server))
+		return
+	}
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		handleError(fmt.Errorf("invalid server URL %q: scheme must be http or https", server))
+		return
+	}
+	if parsedURL.User != nil {
+		handleError(fmt.Errorf("server URL must not include credentials"))
+		return
+	}
+	if parsedURL.RawQuery != "" {
+		handleError(fmt.Errorf("server URL must not include query parameters"))
+		return
+	}
+	if parsedURL.Fragment != "" {
+		handleError(fmt.Errorf("server URL must not include fragments"))
+		return
+	}
+	if parsedURL.Path != "" && parsedURL.Path != "/" {
+		handleError(fmt.Errorf("server URL must not include a non-root path"))
+		return
+	}
+	server = parsedURL.Scheme + "://" + parsedURL.Host
+
+	if err := config.SaveServerURL(server); err != nil {
+		handleError(fmt.Errorf("failed to save server URL: %w", err))
+		return
+	}
+	fmt.Printf("Server saved: %s\n", server)
+
+	ctx := context.Background()
+	token, didAuth, err := auth.GetTokenWithReauth(ctx, server, "", insecureSkipTLS)
+	if err != nil {
+		fmt.Printf("Warning: authentication failed (you may need --token or kubeconfig for API calls): %v\n", err)
+		return
+	}
+	if token != "" && didAuth {
+		fmt.Println("OIDC authentication successful. Token cached for subsequent commands.")
+	} else if token != "" {
+		fmt.Println("Using existing or kubeconfig token. You can run build/list/disk commands without --server.")
+	}
+}

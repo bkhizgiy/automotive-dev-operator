@@ -1,0 +1,278 @@
+package main
+
+import (
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/buildcmd"
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/downloadcmd"
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/flashcmd"
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/image"
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/querycmd"
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/sealedcmd"
+)
+
+type runtimeState struct {
+	ServerURL              *string
+	Manifest               *string
+	BuildName              *string
+	ShowOutputFormat       *string
+	Distro                 *string
+	Target                 *string
+	Architecture           *string
+	ExportFormat           *string
+	Mode                   *string
+	AutomotiveImageBuilder *string
+	StorageClass           *string
+	OutputDir              *string
+	Timeout                *int
+	WaitForBuild           *bool
+	CustomDefs             *[]string
+	AIBExtraArgs           *[]string
+	FollowLogs             *bool
+	CompressionAlgo        *string
+	AuthToken              *string
+
+	ContainerPush    *string
+	BuildDiskImage   *bool
+	DiskFormat       *string
+	ExportOCI        *string
+	BuilderImage     *string
+	RegistryAuthFile *string
+	ContainerRef     *string
+	RebuildBuilder   *bool
+
+	FlashAfterBuild   *bool
+	JumpstarterClient *string
+	FlashName         *string
+	ExporterSelector  *string
+	LeaseDuration     *string
+
+	UseInternalRegistry       *bool
+	InternalRegistryImageName *string
+	InternalRegistryTag       *string
+
+	InsecureSkipTLS *bool
+
+	SealedBuilderImage      *string
+	SealedArchitecture      *string
+	SealedKeySecret         *string
+	SealedKeyPasswordSecret *string
+	SealedKeyFile           *string
+	SealedKeyPassword       *string
+	SealedInputRef          *string
+	SealedOutputRef         *string
+	SealedSignedRef         *string
+}
+
+func newRuntimeState() runtimeState {
+	return runtimeState{
+		ServerURL:              &serverURL,
+		Manifest:               &manifest,
+		BuildName:              &buildName,
+		ShowOutputFormat:       &showOutputFormat,
+		Distro:                 &distro,
+		Target:                 &target,
+		Architecture:           &architecture,
+		ExportFormat:           &exportFormat,
+		Mode:                   &mode,
+		AutomotiveImageBuilder: &automotiveImageBuilder,
+		StorageClass:           &storageClass,
+		OutputDir:              &outputDir,
+		Timeout:                &timeout,
+		WaitForBuild:           &waitForBuild,
+		CustomDefs:             &customDefs,
+		AIBExtraArgs:           &aibExtraArgs,
+		FollowLogs:             &followLogs,
+		CompressionAlgo:        &compressionAlgo,
+		AuthToken:              &authToken,
+
+		ContainerPush:    &containerPush,
+		BuildDiskImage:   &buildDiskImage,
+		DiskFormat:       &diskFormat,
+		ExportOCI:        &exportOCI,
+		BuilderImage:     &builderImage,
+		RegistryAuthFile: &registryAuthFile,
+		ContainerRef:     &containerRef,
+		RebuildBuilder:   &rebuildBuilder,
+
+		FlashAfterBuild:   &flashAfterBuild,
+		JumpstarterClient: &jumpstarterClient,
+		FlashName:         &flashName,
+		ExporterSelector:  &exporterSelector,
+		LeaseDuration:     &leaseDuration,
+
+		UseInternalRegistry:       &useInternalRegistry,
+		InternalRegistryImageName: &internalRegistryImageName,
+		InternalRegistryTag:       &internalRegistryTag,
+
+		InsecureSkipTLS: &insecureSkipTLS,
+
+		SealedBuilderImage:      &sealedBuilderImage,
+		SealedArchitecture:      &sealedArchitecture,
+		SealedKeySecret:         &sealedKeySecret,
+		SealedKeyPasswordSecret: &sealedKeyPasswordSecret,
+		SealedKeyFile:           &sealedKeyFile,
+		SealedKeyPassword:       &sealedKeyPassword,
+		SealedInputRef:          &sealedInputRef,
+		SealedOutputRef:         &sealedOutputRef,
+		SealedSignedRef:         &sealedSignedRef,
+	}
+}
+
+type handlerSet struct {
+	build    *buildcmd.Handler
+	query    *querycmd.Handler
+	download *downloadcmd.Handler
+	flash    *flashcmd.Handler
+	sealed   *sealedcmd.Handler
+}
+
+func (s runtimeState) newHandlers() handlerSet {
+	return handlerSet{
+		build: buildcmd.NewHandler(buildcmd.Options{
+			ServerURL:                 s.ServerURL,
+			Manifest:                  s.Manifest,
+			BuildName:                 s.BuildName,
+			Distro:                    s.Distro,
+			Target:                    s.Target,
+			Architecture:              s.Architecture,
+			ExportFormat:              s.ExportFormat,
+			Mode:                      s.Mode,
+			AutomotiveImageBuilder:    s.AutomotiveImageBuilder,
+			StorageClass:              s.StorageClass,
+			OutputDir:                 s.OutputDir,
+			Timeout:                   s.Timeout,
+			WaitForBuild:              s.WaitForBuild,
+			CustomDefs:                s.CustomDefs,
+			AIBExtraArgs:              s.AIBExtraArgs,
+			FollowLogs:                s.FollowLogs,
+			CompressionAlgo:           s.CompressionAlgo,
+			AuthToken:                 s.AuthToken,
+			ContainerPush:             s.ContainerPush,
+			BuildDiskImage:            s.BuildDiskImage,
+			DiskFormat:                s.DiskFormat,
+			ExportOCI:                 s.ExportOCI,
+			BuilderImage:              s.BuilderImage,
+			RegistryAuthFile:          s.RegistryAuthFile,
+			ContainerRef:              s.ContainerRef,
+			RebuildBuilder:            s.RebuildBuilder,
+			FlashAfterBuild:           s.FlashAfterBuild,
+			JumpstarterClient:         s.JumpstarterClient,
+			LeaseDuration:             s.LeaseDuration,
+			UseInternalRegistry:       s.UseInternalRegistry,
+			InternalRegistryImageName: s.InternalRegistryImageName,
+			InternalRegistryTag:       s.InternalRegistryTag,
+			InsecureSkipTLS:           s.InsecureSkipTLS,
+			HandleError:               handleError,
+		}),
+		query: querycmd.NewHandler(querycmd.Options{
+			ServerURL:        s.ServerURL,
+			AuthToken:        s.AuthToken,
+			ShowOutputFormat: s.ShowOutputFormat,
+			InsecureSkipTLS:  s.InsecureSkipTLS,
+			HandleError:      handleError,
+		}),
+		download: downloadcmd.NewHandler(downloadcmd.Options{
+			ServerURL:       s.ServerURL,
+			AuthToken:       s.AuthToken,
+			OutputDir:       s.OutputDir,
+			InsecureSkipTLS: s.InsecureSkipTLS,
+			HandleError:     handleError,
+		}),
+		flash: flashcmd.NewHandler(flashcmd.Options{
+			ServerURL:         s.ServerURL,
+			AuthToken:         s.AuthToken,
+			JumpstarterClient: s.JumpstarterClient,
+			FlashName:         s.FlashName,
+			Target:            s.Target,
+			ExporterSelector:  s.ExporterSelector,
+			LeaseDuration:     s.LeaseDuration,
+			WaitForBuild:      s.WaitForBuild,
+			FollowLogs:        s.FollowLogs,
+			InsecureSkipTLS:   s.InsecureSkipTLS,
+			HandleError:       handleError,
+		}),
+		sealed: sealedcmd.NewHandler(sealedcmd.Options{
+			ServerURL:               s.ServerURL,
+			AuthToken:               s.AuthToken,
+			AutomotiveImageBuilder:  s.AutomotiveImageBuilder,
+			SealedBuilderImage:      s.SealedBuilderImage,
+			SealedArchitecture:      s.SealedArchitecture,
+			AIBExtraArgs:            s.AIBExtraArgs,
+			WaitForBuild:            s.WaitForBuild,
+			FollowLogs:              s.FollowLogs,
+			Timeout:                 s.Timeout,
+			SealedKeySecret:         s.SealedKeySecret,
+			SealedKeyPasswordSecret: s.SealedKeyPasswordSecret,
+			SealedKeyFile:           s.SealedKeyFile,
+			SealedKeyPassword:       s.SealedKeyPassword,
+			SealedInputRef:          s.SealedInputRef,
+			SealedOutputRef:         s.SealedOutputRef,
+			SealedSignedRef:         s.SealedSignedRef,
+			InsecureSkipTLS:         s.InsecureSkipTLS,
+			HandleError:             handleError,
+		}),
+	}
+}
+
+func (s runtimeState) imageOptions(h handlerSet) image.Options {
+	return image.Options{
+		RunBuild:             h.build.RunBuild,
+		RunDisk:              h.build.RunDisk,
+		RunBuildDev:          h.build.RunBuildDev,
+		RunList:              h.query.RunList,
+		RunShow:              h.query.RunShow,
+		RunDownload:          h.download.RunDownload,
+		RunLogs:              h.build.RunLogs,
+		RunFlash:             h.flash.RunFlash,
+		RunPrepareReseal:     h.sealed.RunPrepareReseal,
+		RunReseal:            h.sealed.RunReseal,
+		RunExtractForSigning: h.sealed.RunExtractForSigning,
+		RunInjectSigned:      h.sealed.RunInjectSigned,
+		GetDefaultArch:       getDefaultArch,
+
+		ServerURL:              s.ServerURL,
+		AuthToken:              s.AuthToken,
+		BuildName:              s.BuildName,
+		ShowOutputFormat:       s.ShowOutputFormat,
+		Distro:                 s.Distro,
+		Target:                 s.Target,
+		Architecture:           s.Architecture,
+		ExportFormat:           s.ExportFormat,
+		Mode:                   s.Mode,
+		AutomotiveImageBuilder: s.AutomotiveImageBuilder,
+		StorageClass:           s.StorageClass,
+		OutputDir:              s.OutputDir,
+		Timeout:                s.Timeout,
+		WaitForBuild:           s.WaitForBuild,
+		CustomDefs:             s.CustomDefs,
+		AIBExtraArgs:           s.AIBExtraArgs,
+		FollowLogs:             s.FollowLogs,
+		CompressionAlgo:        s.CompressionAlgo,
+		ContainerPush:          s.ContainerPush,
+		BuildDiskImage:         s.BuildDiskImage,
+		DiskFormat:             s.DiskFormat,
+		ExportOCI:              s.ExportOCI,
+		BuilderImage:           s.BuilderImage,
+		RegistryAuthFile:       s.RegistryAuthFile,
+		RebuildBuilder:         s.RebuildBuilder,
+
+		FlashAfterBuild:   s.FlashAfterBuild,
+		JumpstarterClient: s.JumpstarterClient,
+		FlashName:         s.FlashName,
+		ExporterSelector:  s.ExporterSelector,
+		LeaseDuration:     s.LeaseDuration,
+
+		UseInternalRegistry:       s.UseInternalRegistry,
+		InternalRegistryImageName: s.InternalRegistryImageName,
+		InternalRegistryTag:       s.InternalRegistryTag,
+
+		SealedBuilderImage:      s.SealedBuilderImage,
+		SealedArchitecture:      s.SealedArchitecture,
+		SealedKeySecret:         s.SealedKeySecret,
+		SealedKeyPasswordSecret: s.SealedKeyPasswordSecret,
+		SealedKeyFile:           s.SealedKeyFile,
+		SealedKeyPassword:       s.SealedKeyPassword,
+		SealedInputRef:          s.SealedInputRef,
+		SealedOutputRef:         s.SealedOutputRef,
+		SealedSignedRef:         s.SealedSignedRef,
+	}
+}
