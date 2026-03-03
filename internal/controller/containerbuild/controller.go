@@ -16,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -60,8 +61,9 @@ func safeDerivedName(baseName, suffix string) string {
 //nolint:revive // Name follows Kubebuilder convention for reconcilers
 type ContainerBuildReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Log    logr.Logger
+	Scheme   *runtime.Scheme
+	Log      logr.Logger
+	Recorder record.EventRecorder
 }
 
 //+kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=containerbuilds,verbs=get;list;watch;create;update;patch;delete
@@ -72,6 +74,7 @@ type ContainerBuildReconciler struct {
 //+kubebuilder:rbac:groups=shipwright.io,resources=builds,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=pods/exec,verbs=create
+//+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile handles the reconciliation loop for ContainerBuild resources.
 func (r *ContainerBuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -136,6 +139,16 @@ func (r *ContainerBuildReconciler) reconcilePending(
 		}
 		return ctrl.Result{}, fmt.Errorf("creating BuildRun: %w", err)
 	}
+	r.emitEventf(
+		cb,
+		corev1.EventTypeNormal,
+		"BuildRunCreated",
+		"BuildRun created: name=%s strategy=%s arch=%s output=%s",
+		buildRunName,
+		cb.Spec.GetStrategy(),
+		cb.Spec.GetArchitecture(),
+		cb.Spec.Output,
+	)
 
 	log.Info("BuildRun created", "buildRun", buildRunName)
 	return r.updatePhase(ctx, cb, phaseUploading, buildRunName, "Waiting for source upload")
@@ -213,6 +226,13 @@ func (r *ContainerBuildReconciler) reconcileUploading(
 			if err := r.Status().Patch(ctx, cb, client.MergeFrom(original)); err != nil {
 				return ctrl.Result{}, err
 			}
+			r.emitEventf(
+				cb,
+				corev1.EventTypeNormal,
+				"UploadCompleted",
+				"Source upload completed, build started: buildRun=%s",
+				cb.Status.BuildRunName,
+			)
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 		// Waiter failed
@@ -261,6 +281,14 @@ func (r *ContainerBuildReconciler) reconcileBuilding(
 				if err := r.Status().Patch(ctx, cb, client.MergeFrom(original)); err != nil {
 					return ctrl.Result{}, err
 				}
+				r.emitEventf(
+					cb,
+					corev1.EventTypeNormal,
+					"ContainerBuildCompleted",
+					"Container image build completed: buildRun=%s digest=%s",
+					cb.Status.BuildRunName,
+					cb.Status.ImageDigest,
+				)
 				return ctrl.Result{}, nil
 			}
 			if condition.Status == corev1.ConditionFalse {
@@ -273,6 +301,14 @@ func (r *ContainerBuildReconciler) reconcileBuilding(
 				if err := r.Status().Patch(ctx, cb, client.MergeFrom(original)); err != nil {
 					return ctrl.Result{}, err
 				}
+				r.emitEventf(
+					cb,
+					corev1.EventTypeWarning,
+					"ContainerBuildFailed",
+					"Container image build failed: buildRun=%s message=%s",
+					cb.Status.BuildRunName,
+					condition.Message,
+				)
 				return ctrl.Result{}, nil
 			}
 		}
@@ -288,6 +324,8 @@ func (r *ContainerBuildReconciler) updatePhase(
 	phase, buildRunName, message string,
 ) (ctrl.Result, error) {
 	original := cb.DeepCopy()
+	oldPhase := cb.Status.Phase
+	oldMessage := cb.Status.Message
 	cb.Status.Phase = phase
 	cb.Status.Message = message
 	if buildRunName != "" {
@@ -300,10 +338,40 @@ func (r *ContainerBuildReconciler) updatePhase(
 	if err := r.Status().Patch(ctx, cb, client.MergeFrom(original)); err != nil {
 		return ctrl.Result{}, err
 	}
+	if oldPhase != phase || oldMessage != message {
+		r.emitEventf(
+			cb,
+			eventTypeForContainerPhase(phase),
+			"PhaseChanged",
+			"Phase transitioned: %s -> %s, message=%s, buildRun=%s",
+			oldPhase,
+			phase,
+			message,
+			cb.Status.BuildRunName,
+		)
+	}
 	if phase == phaseFailed || phase == phaseCompleted {
 		return ctrl.Result{}, nil
 	}
 	return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+}
+
+func eventTypeForContainerPhase(phase string) string {
+	if phase == phaseFailed {
+		return corev1.EventTypeWarning
+	}
+	return corev1.EventTypeNormal
+}
+
+func (r *ContainerBuildReconciler) emitEventf(
+	cb *automotivev1alpha1.ContainerBuild,
+	eventType, reason, messageFmt string,
+	args ...interface{},
+) {
+	if r.Recorder == nil || cb == nil {
+		return
+	}
+	r.Recorder.Eventf(cb, eventType, reason, messageFmt, args...)
 }
 
 func (r *ContainerBuildReconciler) buildShipwrightBuildRun(
