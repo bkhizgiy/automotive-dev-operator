@@ -207,6 +207,7 @@ func (s runtimeState) newHandlers() handlerSet {
 			SealedInputRef:          s.SealedInputRef,
 			SealedOutputRef:         s.SealedOutputRef,
 			SealedSignedRef:         s.SealedSignedRef,
+			RegistryAuthFile:        s.RegistryAuthFile,
 			InsecureSkipTLS:         s.InsecureSkipTLS,
 			HandleError:             handleError,
 		}),

@@ -78,18 +78,31 @@ REGISTRY_AUTH_DIR="${REGISTRY_AUTH_PATH:-/workspace/registry-auth}"
 REGISTRY_URL=""
 REGISTRY_USERNAME=""
 REGISTRY_PASSWORD=""
-if [ -f "$REGISTRY_AUTH_DIR/REGISTRY_URL" ]; then
-  REGISTRY_URL=$(cat "$REGISTRY_AUTH_DIR/REGISTRY_URL")
-fi
-if [ -f "$REGISTRY_AUTH_DIR/REGISTRY_USERNAME" ]; then
-  REGISTRY_USERNAME=$(cat "$REGISTRY_AUTH_DIR/REGISTRY_USERNAME")
-fi
-if [ -f "$REGISTRY_AUTH_DIR/REGISTRY_PASSWORD" ]; then
-  REGISTRY_PASSWORD=$(cat "$REGISTRY_AUTH_DIR/REGISTRY_PASSWORD")
-fi
+REGISTRY_AUTH_FILE_CONTENT=""
+read_registry_creds "$REGISTRY_AUTH_DIR"
 
 ORAS_REGISTRY_CONFIG=""
-if [ -n "$REGISTRY_USERNAME" ] && [ -n "$REGISTRY_PASSWORD" ] && [ -n "$REGISTRY_URL" ]; then
+if [ -n "$REGISTRY_AUTH_FILE_CONTENT" ]; then
+  echo "Using provided registry auth file content"
+  echo "$REGISTRY_AUTH_FILE_CONTENT" > "$HOME/.custom_authjson"
+  # Merge SA token for internal registry access if available
+  if [ -n "$TOKEN" ]; then
+    SA_AUTH_B64=$(echo -n "serviceaccount:$TOKEN" | base64 -w0)
+    python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    cfg = json.load(f)
+cfg.setdefault('auths', {})[sys.argv[2]] = {'auth': sys.argv[3]}
+with open(sys.argv[1], 'w') as f:
+    json.dump(cfg, f)
+" "$HOME/.custom_authjson" "$REGISTRY" "$SA_AUTH_B64" 2>/dev/null || true
+  fi
+  chmod 600 "$HOME/.custom_authjson"
+  export REGISTRY_AUTH_FILE="$HOME/.custom_authjson"
+  ORAS_REGISTRY_CONFIG="$WORKSPACE/.oras-auth.json"
+  cp "$REGISTRY_AUTH_FILE" "$ORAS_REGISTRY_CONFIG"
+  chmod 600 "$ORAS_REGISTRY_CONFIG"
+elif [ -n "$REGISTRY_USERNAME" ] && [ -n "$REGISTRY_PASSWORD" ] && [ -n "$REGISTRY_URL" ]; then
   echo "Creating registry auth from username/password for $REGISTRY_URL"
   AUTH_STRING=$(echo -n "$REGISTRY_USERNAME:$REGISTRY_PASSWORD" | base64 -w0)
   SA_AUTH=""

@@ -13,13 +13,13 @@ import (
 	"time"
 
 	common "github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/common"
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/registryauth"
 	buildapitypes "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi"
 	buildapiclient "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi/client"
 	"github.com/spf13/cobra"
 )
 
 const (
-	defaultRegistry     = "docker.io"
 	phaseCompleted      = "Completed"
 	phaseFailed         = "Failed"
 	phasePending        = "Pending"
@@ -47,8 +47,9 @@ type Options struct {
 	SealedOutputRef         *string
 	SealedSignedRef         *string
 
-	InsecureSkipTLS *bool
-	HandleError     func(error)
+	RegistryAuthFile *string
+	InsecureSkipTLS  *bool
+	HandleError      func(error)
 }
 
 // Handler implements sealed command run functions.
@@ -77,31 +78,6 @@ func (h *Handler) applyWaitFollowDefaults(cmd *cobra.Command) {
 	if !cmd.Flags().Changed("follow") {
 		*h.opts.FollowLogs = true
 	}
-}
-
-func sealedRegistryCredentials(refs ...string) (registryURL, username, password string) {
-	username = strings.TrimSpace(os.Getenv("REGISTRY_USERNAME"))
-	password = strings.TrimSpace(os.Getenv("REGISTRY_PASSWORD"))
-	if username == "" || password == "" {
-		return "", "", ""
-	}
-
-	for _, ref := range refs {
-		ref = strings.TrimSpace(ref)
-		if ref == "" {
-			continue
-		}
-		parts := strings.SplitN(ref, "/", 2)
-		if len(parts) < 2 {
-			return defaultRegistry, username, password
-		}
-		first := parts[0]
-		if strings.Contains(first, ".") || strings.Contains(first, ":") || first == "localhost" {
-			return first, username, password
-		}
-		return defaultRegistry, username, password
-	}
-	return "", "", ""
 }
 
 // RunPrepareReseal handles `caib image prepare-reseal`.
@@ -163,15 +139,17 @@ func (h *Handler) sealedBuildRequest(
 		AIBExtraArgs: *h.opts.AIBExtraArgs,
 	}
 
-	if regURL, user, pass := sealedRegistryCredentials(inputRef, outputRef, signedRef); regURL != "" {
-		req.RegistryCredentials = &buildapitypes.RegistryCredentials{
-			Enabled:     true,
-			AuthType:    "username-password",
-			RegistryURL: regURL,
-			Username:    user,
-			Password:    pass,
-		}
+	registryURL, username, password := registryauth.ExtractRegistryCredentials(inputRef, outputRef)
+	registryCreds, err := registryauth.ResolveRegistryCredentials(
+		registryURL,
+		username,
+		password,
+		*h.opts.RegistryAuthFile,
+	)
+	if err != nil {
+		return req, err
 	}
+	req.RegistryCredentials = registryCreds
 
 	if keyFile := strings.TrimSpace(*h.opts.SealedKeyFile); keyFile != "" {
 		keyData, err := os.ReadFile(keyFile)

@@ -486,6 +486,12 @@ func addSealedFlags(cmd *cobra.Command, opts Options) {
 	cmd.Flags().StringVar(opts.SealedInputRef, "input", "", "Input/source container or artifact ref")
 	cmd.Flags().StringVar(opts.SealedOutputRef, "output", "", "Output container or artifact ref")
 	cmd.Flags().StringVar(
+		opts.RegistryAuthFile,
+		"registry-auth-file",
+		"",
+		"path to Docker/Podman auth file for registry authentication (takes precedence over env vars and auto-discovery)",
+	)
+	cmd.Flags().StringVar(
 		opts.AutomotiveImageBuilder, "aib-image",
 		"quay.io/centos-sig-automotive/automotive-image-builder:latest", "AIB container image",
 	)
