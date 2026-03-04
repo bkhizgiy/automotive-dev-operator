@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	kuberneteslib "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -34,6 +35,7 @@ const (
 	OperatorNamespace = "automotive-dev-operator-system"
 
 	// Phase constants for ImageBuild status
+	phaseBuilding  = "Building"
 	phaseCompleted = "Completed"
 	phaseFailed    = "Failed"
 
@@ -41,6 +43,21 @@ const (
 	conditionSucceeded = "Succeeded"
 
 	maxK8sNameLength = 63
+)
+
+const (
+	eventReasonPhaseChanged     = "PhaseChanged"
+	eventReasonPipelineRunReady = "PipelineRunReady"
+	eventReasonUploadPodReady   = "UploadPodReady"
+	eventReasonBuildCompleted   = "BuildCompleted"
+	eventReasonBuildStarted     = "BuildStarted"
+	eventReasonBuildRunning     = "BuildRunning"
+	eventReasonBuildFailed      = "BuildFailed"
+	eventReasonUploadStarted    = "UploadStarted"
+	eventReasonDiskBuildStarted = "DiskBuildStarted"
+	eventReasonDiskBuildRunning = "DiskBuildRunning"
+	eventReasonDiskBuildFailed  = "DiskBuildFailed"
+	eventReasonDiskBuildDone    = "DiskBuildCompleted"
 )
 
 // safeDerivedName generates a Kubernetes-safe derived resource name by truncating
@@ -77,6 +94,7 @@ type ImageBuildReconciler struct {
 	APIReader  client.Reader
 	Scheme     *runtime.Scheme
 	Log        logr.Logger
+	Recorder   record.EventRecorder
 	RestConfig *rest.Config
 }
 
@@ -96,6 +114,7 @@ type ImageBuildReconciler struct {
 // +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile handles ImageBuild reconciliation and manages the build lifecycle
 func (r *ImageBuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -111,7 +130,7 @@ func (r *ImageBuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return r.handleInitialState(ctx, imageBuild)
 	case "Uploading":
 		return r.handleUploadingState(ctx, imageBuild)
-	case "Building":
+	case phaseBuilding:
 		return r.handleBuildingState(ctx, imageBuild)
 	case "Pushing":
 		// Legacy phase - push is now part of the pipeline
@@ -150,7 +169,7 @@ func (r *ImageBuildReconciler) handleInitialState(
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	if err := r.updateStatus(ctx, imageBuild, "Building", "Build started"); err != nil {
+	if err := r.updateStatus(ctx, imageBuild, phaseBuilding, "Build started"); err != nil {
 		log.Error(err, "Failed to update status to Building")
 		return ctrl.Result{}, err
 	}
@@ -200,7 +219,7 @@ func (r *ImageBuildReconciler) handleUploadingState(
 		return ctrl.Result{}, fmt.Errorf("failed to shutdown upload server: %w", err)
 	}
 
-	if err := r.updateStatus(ctx, imageBuild, "Building", "Build started"); err != nil {
+	if err := r.updateStatus(ctx, imageBuild, phaseBuilding, "Build started"); err != nil {
 		log.Error(err, "Failed to update status to Building")
 		return ctrl.Result{}, err
 	}
@@ -330,6 +349,17 @@ func (r *ImageBuildReconciler) checkBuildProgress(
 			log.Error(err, "Failed to patch status to Completed")
 			return ctrl.Result{}, err
 		}
+		r.emitEventf(
+			fresh,
+			corev1.EventTypeNormal,
+			eventReasonBuildCompleted,
+			"Build completed successfully: mode=%s target=%s arch=%s toDisk=%t pipelineRun=%s",
+			fresh.Spec.GetMode(),
+			fresh.Spec.GetTarget(),
+			fresh.Spec.Architecture,
+			fresh.Spec.GetBuildDiskImage(),
+			pipelineRun.Name,
+		)
 
 		// Cleanup transient secrets
 		r.cleanupTransientSecrets(ctx, imageBuild, r.Log)
@@ -842,6 +872,18 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 	if err := r.Status().Update(ctx, fresh); err != nil {
 		return fmt.Errorf("failed to update ImageBuild with PipelineRun name: %w", err)
 	}
+	r.emitEventf(
+		fresh,
+		corev1.EventTypeNormal,
+		eventReasonPipelineRunReady,
+		"PipelineRun created: name=%s mode=%s target=%s arch=%s toDisk=%t flash=%t",
+		pipelineRun.Name,
+		fresh.Spec.GetMode(),
+		fresh.Spec.GetTarget(),
+		fresh.Spec.Architecture,
+		fresh.Spec.GetBuildDiskImage(),
+		fresh.Spec.IsFlashEnabled(),
+	)
 
 	log.Info("Successfully created PipelineRun", "name", pipelineRun.Name)
 	return nil
@@ -1602,6 +1644,14 @@ func (r *ImageBuildReconciler) createUploadPod(ctx context.Context, imageBuild *
 	if err := r.Create(ctx, pod); err != nil && !errors.IsAlreadyExists(err) {
 		return fmt.Errorf("failed to create upload pod: %w", err)
 	}
+	r.emitEventf(
+		imageBuild,
+		corev1.EventTypeNormal,
+		eventReasonUploadPodReady,
+		"Upload pod ready: pod=%s pvc=%s",
+		podName,
+		workspacePVCName,
+	)
 
 	log.Info("Created upload pod, will check status on next reconciliation", "pod", podName)
 	return nil
@@ -1644,11 +1694,13 @@ func (r *ImageBuildReconciler) updateStatus(
 	}
 
 	patch := client.MergeFrom(fresh.DeepCopy())
+	oldPhase := fresh.Status.Phase
+	oldMessage := fresh.Status.Message
 
 	fresh.Status.Phase = phase
 	fresh.Status.Message = message
 
-	if phase == "Building" && fresh.Status.StartTime == nil {
+	if phase == phaseBuilding && fresh.Status.StartTime == nil {
 		now := metav1.Now()
 		fresh.Status.StartTime = &now
 	} else if (phase == phaseCompleted || phase == phaseFailed) && fresh.Status.CompletionTime == nil {
@@ -1656,7 +1708,144 @@ func (r *ImageBuildReconciler) updateStatus(
 		fresh.Status.CompletionTime = &now
 	}
 
-	return r.Status().Patch(ctx, fresh, patch)
+	if err := r.Status().Patch(ctx, fresh, patch); err != nil {
+		return err
+	}
+	if oldPhase != phase || oldMessage != message {
+		r.emitEventf(
+			fresh,
+			eventTypeForPhase(phase),
+			eventReasonPhaseChanged,
+			"Phase transitioned: %s -> %s, message=%s, mode=%s target=%s arch=%s toDisk=%t",
+			oldPhase,
+			phase,
+			message,
+			fresh.Spec.GetMode(),
+			fresh.Spec.GetTarget(),
+			fresh.Spec.Architecture,
+			fresh.Spec.GetBuildDiskImage(),
+		)
+		r.emitImageBuildLifecycleEvent(fresh, oldPhase, phase, message)
+	}
+	return nil
+}
+
+func (r *ImageBuildReconciler) emitImageBuildLifecycleEvent(
+	imageBuild *automotivev1alpha1.ImageBuild,
+	oldPhase, newPhase, message string,
+) {
+	switch newPhase {
+	case "Uploading":
+		r.emitEventf(
+			imageBuild,
+			corev1.EventTypeNormal,
+			eventReasonUploadStarted,
+			"Upload started: mode=%s target=%s arch=%s toDisk=%t message=%s",
+			imageBuild.Spec.GetMode(),
+			imageBuild.Spec.GetTarget(),
+			imageBuild.Spec.Architecture,
+			imageBuild.Spec.GetBuildDiskImage(),
+			message,
+		)
+	case phaseBuilding:
+		reason := eventReasonBuildStarted
+		if oldPhase == phaseBuilding {
+			reason = eventReasonBuildRunning
+		}
+		r.emitEventf(
+			imageBuild,
+			corev1.EventTypeNormal,
+			reason,
+			"Build %s: mode=%s target=%s arch=%s toDisk=%t flash=%t message=%s",
+			strings.ToLower(strings.TrimPrefix(reason, "Build")),
+			imageBuild.Spec.GetMode(),
+			imageBuild.Spec.GetTarget(),
+			imageBuild.Spec.Architecture,
+			imageBuild.Spec.GetBuildDiskImage(),
+			imageBuild.Spec.IsFlashEnabled(),
+			message,
+		)
+		if imageBuild.Spec.GetBuildDiskImage() {
+			diskReason := eventReasonDiskBuildStarted
+			if oldPhase == phaseBuilding {
+				diskReason = eventReasonDiskBuildRunning
+			}
+			r.emitEventf(
+				imageBuild,
+				corev1.EventTypeNormal,
+				diskReason,
+				"Disk image path active: exportFormat=%s exportOCI=%s mode=%s message=%s",
+				imageBuild.Spec.GetExportFormat(),
+				imageBuild.Spec.GetExportOCI(),
+				imageBuild.Spec.GetMode(),
+				message,
+			)
+		}
+	case phaseFailed:
+		r.emitEventf(
+			imageBuild,
+			corev1.EventTypeWarning,
+			eventReasonBuildFailed,
+			"Build failed: mode=%s target=%s arch=%s toDisk=%t message=%s",
+			imageBuild.Spec.GetMode(),
+			imageBuild.Spec.GetTarget(),
+			imageBuild.Spec.Architecture,
+			imageBuild.Spec.GetBuildDiskImage(),
+			message,
+		)
+		if imageBuild.Spec.GetBuildDiskImage() {
+			r.emitEventf(
+				imageBuild,
+				corev1.EventTypeWarning,
+				eventReasonDiskBuildFailed,
+				"Disk image build failed: exportFormat=%s exportOCI=%s message=%s",
+				imageBuild.Spec.GetExportFormat(),
+				imageBuild.Spec.GetExportOCI(),
+				message,
+			)
+		}
+	case phaseCompleted:
+		r.emitEventf(
+			imageBuild,
+			corev1.EventTypeNormal,
+			eventReasonBuildCompleted,
+			"Build completed: mode=%s target=%s arch=%s toDisk=%t message=%s",
+			imageBuild.Spec.GetMode(),
+			imageBuild.Spec.GetTarget(),
+			imageBuild.Spec.Architecture,
+			imageBuild.Spec.GetBuildDiskImage(),
+			message,
+		)
+		if imageBuild.Spec.GetBuildDiskImage() {
+			r.emitEventf(
+				imageBuild,
+				corev1.EventTypeNormal,
+				eventReasonDiskBuildDone,
+				"Disk image build completed: exportFormat=%s exportOCI=%s message=%s",
+				imageBuild.Spec.GetExportFormat(),
+				imageBuild.Spec.GetExportOCI(),
+				message,
+			)
+		}
+	}
+}
+
+func eventTypeForPhase(phase string) string {
+	if phase == phaseFailed {
+		return corev1.EventTypeWarning
+	}
+	return corev1.EventTypeNormal
+}
+
+func (r *ImageBuildReconciler) emitEventf(
+	imageBuild *automotivev1alpha1.ImageBuild,
+	eventType, reason, messageFmt string,
+	args ...interface{},
+) {
+	if r.Recorder == nil || imageBuild == nil {
+		return
+	}
+	r.Recorder.Eventf(imageBuild, eventType, reason, messageFmt, args...)
 }
 
 func (r *ImageBuildReconciler) getOrCreateWorkspacePVC(

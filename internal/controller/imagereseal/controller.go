@@ -20,6 +20,7 @@ package imagereseal
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +31,7 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -51,8 +53,9 @@ const (
 // Reconciler reconciles an ImageReseal object
 type Reconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Log    logr.Logger
+	Scheme   *runtime.Scheme
+	Log      logr.Logger
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=imagereseals,verbs=get;list;watch;create;update;patch;delete
@@ -60,6 +63,7 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=imagereseals/finalizers,verbs=update
 // +kubebuilder:rbac:groups=tekton.dev,resources=tasks;taskruns;pipelineruns,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile handles reconciliation of ImageReseal resources.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -96,6 +100,16 @@ func (r *Reconciler) handlePending(ctx context.Context, sealed *automotivev1alph
 		return r.updateStatus(ctx, sealed, phaseFailed, err.Error())
 	}
 	logger.Info("Starting reseal operation", "name", sealed.Name, "stages", stages)
+	r.emitEventf(
+		sealed,
+		corev1.EventTypeNormal,
+		"ResealRequested",
+		"Reseal requested: stages=%s inputRef=%s outputRef=%s arch=%s",
+		strings.Join(stages, ","),
+		sealed.Spec.InputRef,
+		sealed.Spec.OutputRef,
+		sealed.Spec.Architecture,
+	)
 
 	// Auto-detect architecture from source container image if not specified
 	if sealed.Spec.Architecture == "" && sealed.Spec.InputRef != "" {
@@ -118,12 +132,28 @@ func (r *Reconciler) handlePending(ctx context.Context, sealed *automotivev1alph
 			return r.updateStatus(ctx, sealed, phaseFailed, fmt.Sprintf("Failed to create TaskRun: %v", err))
 		}
 		sealed.Status.TaskRunName = tr.Name
+		r.emitEventf(
+			sealed,
+			corev1.EventTypeNormal,
+			"TaskRunCreated",
+			"Sealed TaskRun created: name=%s operation=%s",
+			tr.Name,
+			stages[0],
+		)
 	} else {
 		pr, err := r.createSealedPipelineRun(ctx, sealed, stages)
 		if err != nil {
 			return r.updateStatus(ctx, sealed, phaseFailed, fmt.Sprintf("Failed to create PipelineRun: %v", err))
 		}
 		sealed.Status.PipelineRunName = pr.Name
+		r.emitEventf(
+			sealed,
+			corev1.EventTypeNormal,
+			"PipelineRunCreated",
+			"Sealed PipelineRun created: name=%s stages=%s",
+			pr.Name,
+			strings.Join(stages, ","),
+		)
 	}
 
 	sealed.Status.StartTime = &metav1.Time{Time: time.Now()}
@@ -136,6 +166,17 @@ func (r *Reconciler) handlePending(ctx context.Context, sealed *automotivev1alph
 	if err := r.Status().Update(ctx, sealed); err != nil {
 		return ctrl.Result{}, err
 	}
+	action := currentResealAction(sealed)
+	r.emitEventf(
+		sealed,
+		corev1.EventTypeNormal,
+		"ResealRunning",
+		"Reseal running: action=%s taskRun=%s pipelineRun=%s stages=%s",
+		action,
+		sealed.Status.TaskRunName,
+		sealed.Status.PipelineRunName,
+		strings.Join(stages, ","),
+	)
 	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 }
 
@@ -160,13 +201,19 @@ func (r *Reconciler) handleRunningTaskRun(ctx context.Context, sealed *automotiv
 		return ctrl.Result{}, err
 	}
 	if !tr.IsDone() {
+		action := currentResealAction(sealed)
+		runningMsg := fmt.Sprintf("Running - %s in progress", action)
+		if sealed.Status.Message != runningMsg {
+			return r.updateStatus(ctx, sealed, phaseRunning, runningMsg)
+		}
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 	phase := phaseFailed
-	message := "Operation failed"
+	action := currentResealAction(sealed)
+	message := fmt.Sprintf("Operation %s failed", action)
 	if tr.IsSuccessful() {
 		phase = phaseCompleted
-		message = "Operation completed successfully"
+		message = fmt.Sprintf("Operation %s completed successfully", action)
 		sealed.Status.OutputRef = sealed.Spec.OutputRef
 	}
 	r.cleanupTransientSecrets(ctx, sealed, logger)
@@ -185,13 +232,24 @@ func (r *Reconciler) handleRunningPipelineRun(ctx context.Context, sealed *autom
 		return ctrl.Result{}, err
 	}
 	if pr.Status.CompletionTime == nil {
+		action, err := r.currentPipelineAction(ctx, sealed, pr)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if action == "" {
+			action = currentResealAction(sealed)
+		}
+		runningMsg := fmt.Sprintf("Running - %s in progress", action)
+		if sealed.Status.Message != runningMsg {
+			return r.updateStatus(ctx, sealed, phaseRunning, runningMsg)
+		}
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 	phase := phaseFailed
-	message := "Pipeline failed"
+	message := fmt.Sprintf("Pipeline failed (stages=%s)", strings.Join(sealed.Spec.GetStages(), ","))
 	if isPipelineRunSuccessful(pr) {
 		phase = phaseCompleted
-		message = "Pipeline completed successfully"
+		message = fmt.Sprintf("Pipeline completed successfully (stages=%s)", strings.Join(sealed.Spec.GetStages(), ","))
 		sealed.Status.OutputRef = sealed.Spec.OutputRef
 	}
 	r.cleanupTransientSecrets(ctx, sealed, logger)
@@ -462,12 +520,147 @@ func isPipelineRunSuccessful(pr *tektonv1.PipelineRun) bool {
 }
 
 func (r *Reconciler) updateStatus(ctx context.Context, sealed *automotivev1alpha1.ImageReseal, phase, message string) (ctrl.Result, error) {
+	oldPhase := sealed.Status.Phase
+	oldMessage := sealed.Status.Message
 	sealed.Status.Phase = phase
 	sealed.Status.Message = message
 	if err := r.Status().Update(ctx, sealed); err != nil {
 		return ctrl.Result{}, err
 	}
+	if oldPhase != phase || oldMessage != message {
+		r.emitEventf(
+			sealed,
+			eventTypeForResealPhase(phase),
+			"PhaseChanged",
+			"Phase transitioned: %s -> %s, message=%s",
+			oldPhase,
+			phase,
+			message,
+		)
+		r.emitResealLifecycleEvent(sealed, oldPhase, phase, message)
+	}
 	return ctrl.Result{}, nil
+}
+
+func (r *Reconciler) emitResealLifecycleEvent(
+	sealed *automotivev1alpha1.ImageReseal,
+	oldPhase, newPhase, message string,
+) {
+	action := currentResealAction(sealed)
+	switch newPhase {
+	case phaseRunning:
+		reason := "ResealStarted"
+		if oldPhase == phaseRunning {
+			reason = "ResealRunning"
+		}
+		r.emitEventf(
+			sealed,
+			corev1.EventTypeNormal,
+			reason,
+			"Reseal running: action=%s taskRun=%s pipelineRun=%s message=%s",
+			action,
+			sealed.Status.TaskRunName,
+			sealed.Status.PipelineRunName,
+			message,
+		)
+	case phaseCompleted:
+		r.emitEventf(
+			sealed,
+			corev1.EventTypeNormal,
+			"ResealCompleted",
+			"Reseal completed: action=%s outputRef=%s message=%s",
+			action,
+			sealed.Status.OutputRef,
+			message,
+		)
+	case phaseFailed:
+		r.emitEventf(
+			sealed,
+			corev1.EventTypeWarning,
+			"ResealFailed",
+			"Reseal failed: action=%s taskRun=%s pipelineRun=%s message=%s",
+			action,
+			sealed.Status.TaskRunName,
+			sealed.Status.PipelineRunName,
+			message,
+		)
+	}
+}
+
+func currentResealAction(sealed *automotivev1alpha1.ImageReseal) string {
+	stages := sealed.Spec.GetStages()
+	if len(stages) == 0 {
+		return "unknown"
+	}
+	if sealed.Status.TaskRunName != "" && len(stages) == 1 {
+		return stages[0]
+	}
+	if strings.HasPrefix(sealed.Status.Message, "Running - ") && strings.HasSuffix(sealed.Status.Message, " in progress") {
+		msg := strings.TrimPrefix(sealed.Status.Message, "Running - ")
+		msg = strings.TrimSuffix(msg, " in progress")
+		if strings.TrimSpace(msg) != "" {
+			return msg
+		}
+	}
+	return stages[0]
+}
+
+func (r *Reconciler) currentPipelineAction(
+	ctx context.Context,
+	sealed *automotivev1alpha1.ImageReseal,
+	pr *tektonv1.PipelineRun,
+) (string, error) {
+	stages := sealed.Spec.GetStages()
+	if len(stages) == 0 {
+		return "", nil
+	}
+	taskRuns := &tektonv1.TaskRunList{}
+	if err := r.List(ctx, taskRuns,
+		client.InNamespace(sealed.Namespace),
+		client.MatchingLabels{"tekton.dev/pipelineRun": pr.Name},
+	); err != nil {
+		return "", err
+	}
+	for _, tr := range taskRuns.Items {
+		if tr.IsDone() {
+			continue
+		}
+		taskName := tr.Labels["tekton.dev/pipelineTask"]
+		if idx := pipelineTaskStageIndex(taskName); idx >= 0 && idx < len(stages) {
+			return stages[idx], nil
+		}
+	}
+	return "", nil
+}
+
+func pipelineTaskStageIndex(taskName string) int {
+	if !strings.HasPrefix(taskName, "stage-") {
+		return -1
+	}
+	stageNumber := strings.TrimPrefix(taskName, "stage-")
+	idx, err := strconv.Atoi(stageNumber)
+	if err != nil {
+		return -1
+	}
+	return idx
+}
+
+func eventTypeForResealPhase(phase string) string {
+	if phase == phaseFailed {
+		return corev1.EventTypeWarning
+	}
+	return corev1.EventTypeNormal
+}
+
+func (r *Reconciler) emitEventf(
+	sealed *automotivev1alpha1.ImageReseal,
+	eventType, reason, messageFmt string,
+	args ...interface{},
+) {
+	if r.Recorder == nil || sealed == nil {
+		return
+	}
+	r.Recorder.Eventf(sealed, eventType, reason, messageFmt, args...)
 }
 
 // transientLabel is the label used to mark secrets that were created by the API server

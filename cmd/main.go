@@ -225,6 +225,7 @@ func main() {
 			APIReader:  mgr.GetAPIReader(),
 			Scheme:     mgr.GetScheme(),
 			Log:        ctrl.Log.WithName("controllers").WithName("ImageBuild"),
+			Recorder:   mgr.GetEventRecorderFor("imagebuild-controller"),
 			RestConfig: mgr.GetConfig(),
 		}
 
@@ -256,9 +257,10 @@ func main() {
 		}
 
 		containerBuildReconciler := &containerbuild.ContainerBuildReconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
-			Log:    ctrl.Log.WithName("controllers").WithName("ContainerBuild"),
+			Client:   mgr.GetClient(),
+			Scheme:   mgr.GetScheme(),
+			Log:      ctrl.Log.WithName("controllers").WithName("ContainerBuild"),
+			Recorder: mgr.GetEventRecorderFor("containerbuild-controller"),
 		}
 
 		if err = containerBuildReconciler.SetupWithManager(mgr); err != nil {
@@ -267,9 +269,10 @@ func main() {
 		}
 
 		imageResealReconciler := &imagereseal.Reconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
-			Log:    ctrl.Log.WithName("controllers").WithName("ImageReseal"),
+			Client:   mgr.GetClient(),
+			Scheme:   mgr.GetScheme(),
+			Log:      ctrl.Log.WithName("controllers").WithName("ImageReseal"),
+			Recorder: mgr.GetEventRecorderFor("imagereseal-controller"),
 		}
 		if err = imageResealReconciler.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "ImageReseal")
