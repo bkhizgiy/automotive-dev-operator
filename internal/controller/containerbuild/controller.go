@@ -281,14 +281,7 @@ func (r *ContainerBuildReconciler) reconcileBuilding(
 				if err := r.Status().Patch(ctx, cb, client.MergeFrom(original)); err != nil {
 					return ctrl.Result{}, err
 				}
-				r.emitEventf(
-					cb,
-					corev1.EventTypeNormal,
-					"ContainerBuildCompleted",
-					"Container image build completed: buildRun=%s digest=%s",
-					cb.Status.BuildRunName,
-					cb.Status.ImageDigest,
-				)
+				r.emitContainerLifecycleEvent(cb, phaseBuilding, phaseCompleted, cb.Status.Message)
 				return ctrl.Result{}, nil
 			}
 			if condition.Status == corev1.ConditionFalse {
@@ -301,14 +294,7 @@ func (r *ContainerBuildReconciler) reconcileBuilding(
 				if err := r.Status().Patch(ctx, cb, client.MergeFrom(original)); err != nil {
 					return ctrl.Result{}, err
 				}
-				r.emitEventf(
-					cb,
-					corev1.EventTypeWarning,
-					"ContainerBuildFailed",
-					"Container image build failed: buildRun=%s message=%s",
-					cb.Status.BuildRunName,
-					condition.Message,
-				)
+				r.emitContainerLifecycleEvent(cb, phaseBuilding, phaseFailed, cb.Status.Message)
 				return ctrl.Result{}, nil
 			}
 		}
@@ -349,11 +335,65 @@ func (r *ContainerBuildReconciler) updatePhase(
 			message,
 			cb.Status.BuildRunName,
 		)
+		r.emitContainerLifecycleEvent(cb, oldPhase, phase, message)
 	}
 	if phase == phaseFailed || phase == phaseCompleted {
 		return ctrl.Result{}, nil
 	}
 	return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+}
+
+func (r *ContainerBuildReconciler) emitContainerLifecycleEvent(
+	cb *automotivev1alpha1.ContainerBuild,
+	oldPhase, newPhase, message string,
+) {
+	switch newPhase {
+	case phaseUploading:
+		r.emitEventf(
+			cb,
+			corev1.EventTypeNormal,
+			"ContainerUploadStarted",
+			"Container build upload started: strategy=%s arch=%s output=%s message=%s",
+			cb.Spec.GetStrategy(),
+			cb.Spec.GetArchitecture(),
+			cb.Spec.Output,
+			message,
+		)
+	case phaseBuilding:
+		reason := "ContainerBuildStarted"
+		if oldPhase == phaseBuilding {
+			reason = "ContainerBuildRunning"
+		}
+		r.emitEventf(
+			cb,
+			corev1.EventTypeNormal,
+			reason,
+			"Container build running: strategy=%s arch=%s output=%s message=%s",
+			cb.Spec.GetStrategy(),
+			cb.Spec.GetArchitecture(),
+			cb.Spec.Output,
+			message,
+		)
+	case phaseCompleted:
+		r.emitEventf(
+			cb,
+			corev1.EventTypeNormal,
+			"ContainerBuildCompleted",
+			"Container build completed: buildRun=%s digest=%s message=%s",
+			cb.Status.BuildRunName,
+			cb.Status.ImageDigest,
+			message,
+		)
+	case phaseFailed:
+		r.emitEventf(
+			cb,
+			corev1.EventTypeWarning,
+			"ContainerBuildFailed",
+			"Container build failed: buildRun=%s message=%s",
+			cb.Status.BuildRunName,
+			message,
+		)
+	}
 }
 
 func eventTypeForContainerPhase(phase string) string {

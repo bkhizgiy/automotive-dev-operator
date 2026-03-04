@@ -49,6 +49,14 @@ const (
 	eventReasonPipelineRunReady = "PipelineRunReady"
 	eventReasonUploadPodReady   = "UploadPodReady"
 	eventReasonBuildCompleted   = "BuildCompleted"
+	eventReasonBuildStarted     = "BuildStarted"
+	eventReasonBuildRunning     = "BuildRunning"
+	eventReasonBuildFailed      = "BuildFailed"
+	eventReasonUploadStarted    = "UploadStarted"
+	eventReasonDiskBuildStarted = "DiskBuildStarted"
+	eventReasonDiskBuildRunning = "DiskBuildRunning"
+	eventReasonDiskBuildFailed  = "DiskBuildFailed"
+	eventReasonDiskBuildDone    = "DiskBuildCompleted"
 )
 
 // safeDerivedName generates a Kubernetes-safe derived resource name by truncating
@@ -1716,8 +1724,109 @@ func (r *ImageBuildReconciler) updateStatus(
 			fresh.Spec.Architecture,
 			fresh.Spec.GetBuildDiskImage(),
 		)
+		r.emitImageBuildLifecycleEvent(fresh, oldPhase, phase, message)
 	}
 	return nil
+}
+
+func (r *ImageBuildReconciler) emitImageBuildLifecycleEvent(
+	imageBuild *automotivev1alpha1.ImageBuild,
+	oldPhase, newPhase, message string,
+) {
+	switch newPhase {
+	case "Uploading":
+		r.emitEventf(
+			imageBuild,
+			corev1.EventTypeNormal,
+			eventReasonUploadStarted,
+			"Upload started: mode=%s target=%s arch=%s toDisk=%t message=%s",
+			imageBuild.Spec.GetMode(),
+			imageBuild.Spec.GetTarget(),
+			imageBuild.Spec.Architecture,
+			imageBuild.Spec.GetBuildDiskImage(),
+			message,
+		)
+	case "Building":
+		reason := eventReasonBuildStarted
+		if oldPhase == "Building" {
+			reason = eventReasonBuildRunning
+		}
+		r.emitEventf(
+			imageBuild,
+			corev1.EventTypeNormal,
+			reason,
+			"Build %s: mode=%s target=%s arch=%s toDisk=%t flash=%t message=%s",
+			strings.ToLower(strings.TrimPrefix(reason, "Build")),
+			imageBuild.Spec.GetMode(),
+			imageBuild.Spec.GetTarget(),
+			imageBuild.Spec.Architecture,
+			imageBuild.Spec.GetBuildDiskImage(),
+			imageBuild.Spec.IsFlashEnabled(),
+			message,
+		)
+		if imageBuild.Spec.GetBuildDiskImage() {
+			diskReason := eventReasonDiskBuildStarted
+			if oldPhase == "Building" {
+				diskReason = eventReasonDiskBuildRunning
+			}
+			r.emitEventf(
+				imageBuild,
+				corev1.EventTypeNormal,
+				diskReason,
+				"Disk image path active: exportFormat=%s exportOCI=%s mode=%s message=%s",
+				imageBuild.Spec.GetExportFormat(),
+				imageBuild.Spec.GetExportOCI(),
+				imageBuild.Spec.GetMode(),
+				message,
+			)
+		}
+	case phaseFailed:
+		r.emitEventf(
+			imageBuild,
+			corev1.EventTypeWarning,
+			eventReasonBuildFailed,
+			"Build failed: mode=%s target=%s arch=%s toDisk=%t message=%s",
+			imageBuild.Spec.GetMode(),
+			imageBuild.Spec.GetTarget(),
+			imageBuild.Spec.Architecture,
+			imageBuild.Spec.GetBuildDiskImage(),
+			message,
+		)
+		if imageBuild.Spec.GetBuildDiskImage() {
+			r.emitEventf(
+				imageBuild,
+				corev1.EventTypeWarning,
+				eventReasonDiskBuildFailed,
+				"Disk image build failed: exportFormat=%s exportOCI=%s message=%s",
+				imageBuild.Spec.GetExportFormat(),
+				imageBuild.Spec.GetExportOCI(),
+				message,
+			)
+		}
+	case phaseCompleted:
+		r.emitEventf(
+			imageBuild,
+			corev1.EventTypeNormal,
+			eventReasonBuildCompleted,
+			"Build completed: mode=%s target=%s arch=%s toDisk=%t message=%s",
+			imageBuild.Spec.GetMode(),
+			imageBuild.Spec.GetTarget(),
+			imageBuild.Spec.Architecture,
+			imageBuild.Spec.GetBuildDiskImage(),
+			message,
+		)
+		if imageBuild.Spec.GetBuildDiskImage() {
+			r.emitEventf(
+				imageBuild,
+				corev1.EventTypeNormal,
+				eventReasonDiskBuildDone,
+				"Disk image build completed: exportFormat=%s exportOCI=%s message=%s",
+				imageBuild.Spec.GetExportFormat(),
+				imageBuild.Spec.GetExportOCI(),
+				message,
+			)
+		}
+	}
 }
 
 func eventTypeForPhase(phase string) string {
