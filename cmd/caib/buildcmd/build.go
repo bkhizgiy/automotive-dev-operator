@@ -452,20 +452,14 @@ func (h *Handler) RunDisk(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	if *h.opts.UseInternalRegistry {
-		if *h.opts.ExportOCI != "" {
-			h.handleError(fmt.Errorf("--internal-registry cannot be used with --push"))
-			return
-		}
-	} else {
-		if *h.opts.OutputDir == "" && *h.opts.ExportOCI == "" {
-			h.handleError(fmt.Errorf("either --output or --push is required"))
-			return
-		}
-		if err := common.ValidateOutputRequiresPush(*h.opts.OutputDir, *h.opts.ExportOCI, "--push"); err != nil {
-			h.handleError(err)
-			return
-		}
+	// Default to internal registry when no push destination is specified
+	if *h.opts.ExportOCI == "" && !*h.opts.UseInternalRegistry {
+		*h.opts.UseInternalRegistry = true
+	}
+
+	if *h.opts.UseInternalRegistry && *h.opts.ExportOCI != "" {
+		h.handleError(fmt.Errorf("--internal-registry cannot be used with --push"))
+		return
 	}
 
 	if *h.opts.BuildName == "" {
