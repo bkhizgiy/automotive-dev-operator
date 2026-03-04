@@ -35,6 +35,7 @@ const (
 	OperatorNamespace = "automotive-dev-operator-system"
 
 	// Phase constants for ImageBuild status
+	phaseBuilding  = "Building"
 	phaseCompleted = "Completed"
 	phaseFailed    = "Failed"
 
@@ -129,7 +130,7 @@ func (r *ImageBuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return r.handleInitialState(ctx, imageBuild)
 	case "Uploading":
 		return r.handleUploadingState(ctx, imageBuild)
-	case "Building":
+	case phaseBuilding:
 		return r.handleBuildingState(ctx, imageBuild)
 	case "Pushing":
 		// Legacy phase - push is now part of the pipeline
@@ -168,7 +169,7 @@ func (r *ImageBuildReconciler) handleInitialState(
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	if err := r.updateStatus(ctx, imageBuild, "Building", "Build started"); err != nil {
+	if err := r.updateStatus(ctx, imageBuild, phaseBuilding, "Build started"); err != nil {
 		log.Error(err, "Failed to update status to Building")
 		return ctrl.Result{}, err
 	}
@@ -218,7 +219,7 @@ func (r *ImageBuildReconciler) handleUploadingState(
 		return ctrl.Result{}, fmt.Errorf("failed to shutdown upload server: %w", err)
 	}
 
-	if err := r.updateStatus(ctx, imageBuild, "Building", "Build started"); err != nil {
+	if err := r.updateStatus(ctx, imageBuild, phaseBuilding, "Build started"); err != nil {
 		log.Error(err, "Failed to update status to Building")
 		return ctrl.Result{}, err
 	}
@@ -1699,7 +1700,7 @@ func (r *ImageBuildReconciler) updateStatus(
 	fresh.Status.Phase = phase
 	fresh.Status.Message = message
 
-	if phase == "Building" && fresh.Status.StartTime == nil {
+	if phase == phaseBuilding && fresh.Status.StartTime == nil {
 		now := metav1.Now()
 		fresh.Status.StartTime = &now
 	} else if (phase == phaseCompleted || phase == phaseFailed) && fresh.Status.CompletionTime == nil {
@@ -1746,9 +1747,9 @@ func (r *ImageBuildReconciler) emitImageBuildLifecycleEvent(
 			imageBuild.Spec.GetBuildDiskImage(),
 			message,
 		)
-	case "Building":
+	case phaseBuilding:
 		reason := eventReasonBuildStarted
-		if oldPhase == "Building" {
+		if oldPhase == phaseBuilding {
 			reason = eventReasonBuildRunning
 		}
 		r.emitEventf(
@@ -1766,7 +1767,7 @@ func (r *ImageBuildReconciler) emitImageBuildLifecycleEvent(
 		)
 		if imageBuild.Spec.GetBuildDiskImage() {
 			diskReason := eventReasonDiskBuildStarted
-			if oldPhase == "Building" {
+			if oldPhase == phaseBuilding {
 				diskReason = eventReasonDiskBuildRunning
 			}
 			r.emitEventf(
