@@ -551,7 +551,7 @@ func (h *Handler) RunDisk(cmd *cobra.Command, args []string) {
 
 // RunBuildDev handles `caib image build-dev` (traditional ostree/package builds).
 func (h *Handler) RunBuildDev(cmd *cobra.Command, args []string) {
-	h.applyWaitFollowDefaults(cmd, false, false)
+	h.applyWaitFollowDefaults(cmd, true, false)
 
 	ctx := context.Background()
 	manifestPath := args[0]

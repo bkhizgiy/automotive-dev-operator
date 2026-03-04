@@ -90,7 +90,7 @@ func (h *Handler) waitForBuildCompletion(ctx context.Context, api *buildapiclien
 			}
 
 			if st.Phase == phaseCompleted {
-				pb.Clear()
+				pb.Complete()
 				flashWasExecuted := strings.Contains(strings.ToLower(st.Message), "flash")
 				if flashWasExecuted {
 					bannerColor := func(a ...any) string { return fmt.Sprint(a...) }
