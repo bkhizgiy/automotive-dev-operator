@@ -111,7 +111,7 @@ var _ = Describe("Token cache save/load", func() {
 		originalHome = os.Getenv("HOME")
 		Expect(os.Setenv("HOME", tempDir)).To(Succeed())
 
-		cachePath := filepath.Join(tempDir, tokenCacheDir, tokenCacheFile)
+		cachePath := filepath.Join(tempDir, ".cache", "caib", tokenCacheFile)
 		oidcAuth = &OIDCAuth{
 			config: OIDCConfig{
 				IssuerURL: "https://issuer.example.com",
@@ -224,7 +224,7 @@ var _ = Describe("LoadTokenCache (exported)", func() {
 	})
 
 	It("should load cache with refresh token", func() {
-		cacheDir := filepath.Join(tempDir, tokenCacheDir)
+		cacheDir := filepath.Join(tempDir, ".cache", "caib")
 		Expect(os.MkdirAll(cacheDir, 0700)).To(Succeed())
 
 		cache := TokenCache{
@@ -246,7 +246,7 @@ var _ = Describe("LoadTokenCache (exported)", func() {
 	})
 
 	It("should load cache without refresh token", func() {
-		cacheDir := filepath.Join(tempDir, tokenCacheDir)
+		cacheDir := filepath.Join(tempDir, ".cache", "caib")
 		Expect(os.MkdirAll(cacheDir, 0700)).To(Succeed())
 
 		cache := TokenCache{
@@ -264,7 +264,7 @@ var _ = Describe("LoadTokenCache (exported)", func() {
 	})
 
 	It("should return error for invalid JSON", func() {
-		cacheDir := filepath.Join(tempDir, tokenCacheDir)
+		cacheDir := filepath.Join(tempDir, ".cache", "caib")
 		Expect(os.MkdirAll(cacheDir, 0700)).To(Succeed())
 		Expect(os.WriteFile(filepath.Join(cacheDir, tokenCacheFile), []byte("bad json"), 0600)).To(Succeed())
 
@@ -419,7 +419,7 @@ var _ = Describe("tryRefreshToken", func() {
 
 		newAccessToken = makeValidTestJWT(oidcServer.URL, 1*time.Hour)
 
-		cachePath := filepath.Join(tempDir, tokenCacheDir, tokenCacheFile)
+		cachePath := filepath.Join(tempDir, ".cache", "caib", tokenCacheFile)
 		oidcAuth = &OIDCAuth{
 			config: OIDCConfig{
 				IssuerURL: oidcServer.URL,
@@ -464,7 +464,7 @@ var _ = Describe("tryRefreshToken", func() {
 
 		newAccessToken = makeValidTestJWT(oidcServer.URL, 1*time.Hour)
 
-		cachePath := filepath.Join(tempDir, tokenCacheDir, tokenCacheFile)
+		cachePath := filepath.Join(tempDir, ".cache", "caib", tokenCacheFile)
 		oidcAuth = &OIDCAuth{
 			config: OIDCConfig{
 				IssuerURL: oidcServer.URL,
@@ -516,7 +516,7 @@ var _ = Describe("GetTokenWithStatus", func() {
 
 	It("should return cached token when still valid", func() {
 		validToken := makeValidTestJWT("https://issuer.example.com", 1*time.Hour)
-		cachePath := filepath.Join(tempDir, tokenCacheDir, tokenCacheFile)
+		cachePath := filepath.Join(tempDir, ".cache", "caib", tokenCacheFile)
 
 		oidcAuth := &OIDCAuth{
 			config: OIDCConfig{
@@ -557,7 +557,7 @@ var _ = Describe("GetTokenWithStatus", func() {
 		expiredToken := makeExpiredTestJWT(oidcServer.URL)
 		newToken = makeValidTestJWT(oidcServer.URL, 1*time.Hour)
 
-		cachePath := filepath.Join(tempDir, tokenCacheDir, tokenCacheFile)
+		cachePath := filepath.Join(tempDir, ".cache", "caib", tokenCacheFile)
 		cacheDir := filepath.Dir(cachePath)
 		Expect(os.MkdirAll(cacheDir, 0700)).To(Succeed())
 
@@ -607,7 +607,7 @@ var _ = Describe("GetTokenWithStatus", func() {
 		almostExpiredToken := makeValidTestJWT(oidcServer.URL, 3*time.Minute)
 		newToken = makeValidTestJWT(oidcServer.URL, 1*time.Hour)
 
-		cachePath := filepath.Join(tempDir, tokenCacheDir, tokenCacheFile)
+		cachePath := filepath.Join(tempDir, ".cache", "caib", tokenCacheFile)
 		cacheDir := filepath.Dir(cachePath)
 		Expect(os.MkdirAll(cacheDir, 0700)).To(Succeed())
 

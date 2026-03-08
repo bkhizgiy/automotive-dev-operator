@@ -166,7 +166,7 @@ func SaveOIDCConfig(config *OIDCConfig) error {
 }
 
 func oidcConfigPath() (string, error) {
-	dir, err := caibconfig.ConfigDirPath()
+	dir, err := caibconfig.DirPath()
 	if err != nil {
 		return "", err
 	}

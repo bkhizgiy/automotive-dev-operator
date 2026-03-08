@@ -59,11 +59,15 @@ func DefaultServerWithDerive() string {
 // JumpstarterEndpoint reads the default Jumpstarter client config files and returns
 // the gRPC endpoint, or "" if the config is absent or incomplete.
 func JumpstarterEndpoint() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
+	xdgBase := os.Getenv("XDG_CONFIG_HOME")
+	if xdgBase == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		xdgBase = filepath.Join(home, ".config")
 	}
-	jmpDir := filepath.Join(home, ".config", "jumpstarter")
+	jmpDir := filepath.Join(xdgBase, "jumpstarter")
 
 	data, err := os.ReadFile(filepath.Join(jmpDir, "config.yaml"))
 	if err != nil {
@@ -195,8 +199,8 @@ func SaveServerURL(serverURL string) error {
 	return os.WriteFile(path, data, 0600)
 }
 
-// ConfigDirPath returns the config directory for caib.
-func ConfigDirPath() (string, error) {
+// DirPath returns the config directory for caib.
+func DirPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -214,7 +218,7 @@ func CacheDirPath() (string, error) {
 }
 
 func configFilePath() (string, error) {
-	dir, err := ConfigDirPath()
+	dir, err := DirPath()
 	if err != nil {
 		return "", err
 	}

@@ -150,7 +150,7 @@ var _ = Describe("GetOIDCConfigFromLocalConfig", func() {
 	})
 
 	It("should read config from local file", func() {
-		configDir := filepath.Join(tempDir, tokenCacheDir)
+		configDir := filepath.Join(tempDir, ".config", "caib")
 		Expect(os.MkdirAll(configDir, 0700)).To(Succeed())
 
 		configData := map[string]interface{}{
@@ -179,7 +179,7 @@ var _ = Describe("GetOIDCConfigFromLocalConfig", func() {
 	})
 
 	It("should return error when config is invalid", func() {
-		configDir := filepath.Join(tempDir, tokenCacheDir)
+		configDir := filepath.Join(tempDir, ".config", "caib")
 		Expect(os.MkdirAll(configDir, 0700)).To(Succeed())
 
 		configPath := filepath.Join(configDir, "config.json")
@@ -191,7 +191,7 @@ var _ = Describe("GetOIDCConfigFromLocalConfig", func() {
 	})
 
 	It("should return error when issuer_url is missing", func() {
-		configDir := filepath.Join(tempDir, tokenCacheDir)
+		configDir := filepath.Join(tempDir, ".config", "caib")
 		Expect(os.MkdirAll(configDir, 0700)).To(Succeed())
 
 		configData := map[string]interface{}{
@@ -240,7 +240,7 @@ var _ = Describe("SaveOIDCConfig", func() {
 		err := SaveOIDCConfig(config)
 		Expect(err).NotTo(HaveOccurred())
 
-		configPath := filepath.Join(tempDir, tokenCacheDir, "config.json")
+		configPath := filepath.Join(tempDir, ".config", "caib", "config.json")
 		data, err := os.ReadFile(configPath)
 		Expect(err).NotTo(HaveOccurred())
 

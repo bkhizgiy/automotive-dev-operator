@@ -106,7 +106,7 @@ var _ = Describe("RefreshCachedToken", func() {
 		newToken := makeValidTestJWT("https://issuer.example.com", 1*time.Hour)
 
 		// Set up token cache without refresh token
-		cacheDir := filepath.Join(tempDir, tokenCacheDir)
+		cacheDir := filepath.Join(tempDir, ".cache", "caib")
 		Expect(os.MkdirAll(cacheDir, 0700)).To(Succeed())
 		cache := TokenCache{
 			Token:     newToken,
@@ -171,7 +171,7 @@ var _ = Describe("RefreshCachedToken", func() {
 		}))
 
 		// Set up token cache with refresh token
-		cacheDir := filepath.Join(tempDir, tokenCacheDir)
+		cacheDir := filepath.Join(tempDir, ".cache", "caib")
 		Expect(os.MkdirAll(cacheDir, 0700)).To(Succeed())
 		cache := TokenCache{
 			Token:        makeExpiredTestJWT(tokenServer.URL),
