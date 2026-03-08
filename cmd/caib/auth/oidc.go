@@ -20,12 +20,13 @@ import (
 	"strings"
 	"time"
 
+	caibconfig "github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/config"
 	"github.com/golang-jwt/jwt/v5"
 )
 
 const (
-	tokenCacheDir  = ".caib"
 	tokenCacheFile = "token.json"
+	oidcConfigFile = "config.json"
 )
 
 // TokenCache stores cached OIDC token information.
@@ -61,11 +62,10 @@ func NewOIDCAuth(issuerURL, clientID string, scopes []string, insecureSkipTLS bo
 		scopes = []string{"openid", "profile", "email", "offline_access"}
 	}
 
-	homeDir, err := os.UserHomeDir()
+	cachePath, err := tokenCachePath()
 	if err != nil {
 		return nil
 	}
-	cachePath := filepath.Join(homeDir, tokenCacheDir, tokenCacheFile)
 
 	return &OIDCAuth{
 		config: OIDCConfig{
@@ -433,11 +433,11 @@ func (a *OIDCAuth) getDiscovery(discoveryURL string) (*DiscoveryDocument, error)
 
 // LoadTokenCache reads the token cache from disk. Returns (nil, nil) if no cache file exists.
 func LoadTokenCache() (*TokenCache, error) {
-	homeDir, err := os.UserHomeDir()
+	cachePath, err := tokenCachePath()
 	if err != nil {
 		return nil, err
 	}
-	cachePath := filepath.Join(homeDir, tokenCacheDir, tokenCacheFile)
+
 	data, err := os.ReadFile(cachePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -462,12 +462,21 @@ func (a *OIDCAuth) loadTokenCache() error {
 	if err := json.Unmarshal(data, &cache); err != nil {
 		return err
 	}
+
 	// Reject cache if issuer changed (e.g. different OIDC provider) so we fetch a new token
 	if cache.Issuer != a.config.IssuerURL {
 		return fmt.Errorf("cached token issuer %q does not match current config %q", cache.Issuer, a.config.IssuerURL)
 	}
 	a.tokenCache = &cache
 	return nil
+}
+
+func tokenCachePath() (string, error) {
+	dir, err := caibconfig.CacheDirPath()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, tokenCacheFile), nil
 }
 
 func (a *OIDCAuth) saveTokenCache(token, refreshToken string, expiresIn int) error {

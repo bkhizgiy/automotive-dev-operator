@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	caibconfig "github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/config"
 )
 
 // GetOIDCConfigFromAPI fetches OIDC configuration from the Build API server.
@@ -102,11 +104,10 @@ func GetOIDCConfigFromAPI(serverURL string, insecureSkipTLS bool) (*OIDCConfig, 
 
 // GetOIDCConfigFromLocalConfig tries to read from local config file
 func GetOIDCConfigFromLocalConfig() (*OIDCConfig, error) {
-	homeDir, err := os.UserHomeDir()
+	configPath, err := oidcConfigPath()
 	if err != nil {
 		return nil, err
 	}
-	configPath := filepath.Join(homeDir, tokenCacheDir, "config.json")
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -141,11 +142,10 @@ func GetOIDCConfigFromLocalConfig() (*OIDCConfig, error) {
 
 // SaveOIDCConfig saves OIDC config to local file
 func SaveOIDCConfig(config *OIDCConfig) error {
-	homeDir, err := os.UserHomeDir()
+	configPath, err := oidcConfigPath()
 	if err != nil {
 		return err
 	}
-	configPath := filepath.Join(homeDir, tokenCacheDir, "config.json")
 
 	configData := map[string]interface{}{
 		"issuer_url": config.IssuerURL,
@@ -163,4 +163,12 @@ func SaveOIDCConfig(config *OIDCConfig) error {
 	}
 
 	return os.WriteFile(configPath, data, 0600)
+}
+
+func oidcConfigPath() (string, error) {
+	dir, err := caibconfig.ConfigDirPath()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, oidcConfigFile), nil
 }
