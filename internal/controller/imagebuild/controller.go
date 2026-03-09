@@ -13,6 +13,7 @@ import (
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/registryutil"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/tasks"
+	controllerutils "github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/controllerutils"
 	"github.com/go-logr/logr"
 	routev1 "github.com/openshift/api/route/v1"
 	pod "github.com/tektoncd/pipeline/pkg/apis/pipeline/pod"
@@ -423,7 +424,7 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 			FlashTimeoutMinutes:         operatorConfig.Spec.OSBuilds.GetFlashTimeoutMinutes(),
 			DefaultLeaseDuration:        operatorConfig.Spec.Jumpstarter.GetDefaultLeaseDuration(),
 		}
-		applyTrustedCABundleFromOSBuilds(buildConfig, operatorConfig.Spec.OSBuilds)
+		controllerutils.ApplyTrustedCABundleFromOSBuilds(buildConfig, operatorConfig.Spec.OSBuilds)
 	}
 	_ = buildConfig // buildConfig used for RuntimeClassName if needed
 
@@ -1708,22 +1709,9 @@ func (r *ImageBuildReconciler) resolveBuildConfig(ctx context.Context) *tasks.Bu
 		bc.RuntimeClassName = operatorConfig.Spec.OSBuilds.RuntimeClassName
 		bc.BuildTimeoutMinutes = operatorConfig.Spec.OSBuilds.GetBuildTimeoutMinutes()
 		bc.FlashTimeoutMinutes = operatorConfig.Spec.OSBuilds.GetFlashTimeoutMinutes()
-		applyTrustedCABundleFromOSBuilds(bc, operatorConfig.Spec.OSBuilds)
+		controllerutils.ApplyTrustedCABundleFromOSBuilds(bc, operatorConfig.Spec.OSBuilds)
 	}
 	return bc
-}
-
-func applyTrustedCABundleFromOSBuilds(buildConfig *tasks.BuildConfig, osBuilds *automotivev1alpha1.OSBuildsConfig) {
-	if buildConfig == nil || osBuilds == nil || osBuilds.Certificates == nil {
-		return
-	}
-
-	if osBuilds.Certificates.TrustedCABundle != nil {
-		buildConfig.TrustedCABundleKind = osBuilds.Certificates.TrustedCABundle.Kind
-		buildConfig.TrustedCABundleName = osBuilds.Certificates.TrustedCABundle.Name
-		return
-	}
-
 }
 
 func (r *ImageBuildReconciler) updateStatus(

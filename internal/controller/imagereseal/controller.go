@@ -41,6 +41,7 @@ import (
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/tasks"
+	controllerutils "github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/controllerutils"
 )
 
 const (
@@ -714,20 +715,9 @@ func (r *Reconciler) resolveBuildConfig(ctx context.Context) (*tasks.BuildConfig
 		AutomotiveImageBuilderImage: operatorConfig.Spec.GetImages().GetAutomotiveImageBuilderImage(),
 	}
 	if operatorConfig.Spec.OSBuilds != nil {
-		applyTrustedCABundleFromOSBuilds(bc, operatorConfig.Spec.OSBuilds)
+		controllerutils.ApplyTrustedCABundleFromOSBuilds(bc, operatorConfig.Spec.OSBuilds)
 	}
 	return bc, nil
-}
-
-func applyTrustedCABundleFromOSBuilds(buildConfig *tasks.BuildConfig, osBuilds *automotivev1alpha1.OSBuildsConfig) {
-	if buildConfig == nil || osBuilds == nil || osBuilds.Certificates == nil {
-		return
-	}
-	if osBuilds.Certificates.TrustedCABundle != nil {
-		buildConfig.TrustedCABundleKind = osBuilds.Certificates.TrustedCABundle.Kind
-		buildConfig.TrustedCABundleName = osBuilds.Certificates.TrustedCABundle.Name
-		return
-	}
 }
 
 // deleteSecretWithRetry attempts to delete a secret with exponential backoff retry

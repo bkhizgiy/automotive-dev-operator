@@ -81,7 +81,12 @@ const defaultTrustedCABundleConfigMap = "rhivos-ca-bundle"
 func trustedCABundleVolumeSource(buildConfig *BuildConfig) corev1.VolumeSource {
 	kind := "ConfigMap"
 	name := defaultTrustedCABundleConfigMap
+	optional := true
 	if buildConfig != nil {
+		// Explicit trusted CA configuration should fail fast when missing.
+		if buildConfig.TrustedCABundleKind != "" || buildConfig.TrustedCABundleName != "" {
+			optional = false
+		}
 		if buildConfig.TrustedCABundleKind != "" {
 			kind = buildConfig.TrustedCABundleKind
 		}
@@ -94,7 +99,7 @@ func trustedCABundleVolumeSource(buildConfig *BuildConfig) corev1.VolumeSource {
 		return corev1.VolumeSource{
 			Secret: &corev1.SecretVolumeSource{
 				SecretName: name,
-				Optional:   ptr.To(true),
+				Optional:   ptr.To(optional),
 			},
 		}
 	}
@@ -104,7 +109,7 @@ func trustedCABundleVolumeSource(buildConfig *BuildConfig) corev1.VolumeSource {
 			LocalObjectReference: corev1.LocalObjectReference{
 				Name: name,
 			},
-			Optional: ptr.To(true),
+			Optional: ptr.To(optional),
 		},
 	}
 }

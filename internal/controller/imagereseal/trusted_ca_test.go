@@ -5,6 +5,7 @@ import (
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/tasks"
+	controllerutils "github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/controllerutils"
 )
 
 func TestApplyTrustedCABundleFromOSBuilds_ImageReseal(t *testing.T) {
@@ -53,7 +54,7 @@ func TestApplyTrustedCABundleFromOSBuilds_ImageReseal(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			buildCfg := &tasks.BuildConfig{}
-			applyTrustedCABundleFromOSBuilds(buildCfg, tc.osBuilds)
+			controllerutils.ApplyTrustedCABundleFromOSBuilds(buildCfg, tc.osBuilds)
 			if buildCfg.TrustedCABundleKind != tc.wantKind {
 				t.Fatalf("kind mismatch: got %q want %q", buildCfg.TrustedCABundleKind, tc.wantKind)
 			}
