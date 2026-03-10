@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	configDir  = ".caib"
+	appDirName = "caib"
 	configFile = "cli.json"
 
 	buildAPIRoutePrefix = "ado-build-api"
@@ -100,7 +100,7 @@ func JumpstarterEndpoint() string {
 }
 
 // DeriveServerFromJumpstarter derives the Build API URL from the default Jumpstarter client config,
-// checks reachability via /v1/healthz, and if successful saves the URL to ~/.caib/cli.json.
+// checks reachability via /v1/healthz, and if successful saves the URL to ~/.config/caib/cli.json.
 // Returns the derived URL, or "" if the Jumpstarter config is absent, derivation fails, or the server is unreachable.
 func DeriveServerFromJumpstarter() string {
 	grpcEndpoint := JumpstarterEndpoint()
@@ -162,13 +162,13 @@ func DeriveServerFromJumpstarter() string {
 	return apiURL
 }
 
-// Read reads the CLI config from the user's home directory.
+// Read reads the CLI config from XDG config (typically ~/.config/caib).
 func Read() (*CLIConfig, error) {
-	dir, err := configDirPath()
+	path, err := configFilePath()
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(filepath.Join(dir, configFile))
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -184,11 +184,11 @@ func Read() (*CLIConfig, error) {
 
 // SaveServerURL writes the given server URL to the local config file.
 func SaveServerURL(serverURL string) error {
-	dir, err := configDirPath()
+	path, err := configFilePath()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
 	cfg := &CLIConfig{ServerURL: strings.TrimSpace(serverURL)}
@@ -196,13 +196,39 @@ func SaveServerURL(serverURL string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, configFile), data, 0600)
+	return os.WriteFile(path, data, 0600)
 }
 
-func configDirPath() (string, error) {
+// DirPath returns the config directory for caib.
+func DirPath() (string, error) {
+	if base := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); base != "" {
+		return filepath.Join(base, appDirName), nil
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, configDir), nil
+	return filepath.Join(home, ".config", appDirName), nil
+}
+
+// CacheDirPath returns the cache directory for caib.
+func CacheDirPath() (string, error) {
+	if base := strings.TrimSpace(os.Getenv("XDG_CACHE_HOME")); base != "" {
+		return filepath.Join(base, appDirName), nil
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".cache", appDirName), nil
+}
+
+func configFilePath() (string, error) {
+	dir, err := DirPath()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, configFile), nil
 }

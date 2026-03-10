@@ -132,6 +132,7 @@ var _ = Describe("GetOIDCConfigFromAPI", func() {
 var _ = Describe("GetOIDCConfigFromLocalConfig", func() {
 	var tempDir string
 	var originalHome string
+	var originalXDGConfig string
 
 	BeforeEach(func() {
 		var err error
@@ -139,18 +140,25 @@ var _ = Describe("GetOIDCConfigFromLocalConfig", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		originalHome = os.Getenv("HOME")
+		originalXDGConfig = os.Getenv("XDG_CONFIG_HOME")
 		_ = os.Setenv("HOME", tempDir)
+		_ = os.Unsetenv("XDG_CONFIG_HOME")
 	})
 
 	AfterEach(func() {
 		if originalHome != "" {
 			_ = os.Setenv("HOME", originalHome)
 		}
+		if originalXDGConfig != "" {
+			_ = os.Setenv("XDG_CONFIG_HOME", originalXDGConfig)
+		} else {
+			_ = os.Unsetenv("XDG_CONFIG_HOME")
+		}
 		_ = os.RemoveAll(tempDir)
 	})
 
 	It("should read config from local file", func() {
-		configDir := filepath.Join(tempDir, tokenCacheDir)
+		configDir := filepath.Join(tempDir, ".config", "caib")
 		Expect(os.MkdirAll(configDir, 0700)).To(Succeed())
 
 		configData := map[string]interface{}{
@@ -179,7 +187,7 @@ var _ = Describe("GetOIDCConfigFromLocalConfig", func() {
 	})
 
 	It("should return error when config is invalid", func() {
-		configDir := filepath.Join(tempDir, tokenCacheDir)
+		configDir := filepath.Join(tempDir, ".config", "caib")
 		Expect(os.MkdirAll(configDir, 0700)).To(Succeed())
 
 		configPath := filepath.Join(configDir, "config.json")
@@ -191,7 +199,7 @@ var _ = Describe("GetOIDCConfigFromLocalConfig", func() {
 	})
 
 	It("should return error when issuer_url is missing", func() {
-		configDir := filepath.Join(tempDir, tokenCacheDir)
+		configDir := filepath.Join(tempDir, ".config", "caib")
 		Expect(os.MkdirAll(configDir, 0700)).To(Succeed())
 
 		configData := map[string]interface{}{
@@ -213,6 +221,7 @@ var _ = Describe("GetOIDCConfigFromLocalConfig", func() {
 var _ = Describe("SaveOIDCConfig", func() {
 	var tempDir string
 	var originalHome string
+	var originalXDGConfig string
 
 	BeforeEach(func() {
 		var err error
@@ -220,12 +229,19 @@ var _ = Describe("SaveOIDCConfig", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		originalHome = os.Getenv("HOME")
+		originalXDGConfig = os.Getenv("XDG_CONFIG_HOME")
 		_ = os.Setenv("HOME", tempDir)
+		_ = os.Unsetenv("XDG_CONFIG_HOME")
 	})
 
 	AfterEach(func() {
 		if originalHome != "" {
 			_ = os.Setenv("HOME", originalHome)
+		}
+		if originalXDGConfig != "" {
+			_ = os.Setenv("XDG_CONFIG_HOME", originalXDGConfig)
+		} else {
+			_ = os.Unsetenv("XDG_CONFIG_HOME")
 		}
 		_ = os.RemoveAll(tempDir)
 	})
@@ -240,7 +256,7 @@ var _ = Describe("SaveOIDCConfig", func() {
 		err := SaveOIDCConfig(config)
 		Expect(err).NotTo(HaveOccurred())
 
-		configPath := filepath.Join(tempDir, tokenCacheDir, "config.json")
+		configPath := filepath.Join(tempDir, ".config", "caib", "config.json")
 		data, err := os.ReadFile(configPath)
 		Expect(err).NotTo(HaveOccurred())
 

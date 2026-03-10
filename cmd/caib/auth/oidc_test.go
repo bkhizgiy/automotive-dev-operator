@@ -101,6 +101,7 @@ var _ = Describe("NewOIDCAuth", func() {
 var _ = Describe("Token cache save/load", func() {
 	var tempDir string
 	var originalHome string
+	var originalXDGCache string
 	var oidcAuth *OIDCAuth
 
 	BeforeEach(func() {
@@ -109,9 +110,11 @@ var _ = Describe("Token cache save/load", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		originalHome = os.Getenv("HOME")
+		originalXDGCache = os.Getenv("XDG_CACHE_HOME")
 		Expect(os.Setenv("HOME", tempDir)).To(Succeed())
+		Expect(os.Unsetenv("XDG_CACHE_HOME")).To(Succeed())
 
-		cachePath := filepath.Join(tempDir, tokenCacheDir, tokenCacheFile)
+		cachePath := filepath.Join(tempDir, ".cache", "caib", tokenCacheFile)
 		oidcAuth = &OIDCAuth{
 			config: OIDCConfig{
 				IssuerURL: "https://issuer.example.com",
@@ -124,6 +127,11 @@ var _ = Describe("Token cache save/load", func() {
 	AfterEach(func() {
 		if originalHome != "" {
 			_ = os.Setenv("HOME", originalHome)
+		}
+		if originalXDGCache != "" {
+			_ = os.Setenv("XDG_CACHE_HOME", originalXDGCache)
+		} else {
+			_ = os.Unsetenv("XDG_CACHE_HOME")
 		}
 		_ = os.RemoveAll(tempDir)
 	})
@@ -200,6 +208,7 @@ var _ = Describe("Token cache save/load", func() {
 var _ = Describe("LoadTokenCache (exported)", func() {
 	var tempDir string
 	var originalHome string
+	var originalXDGCache string
 
 	BeforeEach(func() {
 		var err error
@@ -207,12 +216,19 @@ var _ = Describe("LoadTokenCache (exported)", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		originalHome = os.Getenv("HOME")
+		originalXDGCache = os.Getenv("XDG_CACHE_HOME")
 		Expect(os.Setenv("HOME", tempDir)).To(Succeed())
+		Expect(os.Unsetenv("XDG_CACHE_HOME")).To(Succeed())
 	})
 
 	AfterEach(func() {
 		if originalHome != "" {
 			_ = os.Setenv("HOME", originalHome)
+		}
+		if originalXDGCache != "" {
+			_ = os.Setenv("XDG_CACHE_HOME", originalXDGCache)
+		} else {
+			_ = os.Unsetenv("XDG_CACHE_HOME")
 		}
 		_ = os.RemoveAll(tempDir)
 	})
@@ -224,7 +240,7 @@ var _ = Describe("LoadTokenCache (exported)", func() {
 	})
 
 	It("should load cache with refresh token", func() {
-		cacheDir := filepath.Join(tempDir, tokenCacheDir)
+		cacheDir := filepath.Join(tempDir, ".cache", "caib")
 		Expect(os.MkdirAll(cacheDir, 0700)).To(Succeed())
 
 		cache := TokenCache{
@@ -246,7 +262,7 @@ var _ = Describe("LoadTokenCache (exported)", func() {
 	})
 
 	It("should load cache without refresh token", func() {
-		cacheDir := filepath.Join(tempDir, tokenCacheDir)
+		cacheDir := filepath.Join(tempDir, ".cache", "caib")
 		Expect(os.MkdirAll(cacheDir, 0700)).To(Succeed())
 
 		cache := TokenCache{
@@ -264,13 +280,36 @@ var _ = Describe("LoadTokenCache (exported)", func() {
 	})
 
 	It("should return error for invalid JSON", func() {
-		cacheDir := filepath.Join(tempDir, tokenCacheDir)
+		cacheDir := filepath.Join(tempDir, ".cache", "caib")
 		Expect(os.MkdirAll(cacheDir, 0700)).To(Succeed())
 		Expect(os.WriteFile(filepath.Join(cacheDir, tokenCacheFile), []byte("bad json"), 0600)).To(Succeed())
 
 		cache, err := LoadTokenCache()
 		Expect(err).To(HaveOccurred())
 		Expect(cache).To(BeNil())
+	})
+
+	It("should read cache from XDG_CACHE_HOME override when set", func() {
+		customCache := filepath.Join(tempDir, "custom-cache")
+		Expect(os.Setenv("XDG_CACHE_HOME", customCache)).To(Succeed())
+
+		cacheDir := filepath.Join(customCache, "caib")
+		Expect(os.MkdirAll(cacheDir, 0700)).To(Succeed())
+		cache := TokenCache{
+			Token:        "xdg-access-token",
+			RefreshToken: "xdg-refresh-token",
+			ExpiresAt:    time.Now().Add(1 * time.Hour),
+			Issuer:       "https://issuer.example.com",
+		}
+		data, err := json.Marshal(cache)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(os.WriteFile(filepath.Join(cacheDir, tokenCacheFile), data, 0600)).To(Succeed())
+
+		loaded, err := LoadTokenCache()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(loaded).NotTo(BeNil())
+		Expect(loaded.Token).To(Equal("xdg-access-token"))
+		Expect(loaded.RefreshToken).To(Equal("xdg-refresh-token"))
 	})
 })
 
@@ -373,10 +412,11 @@ var _ = Describe("refreshAccessToken", func() {
 
 var _ = Describe("tryRefreshToken", func() {
 	var (
-		tempDir      string
-		originalHome string
-		oidcServer   *httptest.Server
-		oidcAuth     *OIDCAuth
+		tempDir          string
+		originalHome     string
+		originalXDGCache string
+		oidcServer       *httptest.Server
+		oidcAuth         *OIDCAuth
 	)
 
 	BeforeEach(func() {
@@ -385,12 +425,19 @@ var _ = Describe("tryRefreshToken", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		originalHome = os.Getenv("HOME")
+		originalXDGCache = os.Getenv("XDG_CACHE_HOME")
 		Expect(os.Setenv("HOME", tempDir)).To(Succeed())
+		Expect(os.Unsetenv("XDG_CACHE_HOME")).To(Succeed())
 	})
 
 	AfterEach(func() {
 		if originalHome != "" {
 			_ = os.Setenv("HOME", originalHome)
+		}
+		if originalXDGCache != "" {
+			_ = os.Setenv("XDG_CACHE_HOME", originalXDGCache)
+		} else {
+			_ = os.Unsetenv("XDG_CACHE_HOME")
 		}
 		_ = os.RemoveAll(tempDir)
 		if oidcServer != nil {
@@ -419,7 +466,7 @@ var _ = Describe("tryRefreshToken", func() {
 
 		newAccessToken = makeValidTestJWT(oidcServer.URL, 1*time.Hour)
 
-		cachePath := filepath.Join(tempDir, tokenCacheDir, tokenCacheFile)
+		cachePath := filepath.Join(tempDir, ".cache", "caib", tokenCacheFile)
 		oidcAuth = &OIDCAuth{
 			config: OIDCConfig{
 				IssuerURL: oidcServer.URL,
@@ -464,7 +511,7 @@ var _ = Describe("tryRefreshToken", func() {
 
 		newAccessToken = makeValidTestJWT(oidcServer.URL, 1*time.Hour)
 
-		cachePath := filepath.Join(tempDir, tokenCacheDir, tokenCacheFile)
+		cachePath := filepath.Join(tempDir, ".cache", "caib", tokenCacheFile)
 		oidcAuth = &OIDCAuth{
 			config: OIDCConfig{
 				IssuerURL: oidcServer.URL,
@@ -490,9 +537,10 @@ var _ = Describe("tryRefreshToken", func() {
 
 var _ = Describe("GetTokenWithStatus", func() {
 	var (
-		tempDir      string
-		originalHome string
-		oidcServer   *httptest.Server
+		tempDir          string
+		originalHome     string
+		originalXDGCache string
+		oidcServer       *httptest.Server
 	)
 
 	BeforeEach(func() {
@@ -501,12 +549,19 @@ var _ = Describe("GetTokenWithStatus", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		originalHome = os.Getenv("HOME")
+		originalXDGCache = os.Getenv("XDG_CACHE_HOME")
 		Expect(os.Setenv("HOME", tempDir)).To(Succeed())
+		Expect(os.Unsetenv("XDG_CACHE_HOME")).To(Succeed())
 	})
 
 	AfterEach(func() {
 		if originalHome != "" {
 			_ = os.Setenv("HOME", originalHome)
+		}
+		if originalXDGCache != "" {
+			_ = os.Setenv("XDG_CACHE_HOME", originalXDGCache)
+		} else {
+			_ = os.Unsetenv("XDG_CACHE_HOME")
 		}
 		_ = os.RemoveAll(tempDir)
 		if oidcServer != nil {
@@ -516,7 +571,7 @@ var _ = Describe("GetTokenWithStatus", func() {
 
 	It("should return cached token when still valid", func() {
 		validToken := makeValidTestJWT("https://issuer.example.com", 1*time.Hour)
-		cachePath := filepath.Join(tempDir, tokenCacheDir, tokenCacheFile)
+		cachePath := filepath.Join(tempDir, ".cache", "caib", tokenCacheFile)
 
 		oidcAuth := &OIDCAuth{
 			config: OIDCConfig{
@@ -557,7 +612,7 @@ var _ = Describe("GetTokenWithStatus", func() {
 		expiredToken := makeExpiredTestJWT(oidcServer.URL)
 		newToken = makeValidTestJWT(oidcServer.URL, 1*time.Hour)
 
-		cachePath := filepath.Join(tempDir, tokenCacheDir, tokenCacheFile)
+		cachePath := filepath.Join(tempDir, ".cache", "caib", tokenCacheFile)
 		cacheDir := filepath.Dir(cachePath)
 		Expect(os.MkdirAll(cacheDir, 0700)).To(Succeed())
 
@@ -607,7 +662,7 @@ var _ = Describe("GetTokenWithStatus", func() {
 		almostExpiredToken := makeValidTestJWT(oidcServer.URL, 3*time.Minute)
 		newToken = makeValidTestJWT(oidcServer.URL, 1*time.Hour)
 
-		cachePath := filepath.Join(tempDir, tokenCacheDir, tokenCacheFile)
+		cachePath := filepath.Join(tempDir, ".cache", "caib", tokenCacheFile)
 		cacheDir := filepath.Dir(cachePath)
 		Expect(os.MkdirAll(cacheDir, 0700)).To(Succeed())
 

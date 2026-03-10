@@ -50,10 +50,11 @@ var _ = Describe("CreateClientWithReauth", func() {
 
 var _ = Describe("RefreshCachedToken", func() {
 	var (
-		tempDir      string
-		originalHome string
-		apiServer    *httptest.Server
-		tokenServer  *httptest.Server
+		tempDir          string
+		originalHome     string
+		originalXDGCache string
+		apiServer        *httptest.Server
+		tokenServer      *httptest.Server
 	)
 
 	BeforeEach(func() {
@@ -62,12 +63,19 @@ var _ = Describe("RefreshCachedToken", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		originalHome = os.Getenv("HOME")
+		originalXDGCache = os.Getenv("XDG_CACHE_HOME")
 		Expect(os.Setenv("HOME", tempDir)).To(Succeed())
+		Expect(os.Unsetenv("XDG_CACHE_HOME")).To(Succeed())
 	})
 
 	AfterEach(func() {
 		if originalHome != "" {
 			_ = os.Setenv("HOME", originalHome)
+		}
+		if originalXDGCache != "" {
+			_ = os.Setenv("XDG_CACHE_HOME", originalXDGCache)
+		} else {
+			_ = os.Unsetenv("XDG_CACHE_HOME")
 		}
 		_ = os.RemoveAll(tempDir)
 		if apiServer != nil {
@@ -106,7 +114,7 @@ var _ = Describe("RefreshCachedToken", func() {
 		newToken := makeValidTestJWT("https://issuer.example.com", 1*time.Hour)
 
 		// Set up token cache without refresh token
-		cacheDir := filepath.Join(tempDir, tokenCacheDir)
+		cacheDir := filepath.Join(tempDir, ".cache", "caib")
 		Expect(os.MkdirAll(cacheDir, 0700)).To(Succeed())
 		cache := TokenCache{
 			Token:     newToken,
@@ -171,7 +179,7 @@ var _ = Describe("RefreshCachedToken", func() {
 		}))
 
 		// Set up token cache with refresh token
-		cacheDir := filepath.Join(tempDir, tokenCacheDir)
+		cacheDir := filepath.Join(tempDir, ".cache", "caib")
 		Expect(os.MkdirAll(cacheDir, 0700)).To(Succeed())
 		cache := TokenCache{
 			Token:        makeExpiredTestJWT(tokenServer.URL),

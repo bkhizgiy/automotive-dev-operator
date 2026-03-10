@@ -17,10 +17,10 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
-// writeJumpstarterConfig creates jumpstarter config.yaml and clients/mycluster.yaml under baseDir.
+// writeJumpstarterConfig creates ~/.config/jumpstarter/{config.yaml,clients/mycluster.yaml} under homeDir.
 func writeJumpstarterConfig(baseDir, endpoint string) {
 	const alias = "mycluster"
-	jmpDir := filepath.Join(baseDir, "jumpstarter")
+	jmpDir := filepath.Join(baseDir, ".config", "jumpstarter")
 	ExpectWithOffset(1, os.MkdirAll(filepath.Join(jmpDir, "clients"), 0700)).To(Succeed())
 
 	configYAML := "config:\n  current-client: " + alias + "\n"
@@ -32,24 +32,27 @@ func writeJumpstarterConfig(baseDir, endpoint string) {
 
 var _ = Describe("DeriveServerFromJumpstarter", func() {
 	var tempDir string
-	var origXDG, origHome string
+	var origHome, origXDG string
 
 	BeforeEach(func() {
 		var err error
 		tempDir, err = os.MkdirTemp("", "caib-derive-test-*")
 		Expect(err).NotTo(HaveOccurred())
 
-		origXDG = os.Getenv("XDG_CONFIG_HOME")
 		origHome = os.Getenv("HOME")
-		Expect(os.Setenv("XDG_CONFIG_HOME", tempDir)).To(Succeed())
-		// HOME controls where SaveServerURL writes ~/.caib/cli.json
+		origXDG = os.Getenv("XDG_CONFIG_HOME")
 		Expect(os.Setenv("HOME", tempDir)).To(Succeed())
+		Expect(os.Unsetenv("XDG_CONFIG_HOME")).To(Succeed())
 	})
 
 	AfterEach(func() {
 		healthHTTPClient = nil
-		_ = os.Setenv("XDG_CONFIG_HOME", origXDG)
 		_ = os.Setenv("HOME", origHome)
+		if origXDG != "" {
+			_ = os.Setenv("XDG_CONFIG_HOME", origXDG)
+		} else {
+			_ = os.Unsetenv("XDG_CONFIG_HOME")
+		}
 		_ = os.RemoveAll(tempDir)
 	})
 
@@ -165,25 +168,29 @@ var _ = Describe("DeriveServerFromJumpstarter", func() {
 
 var _ = Describe("DefaultServerWithDerive", func() {
 	var tempDir string
-	var origXDG, origHome, origCAIBServer string
+	var origHome, origXDG, origCAIBServer string
 
 	BeforeEach(func() {
 		var err error
 		tempDir, err = os.MkdirTemp("", "caib-default-test-*")
 		Expect(err).NotTo(HaveOccurred())
 
-		origXDG = os.Getenv("XDG_CONFIG_HOME")
 		origHome = os.Getenv("HOME")
+		origXDG = os.Getenv("XDG_CONFIG_HOME")
 		origCAIBServer = os.Getenv("CAIB_SERVER")
-		Expect(os.Setenv("XDG_CONFIG_HOME", tempDir)).To(Succeed())
 		Expect(os.Setenv("HOME", tempDir)).To(Succeed())
+		Expect(os.Unsetenv("XDG_CONFIG_HOME")).To(Succeed())
 		Expect(os.Unsetenv("CAIB_SERVER")).To(Succeed())
 	})
 
 	AfterEach(func() {
 		healthHTTPClient = nil
-		_ = os.Setenv("XDG_CONFIG_HOME", origXDG)
 		_ = os.Setenv("HOME", origHome)
+		if origXDG != "" {
+			_ = os.Setenv("XDG_CONFIG_HOME", origXDG)
+		} else {
+			_ = os.Unsetenv("XDG_CONFIG_HOME")
+		}
 		if origCAIBServer != "" {
 			_ = os.Setenv("CAIB_SERVER", origCAIBServer)
 		} else {
@@ -261,5 +268,46 @@ var _ = Describe("DefaultServerWithDerive", func() {
 
 		Expect(DefaultServerWithDerive()).To(BeEmpty())
 		Expect(called).To(BeFalse(), "health check should not be called when there is no jumpstarter config")
+	})
+})
+
+var _ = Describe("Read with XDG config override", func() {
+	var tempDir string
+	var origHome, origXDG string
+
+	BeforeEach(func() {
+		var err error
+		tempDir, err = os.MkdirTemp("", "caib-xdg-config-test-*")
+		Expect(err).NotTo(HaveOccurred())
+
+		origHome = os.Getenv("HOME")
+		origXDG = os.Getenv("XDG_CONFIG_HOME")
+		Expect(os.Setenv("HOME", filepath.Join(tempDir, "home"))).To(Succeed())
+		Expect(os.Setenv("XDG_CONFIG_HOME", filepath.Join(tempDir, "custom-config"))).To(Succeed())
+	})
+
+	AfterEach(func() {
+		_ = os.Setenv("HOME", origHome)
+		if origXDG != "" {
+			_ = os.Setenv("XDG_CONFIG_HOME", origXDG)
+		} else {
+			_ = os.Unsetenv("XDG_CONFIG_HOME")
+		}
+		_ = os.RemoveAll(tempDir)
+	})
+
+	It("reads cli.json from XDG_CONFIG_HOME when set", func() {
+		configDir := filepath.Join(tempDir, "custom-config", "caib")
+		Expect(os.MkdirAll(configDir, 0700)).To(Succeed())
+		Expect(os.WriteFile(
+			filepath.Join(configDir, "cli.json"),
+			[]byte("{\"server_url\":\"https://from-xdg.example.com\"}"),
+			0600,
+		)).To(Succeed())
+
+		cfg, err := Read()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg).NotTo(BeNil())
+		Expect(cfg.ServerURL).To(Equal("https://from-xdg.example.com"))
 	})
 })

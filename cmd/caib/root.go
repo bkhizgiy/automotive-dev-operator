@@ -42,7 +42,7 @@ func newLoginCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "login [server-url]",
 		Short: "Save server endpoint and authenticate for subsequent commands",
-		Long: `Login saves the Build API server URL locally (~/.caib/cli.json) so you do not need
+		Long: `Login saves the Build API server URL in XDG config (typically ~/.config/caib/cli.json) so you do not need
 to pass --server or set CAIB_SERVER for later commands. If the server uses OIDC,
 this command also performs authentication and caches the token.
 
