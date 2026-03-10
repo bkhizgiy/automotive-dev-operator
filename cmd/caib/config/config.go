@@ -162,7 +162,7 @@ func DeriveServerFromJumpstarter() string {
 	return apiURL
 }
 
-// Read reads the CLI config from ~/.config/caib.
+// Read reads the CLI config from XDG config (typically ~/.config/caib).
 func Read() (*CLIConfig, error) {
 	path, err := configFilePath()
 	if err != nil {
@@ -201,6 +201,10 @@ func SaveServerURL(serverURL string) error {
 
 // DirPath returns the config directory for caib.
 func DirPath() (string, error) {
+	if base := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); base != "" {
+		return filepath.Join(base, appDirName), nil
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -210,6 +214,10 @@ func DirPath() (string, error) {
 
 // CacheDirPath returns the cache directory for caib.
 func CacheDirPath() (string, error) {
+	if base := strings.TrimSpace(os.Getenv("XDG_CACHE_HOME")); base != "" {
+		return filepath.Join(base, appDirName), nil
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

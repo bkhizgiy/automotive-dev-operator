@@ -132,6 +132,7 @@ var _ = Describe("GetOIDCConfigFromAPI", func() {
 var _ = Describe("GetOIDCConfigFromLocalConfig", func() {
 	var tempDir string
 	var originalHome string
+	var originalXDGConfig string
 
 	BeforeEach(func() {
 		var err error
@@ -139,12 +140,19 @@ var _ = Describe("GetOIDCConfigFromLocalConfig", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		originalHome = os.Getenv("HOME")
+		originalXDGConfig = os.Getenv("XDG_CONFIG_HOME")
 		_ = os.Setenv("HOME", tempDir)
+		_ = os.Unsetenv("XDG_CONFIG_HOME")
 	})
 
 	AfterEach(func() {
 		if originalHome != "" {
 			_ = os.Setenv("HOME", originalHome)
+		}
+		if originalXDGConfig != "" {
+			_ = os.Setenv("XDG_CONFIG_HOME", originalXDGConfig)
+		} else {
+			_ = os.Unsetenv("XDG_CONFIG_HOME")
 		}
 		_ = os.RemoveAll(tempDir)
 	})
@@ -213,6 +221,7 @@ var _ = Describe("GetOIDCConfigFromLocalConfig", func() {
 var _ = Describe("SaveOIDCConfig", func() {
 	var tempDir string
 	var originalHome string
+	var originalXDGConfig string
 
 	BeforeEach(func() {
 		var err error
@@ -220,12 +229,19 @@ var _ = Describe("SaveOIDCConfig", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		originalHome = os.Getenv("HOME")
+		originalXDGConfig = os.Getenv("XDG_CONFIG_HOME")
 		_ = os.Setenv("HOME", tempDir)
+		_ = os.Unsetenv("XDG_CONFIG_HOME")
 	})
 
 	AfterEach(func() {
 		if originalHome != "" {
 			_ = os.Setenv("HOME", originalHome)
+		}
+		if originalXDGConfig != "" {
+			_ = os.Setenv("XDG_CONFIG_HOME", originalXDGConfig)
+		} else {
+			_ = os.Unsetenv("XDG_CONFIG_HOME")
 		}
 		_ = os.RemoveAll(tempDir)
 	})

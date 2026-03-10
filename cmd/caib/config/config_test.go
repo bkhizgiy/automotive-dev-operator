@@ -270,3 +270,44 @@ var _ = Describe("DefaultServerWithDerive", func() {
 		Expect(called).To(BeFalse(), "health check should not be called when there is no jumpstarter config")
 	})
 })
+
+var _ = Describe("Read with XDG config override", func() {
+	var tempDir string
+	var origHome, origXDG string
+
+	BeforeEach(func() {
+		var err error
+		tempDir, err = os.MkdirTemp("", "caib-xdg-config-test-*")
+		Expect(err).NotTo(HaveOccurred())
+
+		origHome = os.Getenv("HOME")
+		origXDG = os.Getenv("XDG_CONFIG_HOME")
+		Expect(os.Setenv("HOME", filepath.Join(tempDir, "home"))).To(Succeed())
+		Expect(os.Setenv("XDG_CONFIG_HOME", filepath.Join(tempDir, "custom-config"))).To(Succeed())
+	})
+
+	AfterEach(func() {
+		_ = os.Setenv("HOME", origHome)
+		if origXDG != "" {
+			_ = os.Setenv("XDG_CONFIG_HOME", origXDG)
+		} else {
+			_ = os.Unsetenv("XDG_CONFIG_HOME")
+		}
+		_ = os.RemoveAll(tempDir)
+	})
+
+	It("reads cli.json from XDG_CONFIG_HOME when set", func() {
+		configDir := filepath.Join(tempDir, "custom-config", "caib")
+		Expect(os.MkdirAll(configDir, 0700)).To(Succeed())
+		Expect(os.WriteFile(
+			filepath.Join(configDir, "cli.json"),
+			[]byte("{\"server_url\":\"https://from-xdg.example.com\"}"),
+			0600,
+		)).To(Succeed())
+
+		cfg, err := Read()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg).NotTo(BeNil())
+		Expect(cfg.ServerURL).To(Equal("https://from-xdg.example.com"))
+	})
+})
