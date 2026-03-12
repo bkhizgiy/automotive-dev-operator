@@ -4,11 +4,14 @@ package imagebuild
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/registryutil"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/tasks"
 	"github.com/go-logr/logr"
 	routev1 "github.com/openshift/api/route/v1"
@@ -562,20 +565,25 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 	// Add flash params if flash is enabled
 	var flashExporterSelector, flashCmd, flashOCIAuthSecretName string
 	if imageBuild.Spec.IsFlashEnabled() {
-		target := imageBuild.Spec.GetTarget()
-		if operatorConfig.Spec.Jumpstarter != nil {
-			if mapping, ok := operatorConfig.Spec.Jumpstarter.TargetMappings[target]; ok {
-				flashExporterSelector = mapping.Selector
-				flashCmd = mapping.FlashCmd
+		// User-specified exporter selector bypasses target lookup entirely
+		flashExporterSelector = imageBuild.Spec.GetFlashExporterSelector()
+		if flashExporterSelector == "" {
+			target := imageBuild.Spec.GetTarget()
+			if operatorConfig.Spec.Jumpstarter != nil {
+				if mapping, ok := operatorConfig.Spec.Jumpstarter.TargetMappings[target]; ok {
+					flashExporterSelector = mapping.Selector
+					flashCmd = mapping.FlashCmd
+				}
+			}
+			if flashExporterSelector == "" {
+				return fmt.Errorf("flash enabled but no Jumpstarter target mapping found for target %q; "+
+					"configure OperatorConfig.spec.jumpstarter.targetMappings[%q] with selector and flashCmd, "+
+					"or set flash.exporterSelector directly", target, target)
 			}
 		}
 		// User-specified flash command overrides OperatorConfig
 		if userCmd := imageBuild.Spec.GetFlashCmd(); userCmd != "" {
 			flashCmd = userCmd
-		}
-		if flashExporterSelector == "" {
-			return fmt.Errorf("flash enabled but no Jumpstarter target mapping found for target %q; "+
-				"configure OperatorConfig.spec.jumpstarter.targetMappings[%q] with selector and flashCmd", target, target)
 		}
 		// Internal registry references are cluster-internal and not reachable by the flash exporter.
 		// Require an external route and fail fast if unavailable.
@@ -634,8 +642,17 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 					"password": []byte(tokenResp.Status.Token),
 				},
 			}
-			if _, err := clientset.CoreV1().Secrets(imageBuild.Namespace).Create(ctx, ociSecret, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
-				return fmt.Errorf("failed to create flash OCI auth secret: %w", err)
+			_, err = clientset.CoreV1().Secrets(imageBuild.Namespace).Create(ctx, ociSecret, metav1.CreateOptions{})
+			if errors.IsAlreadyExists(err) {
+				existing, getErr := clientset.CoreV1().Secrets(imageBuild.Namespace).Get(ctx, ociSecret.Name, metav1.GetOptions{})
+				if getErr != nil {
+					return fmt.Errorf("failed to get existing flash OCI auth secret: %w", getErr)
+				}
+				existing.Data = ociSecret.Data
+				_, err = clientset.CoreV1().Secrets(imageBuild.Namespace).Update(ctx, existing, metav1.UpdateOptions{})
+			}
+			if err != nil {
+				return fmt.Errorf("failed to create/update flash OCI auth secret: %w", err)
 			}
 		} else if imageBuild.Spec.SecretRef != "" && flashImageRef != "" {
 			// External registry: read credentials from the registry-auth secret and
@@ -648,11 +665,11 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 			}, registrySecret); err != nil {
 				return fmt.Errorf("failed to read registry secret %q for flash OCI credentials: %w", imageBuild.Spec.SecretRef, err)
 			}
-			regUser := registrySecret.Data["REGISTRY_USERNAME"]
-			regPass := registrySecret.Data["REGISTRY_PASSWORD"]
-			hasUser := len(regUser) > 0
-			hasPass := len(regPass) > 0
-			if hasUser && hasPass {
+			regUser, regPass := extractFlashCredentials(registrySecret, flashImageRef, log)
+			if len(regUser) == 0 && len(regPass) == 0 {
+				log.Info("No usable credentials found in registry secret for flash OCI auth",
+					"secret", imageBuild.Spec.SecretRef)
+			} else if len(regUser) > 0 && len(regPass) > 0 {
 				flashOCIAuthSecretName = imageBuild.Name + "-flash-oci-auth"
 				ociSecret := &corev1.Secret{
 					ObjectMeta: metav1.ObjectMeta{
@@ -675,16 +692,20 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 						"password": regPass,
 					},
 				}
-				if err := r.Create(ctx, ociSecret); err != nil && !errors.IsAlreadyExists(err) {
-					return fmt.Errorf("failed to create flash OCI auth secret from registry credentials: %w", err)
+				if err := r.Create(ctx, ociSecret); err != nil {
+					if errors.IsAlreadyExists(err) {
+						existing := &corev1.Secret{}
+						if err := r.Get(ctx, client.ObjectKey{Namespace: imageBuild.Namespace, Name: flashOCIAuthSecretName}, existing); err != nil {
+							return fmt.Errorf("failed to get existing flash OCI auth secret: %w", err)
+						}
+						existing.Data = ociSecret.Data
+						if err := r.Update(ctx, existing); err != nil {
+							return fmt.Errorf("failed to update flash OCI auth secret: %w", err)
+						}
+					} else {
+						return fmt.Errorf("failed to create flash OCI auth secret from registry credentials: %w", err)
+					}
 				}
-			} else if hasUser || hasPass {
-				missing := "REGISTRY_PASSWORD"
-				if !hasUser {
-					missing = "REGISTRY_USERNAME"
-				}
-				log.Info("Partial registry credentials in secret, skipping flash OCI auth",
-					"secret", imageBuild.Spec.SecretRef, "missing", missing)
 			}
 		}
 
@@ -1406,6 +1427,8 @@ func (r *ImageBuildReconciler) cleanupTransientSecrets(
 	if flashSecretRef := imageBuild.Spec.GetFlashClientConfigSecretRef(); flashSecretRef != "" {
 		r.deleteSecretWithRetry(ctx, imageBuild.Namespace, flashSecretRef, "flash client config", log)
 	}
+	// Cleanup flash OCI auth secret
+	r.deleteSecretWithRetry(ctx, imageBuild.Namespace, imageBuild.Name+"-flash-oci-auth", "flash OCI auth", log)
 }
 
 // deleteSecretWithRetry attempts to delete a secret with exponential backoff retry
@@ -1951,4 +1974,63 @@ func (r *ImageBuildReconciler) shutdownUploadPod(ctx context.Context, imageBuild
 
 	log.Info("Upload pod deleted")
 	return nil
+}
+
+// extractFlashCredentials extracts username/password from a registry secret for flash OCI auth.
+// It first checks for explicit REGISTRY_USERNAME/REGISTRY_PASSWORD keys, then falls back
+// to parsing .dockerconfigjson or REGISTRY_AUTH_FILE_CONTENT to decode credentials.
+func extractFlashCredentials(secret *corev1.Secret, registryURL string, log logr.Logger) ([]byte, []byte) {
+	regUser := secret.Data["REGISTRY_USERNAME"]
+	regPass := secret.Data["REGISTRY_PASSWORD"]
+	if len(regUser) > 0 && len(regPass) > 0 {
+		return regUser, regPass
+	}
+
+	// Fall back to docker config JSON
+	dockerConfig := secret.Data[".dockerconfigjson"]
+	if len(dockerConfig) == 0 {
+		dockerConfig = secret.Data["REGISTRY_AUTH_FILE_CONTENT"]
+	}
+	if len(dockerConfig) == 0 {
+		log.Error(nil, "No docker config found in secret", "secret", secret.Name)
+		return nil, nil
+	}
+
+	var cfg struct {
+		Auths map[string]struct {
+			Auth string `json:"auth"`
+		} `json:"auths"`
+	}
+	if err := json.Unmarshal(dockerConfig, &cfg); err != nil {
+		log.Error(err, "Failed to parse docker config JSON from secret", "secret", secret.Name)
+		return nil, nil
+	}
+
+	for key, entry := range cfg.Auths {
+		if !registryutil.RegistryHostMatches(key, registryURL) {
+			continue
+		}
+		if user, pass := decodeAuthEntry(entry.Auth, log); user != nil {
+			return user, pass
+		}
+	}
+	log.Error(nil, "No matching credentials found in docker config", "secret", secret.Name, "registry", registryURL)
+	return nil, nil
+}
+
+func decodeAuthEntry(auth string, log logr.Logger) ([]byte, []byte) {
+	if auth == "" {
+		return nil, nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(auth)
+	if err != nil {
+		log.Error(err, "Failed to base64-decode auth entry")
+		return nil, nil
+	}
+	parts := strings.SplitN(string(decoded), ":", 2)
+	if len(parts) == 2 {
+		return []byte(parts[0]), []byte(parts[1])
+	}
+	log.Error(nil, "Auth entry missing ':' separator after decoding")
+	return nil, nil
 }

@@ -160,6 +160,7 @@ func (s runtimeState) newHandlers() handlerSet {
 			JumpstarterClient:         s.JumpstarterClient,
 			LeaseDuration:             s.LeaseDuration,
 			FlashCmd:                  s.FlashCmd,
+			ExporterSelector:          s.ExporterSelector,
 			UseInternalRegistry:       s.UseInternalRegistry,
 			InternalRegistryImageName: s.InternalRegistryImageName,
 			InternalRegistryTag:       s.InternalRegistryTag,
@@ -192,6 +193,7 @@ func (s runtimeState) newHandlers() handlerSet {
 			WaitForBuild:      s.WaitForBuild,
 			FollowLogs:        s.FollowLogs,
 			InsecureSkipTLS:   s.InsecureSkipTLS,
+			RegistryAuthFile:  s.RegistryAuthFile,
 			HandleError:       handleError,
 		}),
 		sealed: sealedcmd.NewHandler(sealedcmd.Options{
