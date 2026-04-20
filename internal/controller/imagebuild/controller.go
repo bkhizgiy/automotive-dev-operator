@@ -22,6 +22,7 @@ import (
 	authnv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -2311,6 +2312,8 @@ func (r *ImageBuildReconciler) updateStatus(
 		fresh.Status.CompletionTime = &now
 	}
 
+	setImageBuildConditions(fresh, phase, message)
+
 	if err := r.Status().Patch(ctx, fresh, patch); err != nil {
 		return err
 	}
@@ -2438,6 +2441,50 @@ func eventTypeForPhase(phase string) string {
 		return corev1.EventTypeWarning
 	}
 	return corev1.EventTypeNormal
+}
+
+func setImageBuildConditions(imageBuild *automotivev1alpha1.ImageBuild, phase, message string) {
+	switch phase {
+	case phaseCompleted:
+		meta.SetStatusCondition(&imageBuild.Status.Conditions, metav1.Condition{
+			Type:    automotivev1alpha1.ImageBuildConditionProgressing,
+			Status:  metav1.ConditionFalse,
+			Reason:  "Completed",
+			Message: message,
+		})
+		meta.SetStatusCondition(&imageBuild.Status.Conditions, metav1.Condition{
+			Type:    automotivev1alpha1.ImageBuildConditionReady,
+			Status:  metav1.ConditionTrue,
+			Reason:  "BuildSucceeded",
+			Message: message,
+		})
+	case phaseFailed, phaseCancelled:
+		meta.SetStatusCondition(&imageBuild.Status.Conditions, metav1.Condition{
+			Type:    automotivev1alpha1.ImageBuildConditionProgressing,
+			Status:  metav1.ConditionFalse,
+			Reason:  phase,
+			Message: message,
+		})
+		meta.SetStatusCondition(&imageBuild.Status.Conditions, metav1.Condition{
+			Type:    automotivev1alpha1.ImageBuildConditionReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  phase,
+			Message: message,
+		})
+	default:
+		meta.SetStatusCondition(&imageBuild.Status.Conditions, metav1.Condition{
+			Type:    automotivev1alpha1.ImageBuildConditionProgressing,
+			Status:  metav1.ConditionTrue,
+			Reason:  phase,
+			Message: message,
+		})
+		meta.SetStatusCondition(&imageBuild.Status.Conditions, metav1.Condition{
+			Type:    automotivev1alpha1.ImageBuildConditionReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  phase,
+			Message: message,
+		})
+	}
 }
 
 func (r *ImageBuildReconciler) emitEventf(
