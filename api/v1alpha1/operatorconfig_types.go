@@ -63,6 +63,9 @@ const (
 	// DefaultBuildTTL is the default time-to-live for builds (all phases, including in-progress).
 	DefaultBuildTTL = "24h"
 
+	// DefaultRegistryTokenLifetimeSeconds is the default SA token lifetime for internal registry auth.
+	DefaultRegistryTokenLifetimeSeconds int64 = 4 * 3600 // 4 hours
+
 	// NoExpireAnnotation prevents automatic expiry when set to "true" on an ImageBuild
 	NoExpireAnnotation = "automotive.sdv.cloud.redhat.com/no-expire"
 
@@ -562,6 +565,13 @@ type OSBuildsConfig struct {
 	// Set to "0" for no maximum. Uses Go duration format (e.g. "168h" for 1 week).
 	// +optional
 	MaxBuildTTL string `json:"maxBuildTTL,omitempty"`
+
+	// RegistryTokenLifetimeSeconds is the lifetime in seconds for service account tokens
+	// used for internal registry authentication during builds.
+	// Default: 14400 (4 hours)
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	RegistryTokenLifetimeSeconds int64 `json:"registryTokenLifetimeSeconds,omitempty"`
 }
 
 // CertificateSourceRef references a Secret or ConfigMap that contains trusted CA certificates.
@@ -611,6 +621,14 @@ func (c *OSBuildsConfig) GetMaxBuildTTL() string {
 		return c.MaxBuildTTL
 	}
 	return ""
+}
+
+// GetRegistryTokenLifetimeSeconds returns the SA token lifetime for internal registry auth
+func (c *OSBuildsConfig) GetRegistryTokenLifetimeSeconds() int64 {
+	if c != nil && c.RegistryTokenLifetimeSeconds > 0 {
+		return c.RegistryTokenLifetimeSeconds
+	}
+	return DefaultRegistryTokenLifetimeSeconds
 }
 
 // GetUsePVCScratchVolumes returns whether to use PVC-backed scratch volumes (default: true)

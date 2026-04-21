@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/labels"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/tasks"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 )
@@ -188,14 +189,14 @@ func (a *APIServer) createFlash(c *gin.Context) {
 			Name:      req.Name,
 			Namespace: namespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "build-api",
-				"app.kubernetes.io/part-of":    "automotive-dev",
-				"app.kubernetes.io/name":       "flash-taskrun",
-				flashTaskRunLabel:              req.Name,
+				labels.ManagedBy:    labels.ValueBuildAPI,
+				labels.PartOf:       labels.ValueAutomotiveDev,
+				labels.Name:         "flash-taskrun",
+				labels.FlashTaskRun: req.Name,
 			},
 			Annotations: map[string]string{
-				"automotive.sdv.cloud.redhat.com/requested-by": requestedBy,
-				"automotive.sdv.cloud.redhat.com/image-ref":    req.ImageRef,
+				labels.RequestedBy: requestedBy,
+				labels.ImageRef:    req.ImageRef,
 			},
 		},
 		Spec: tektonv1.TaskRunSpec{
@@ -267,7 +268,7 @@ func (a *APIServer) listFlash(c *gin.Context) {
 
 	// List TaskRuns with flash label
 	taskRunList := &tektonv1.TaskRunList{}
-	if err := k8sClient.List(ctx, taskRunList, client.InNamespace(namespace), client.HasLabels{flashTaskRunLabel}); err != nil {
+	if err := k8sClient.List(ctx, taskRunList, client.InNamespace(namespace), client.HasLabels{labels.FlashTaskRun}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to list flash TaskRuns: %v", err)})
 		return
 	}
@@ -290,7 +291,7 @@ func (a *APIServer) listFlash(c *gin.Context) {
 			Name:           tr.Name,
 			Phase:          phase,
 			Message:        message,
-			RequestedBy:    tr.Annotations["automotive.sdv.cloud.redhat.com/requested-by"],
+			RequestedBy:    tr.Annotations[labels.RequestedBy],
 			CreatedAt:      tr.CreationTimestamp.Format(time.RFC3339),
 			CompletionTime: compStr,
 		})
@@ -319,7 +320,7 @@ func (a *APIServer) getFlash(c *gin.Context, name string) {
 	}
 
 	// Verify it's a flash TaskRun
-	if taskRun.Labels[flashTaskRunLabel] == "" {
+	if taskRun.Labels[labels.FlashTaskRun] == "" {
 		c.JSON(http.StatusNotFound, gin.H{"error": "flash TaskRun not found"})
 		return
 	}
@@ -337,7 +338,7 @@ func (a *APIServer) getFlash(c *gin.Context, name string) {
 		Name:           taskRun.Name,
 		Phase:          phase,
 		Message:        message,
-		RequestedBy:    taskRun.Annotations["automotive.sdv.cloud.redhat.com/requested-by"],
+		RequestedBy:    taskRun.Annotations[labels.RequestedBy],
 		StartTime:      startStr,
 		CompletionTime: compStr,
 		TaskRunName:    taskRun.Name,
@@ -399,7 +400,7 @@ func (a *APIServer) streamFlashLogs(c *gin.Context, name string) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to get flash TaskRun: %v", err)})
 		return
 	}
-	if taskRun.Labels[flashTaskRunLabel] == "" {
+	if taskRun.Labels[labels.FlashTaskRun] == "" {
 		c.JSON(http.StatusNotFound, gin.H{"error": "flash TaskRun not found"})
 		return
 	}

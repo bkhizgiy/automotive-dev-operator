@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/labels"
 )
 
 // --- Container Build Handlers ---
@@ -262,7 +263,8 @@ func (a *APIServer) createContainerBuild(c *gin.Context) {
 			return
 		}
 
-		secretName, err := createInternalRegistrySecretFn(ctx, restCfg, namespace, req.Name)
+		tokenLifetime := resolveTokenLifetime(ctx, k8sClient, namespace)
+		secretName, err := createInternalRegistrySecretFn(ctx, restCfg, namespace, req.Name, tokenLifetime)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to create internal registry secret: %v", err)})
 			return
@@ -309,12 +311,12 @@ func (a *APIServer) createContainerBuild(c *gin.Context) {
 			Name:      req.Name,
 			Namespace: namespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "build-api",
-				"app.kubernetes.io/part-of":    "automotive-dev",
-				"app.kubernetes.io/created-by": "automotive-dev-build-api",
+				labels.ManagedBy: labels.ValueBuildAPI,
+				labels.PartOf:    labels.ValueAutomotiveDev,
+				labels.CreatedBy: labels.ValueBuildAPICreator,
 			},
 			Annotations: map[string]string{
-				"automotive.sdv.cloud.redhat.com/requested-by": requestedBy,
+				labels.RequestedBy: requestedBy,
 			},
 		},
 		Spec: automotivev1alpha1.ContainerBuildSpec{
@@ -396,7 +398,7 @@ func listContainerBuilds(c *gin.Context) {
 			CreatedAt:   cb.CreationTimestamp.Format(time.RFC3339),
 			OutputImage: cb.Spec.Output,
 		}
-		if v, ok := cb.Annotations["automotive.sdv.cloud.redhat.com/requested-by"]; ok {
+		if v, ok := cb.Annotations[labels.RequestedBy]; ok {
 			item.RequestedBy = v
 		}
 		if cb.Status.CompletionTime != nil {
@@ -443,7 +445,7 @@ func (a *APIServer) getContainerBuild(c *gin.Context, name string) {
 		OutputImage: outputImage,
 		ImageDigest: cb.Status.ImageDigest,
 	}
-	if v, ok := cb.Annotations["automotive.sdv.cloud.redhat.com/requested-by"]; ok {
+	if v, ok := cb.Annotations[labels.RequestedBy]; ok {
 		resp.RequestedBy = v
 	}
 	if cb.Status.StartTime != nil {
@@ -456,11 +458,12 @@ func (a *APIServer) getContainerBuild(c *gin.Context, name string) {
 	// Mint a fresh registry token for completed/failed internal registry builds
 	// that belong to the requesting user
 	requester := a.resolveRequester(c)
-	buildOwner := cb.Annotations["automotive.sdv.cloud.redhat.com/requested-by"]
+	buildOwner := cb.Annotations[labels.RequestedBy]
 	if requester == buildOwner &&
 		cb.Spec.UseServiceAccountAuth &&
 		isTerminalPhase(cb.Status.Phase) {
-		token, _, tokenErr := a.mintRegistryToken(ctx, c, namespace)
+		tokenLifetime := resolveTokenLifetime(ctx, k8sClient, namespace)
+		token, _, tokenErr := a.mintRegistryToken(ctx, c, namespace, tokenLifetime)
 		if tokenErr != nil {
 			a.log.Error(tokenErr, "failed to mint registry token for container build", "build", name)
 		} else {

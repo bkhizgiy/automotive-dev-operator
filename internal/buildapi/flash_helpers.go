@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/labels"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/registryutil"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -52,10 +53,10 @@ func createFlashClientConfigSecret(
 			Name:      secretName,
 			Namespace: namespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/managed-by":                  "build-api",
-				"app.kubernetes.io/part-of":                     "automotive-dev",
-				flashTaskRunLabel:                               req.Name,
-				"automotive.sdv.cloud.redhat.com/resource-type": "jumpstarter-client",
+				labels.ManagedBy:    labels.ValueBuildAPI,
+				labels.PartOf:       labels.ValueAutomotiveDev,
+				labels.FlashTaskRun: req.Name,
+				labels.ResourceType: "jumpstarter-client",
 			},
 		},
 		Type: corev1.SecretTypeOpaque,
@@ -95,11 +96,11 @@ func createFlashOCIAuthSecret(
 			Name:      secretName,
 			Namespace: namespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/managed-by":                  "build-api",
-				"app.kubernetes.io/part-of":                     "automotive-dev",
-				flashTaskRunLabel:                               flashName,
-				"automotive.sdv.cloud.redhat.com/transient":     "true",
-				"automotive.sdv.cloud.redhat.com/resource-type": "flash-oci-auth",
+				labels.ManagedBy:    labels.ValueBuildAPI,
+				labels.PartOf:       labels.ValueAutomotiveDev,
+				labels.FlashTaskRun: flashName,
+				labels.Transient:    labels.ValueTrue,
+				labels.ResourceType: "flash-oci-auth",
 			},
 		},
 		Type: corev1.SecretTypeOpaque,

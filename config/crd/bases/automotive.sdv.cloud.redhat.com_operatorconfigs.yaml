@@ -765,6 +765,14 @@ spec:
                       PVCSize specifies the size for persistent volume claims created for build workspaces
                       Default: "8Gi"
                     type: string
+                  registryTokenLifetimeSeconds:
+                    description: |-
+                      RegistryTokenLifetimeSeconds is the lifetime in seconds for service account tokens
+                      used for internal registry authentication during builds.
+                      Default: 14400 (4 hours)
+                    format: int64
+                    minimum: 1
+                    type: integer
                   runtimeClassName:
                     description: |-
                       RuntimeClassName specifies the runtime class to use for the build pod

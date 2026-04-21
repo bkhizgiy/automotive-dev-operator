@@ -16,6 +16,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/labels"
 )
 
 const (
@@ -77,8 +78,6 @@ type taskProgress struct {
 	marker   BuildStep
 }
 
-const progressAnnotation = "automotive.sdv.cloud.redhat.com/progress"
-
 // parseProgressAnnotation parses a pod annotation value with the format
 // "stage|done|total" (pipe-delimited) into a BuildStep.
 func parseProgressAnnotation(value string) (*BuildStep, bool) {
@@ -137,7 +136,7 @@ func readTaskProgressFromPods(ctx context.Context, cs *kubernetes.Clientset, pip
 	for _, pod := range pods.Items {
 		taskName := pod.Labels["tekton.dev/pipelineTask"]
 
-		if ann, ok := pod.Annotations[progressAnnotation]; ok {
+		if ann, ok := pod.Annotations[labels.Progress]; ok {
 			if step, parsed := parseProgressAnnotation(ann); parsed {
 				results = append(results, taskProgress{taskName: taskName, marker: *step})
 				continue
