@@ -35,43 +35,21 @@ import (
 )
 
 const (
-	namespace = "automotive-dev-operator-system"
-	archARM64 = "arm64"
-	aarch64   = "aarch64"
+	namespace                      = "automotive-dev-operator-system"
+	archARM64                      = "arm64"
+	aarch64                        = "aarch64"
+	statusRunning                  = "Running"
+	tektonTaskPushArtifactRegistry = "push-artifact-registry"
+	artifactImageRepo              = "automotive-os-test1"
+	artifactImageName              = artifactImageRepo + ":latest"
+	kindPushNamespace              = "myorg"
 )
-
-// hasOpenShiftRouteCRD returns true when the OpenShift Route CRD exists (OpenShift cluster).
-// On Kind there is no Route CRD, so OIDC suite can skip before creating any resources.
-func hasOpenShiftRouteCRD() bool {
-	cmd := exec.Command("kubectl", "get", "crd", "routes.route.openshift.io")
-	_, err := utils.Run(cmd)
-	return err == nil
-}
-
-// getBuildAPIURL returns the Build API URL when an OpenShift Route exists, or "" otherwise.
-// OIDC e2e tests that need to call the API run only on OpenShift (when Route exists).
-func getBuildAPIURL() string {
-	cmd := exec.Command("kubectl", "get", "route", "ado-build-api",
-		"-n", namespace, "-o", "jsonpath={.spec.host}")
-	output, err := utils.Run(cmd)
-	if err != nil || strings.TrimSpace(string(output)) == "" {
-		return ""
-	}
-	return "https://" + strings.TrimSpace(string(output))
-}
 
 var _ = Describe("controller", Ordered, func() {
 	BeforeAll(func() {
-		By("waiting for namespace to not exist (in case previous suite left it terminating)")
-		waitForNamespaceGone := func() error {
-			cmd := exec.Command("kubectl", "get", "ns", namespace)
-			_, err := utils.Run(cmd)
-			if err != nil {
-				return nil // namespace gone, we can create it
-			}
-			return fmt.Errorf("namespace still exists or terminating")
-		}
-		Eventually(waitForNamespaceGone, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("removing manager namespace")
+		utils.CleanupNamespace(namespace)
 
 		By("creating manager namespace")
 		cmd := exec.Command("kubectl", "create", "ns", namespace)
@@ -79,13 +57,8 @@ var _ = Describe("controller", Ordered, func() {
 	})
 
 	AfterAll(func() {
-		By("deleting OperatorConfig resources")
-		cmd := exec.Command("kubectl", "delete", "operatorconfig", "--all", "-n", namespace, "--timeout=30s")
-		_, _ = utils.Run(cmd)
-
 		By("removing manager namespace")
-		cmd = exec.Command("kubectl", "delete", "ns", namespace, "--timeout=60s")
-		_, _ = utils.Run(cmd)
+		utils.CleanupNamespace(namespace)
 	})
 
 	Context("Operator", func() {
@@ -94,23 +67,15 @@ var _ = Describe("controller", Ordered, func() {
 			var err error
 
 			var projectimage = "example.com/automotive-dev-operator:v0.0.1"
-
-			By("building the manager(Operator) image")
-			cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectimage))
-			_, err = utils.Run(cmd)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-
-			By("loading the the manager(Operator) image on Kind")
-			err = utils.LoadImageToKindClusterWithName(projectimage)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			deployedImage := utils.PrepareOperatorImage(projectimage, namespace)
 
 			By("installing CRDs")
-			cmd = exec.Command("make", "install")
+			cmd := exec.Command("make", "install")
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
 			By("deploying the operator")
-			cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectimage))
+			cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", deployedImage))
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
@@ -143,7 +108,7 @@ var _ = Describe("controller", Ordered, func() {
 				)
 				status, err := utils.Run(cmd)
 				ExpectWithOffset(2, err).NotTo(HaveOccurred())
-				if string(status) != "Running" {
+				if string(status) != statusRunning {
 					return fmt.Errorf("controller pod in %s status", status)
 				}
 				return nil
@@ -169,8 +134,8 @@ var _ = Describe("controller", Ordered, func() {
 					logs, _ := utils.Run(logCmd)
 					return fmt.Errorf("build-automotive-image task not found, got: %s\nController logs:\n%s", tasks, string(logs))
 				}
-				if !strings.Contains(tasks, "push-artifact-registry") {
-					return fmt.Errorf("push-artifact-registry task not found, got: %s", tasks)
+				if !strings.Contains(tasks, tektonTaskPushArtifactRegistry) {
+					return fmt.Errorf("%s task not found, got: %s", tektonTaskPushArtifactRegistry, tasks)
 				}
 				return nil
 			}
@@ -209,9 +174,12 @@ var _ = Describe("controller", Ordered, func() {
 
 		Context("caib image build", func() {
 			var portForwardCmd *exec.Cmd
+			var caibServer string
 			var registryHost string
 			var arch string
 			var caibToken string
+			var openShiftCluster bool
+			var caibEnv []string
 			var projectimage = "automotive-dev-operator:test"
 			var caibBuildTimeout = 45 * time.Minute // max timeout for caib builds
 
@@ -245,14 +213,7 @@ var _ = Describe("controller", Ordered, func() {
 					"pod-security.kubernetes.io/warn=privileged", "--overwrite")
 				_, _ = utils.Run(cmd)
 
-				By("building the manager(Operator) image")
-				cmd = exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectimage))
-				_, err = utils.Run(cmd)
-				ExpectWithOffset(1, err).NotTo(HaveOccurred())
-
-				By("loading the the manager(Operator) image on Kind")
-				err = utils.LoadImageToKindClusterWithName(projectimage)
-				ExpectWithOffset(1, err).NotTo(HaveOccurred())
+				deployedImage := utils.PrepareOperatorImage(projectimage, namespace)
 
 				By("installing CRDs")
 				cmd = exec.Command("make", "install")
@@ -260,7 +221,7 @@ var _ = Describe("controller", Ordered, func() {
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
 				By("deploying the operator")
-				cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectimage))
+				cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", deployedImage))
 				_, err = utils.Run(cmd)
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
@@ -282,69 +243,120 @@ var _ = Describe("controller", Ordered, func() {
 				_, err = utils.Run(cmd)
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
-				By("patching OperatorConfig for Kind registry")
+				By("patching OperatorConfig registry route")
 				cmd = exec.Command("kubectl", "patch", "operatorconfig", "config",
 					"-n", namespace, "--type=merge",
 					"-p", fmt.Sprintf(`{"spec":{"osBuilds":{"clusterRegistryRoute":"%s:5000"}}}`, registryHost))
 				_, err = utils.Run(cmd)
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
-				By("waiting for push-artifact-registry Task to be created")
+				By("waiting for " + tektonTaskPushArtifactRegistry + " Task to be created")
 				waitForPushTask := func() error {
-					taskCmd := exec.Command("kubectl", "get", "task", "push-artifact-registry", "-n", namespace)
+					taskCmd := exec.Command("kubectl", "get", "task", tektonTaskPushArtifactRegistry, "-n", namespace)
 					_, taskErr := utils.Run(taskCmd)
 					return taskErr
 				}
 				EventuallyWithOffset(1, waitForPushTask, 2*time.Minute, 5*time.Second).Should(Succeed(),
-					"push-artifact-registry Task was not created in time")
+					tektonTaskPushArtifactRegistry+" Task was not created in time")
 
-				// Kind-specific workaround: the local registry uses plain HTTP (no TLS),
-				// so oras push needs --plain-http. On OpenShift the internal registry has
-				// TLS and this flag is not required.
-				// runAsUser: 0 is needed because plain Kubernetes lacks OpenShift's SCC
-				// (Security Context Constraints) that would grant the push step access to
-				// root-owned build artifacts in the shared workspace.
-				By("patching push-artifact-registry Task for Kind (plain-http + runAsUser 0)")
-				cmd = exec.Command("kubectl", "annotate", "task", "push-artifact-registry",
-					"-n", namespace, "automotive.sdv.cloud.redhat.com/unmanaged=true", "--overwrite")
-				_, err = utils.Run(cmd)
-				ExpectWithOffset(1, err).NotTo(HaveOccurred())
+				openShiftCluster = utils.IsOpenShiftCluster()
+				if openShiftCluster {
+					By("patching " + tektonTaskPushArtifactRegistry + " Task for OpenShift (insecure TLS)")
+					cmd = exec.Command("kubectl", "annotate", "task", tektonTaskPushArtifactRegistry,
+						"-n", namespace, "automotive.sdv.cloud.redhat.com/unmanaged=true", "--overwrite")
+					_, err = utils.Run(cmd)
+					ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
-				cmd = exec.Command("bash", "-c",
-					`kubectl get task push-artifact-registry -n `+namespace+` -o json `+
-						`| jq '.spec.steps[0].script |= gsub("push --disable-path-validation"; "push --plain-http --disable-path-validation")' `+
-						`| jq '.spec.steps[0].securityContext = {"runAsUser": 0}' `+
-						`| kubectl replace -f -`)
-				_, err = utils.Run(cmd)
-				ExpectWithOffset(1, err).NotTo(HaveOccurred())
+					err = utils.PatchTektonTaskStep(namespace, tektonTaskPushArtifactRegistry, 0,
+						map[string]string{
+							"push --disable-path-validation": "push --insecure --disable-path-validation",
+							"--image-spec v1.1":              "--image-spec v1.0",
+							`oras" attach`:                   `oras" attach --insecure --distribution-spec v1.1-referrers-tag`,
+						}, nil)
+					ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
-				By("ensuring port 8080 is free before starting port-forward")
-				if conn, dialErr := net.DialTimeout("tcp", "localhost:8080", 500*time.Millisecond); dialErr == nil {
-					_ = conn.Close()
-					Fail("port 8080 is already in use; cannot set up port-forward to Build API")
-				}
+					// Pre-create the ImageStream so the internal registry can handle manifest
+					// HEAD checks properly. Without it the registry returns 500 instead of
+					// 404 for missing manifests, which causes oras push to abort.
+					By("pre-creating artifact ImageStream on OpenShift")
+					cmd = exec.Command("oc", "create", "imagestream", artifactImageRepo, "-n", namespace)
+					_, _ = utils.Run(cmd)
 
-				By("setting up port-forward to Build API")
-				portForwardCmd = exec.Command("kubectl", "port-forward",
-					"-n", namespace, "svc/ado-build-api", "8080:8080")
-				err = portForwardCmd.Start()
-				ExpectWithOffset(1, err).NotTo(HaveOccurred())
+					By("waiting for Build API route")
+					EventuallyWithOffset(1, func() string {
+						caibServer = utils.GetBuildAPIURL(namespace)
+						return caibServer
+					}, 2*time.Minute, 5*time.Second).ShouldNot(BeEmpty())
 
-				By("waiting for Build API to respond on port-forward")
-				httpClient := &http.Client{Timeout: 2 * time.Second}
-				waitForBuildAPI := func() error {
-					resp, httpErr := httpClient.Get("http://localhost:8080/v1/healthz")
-					if httpErr != nil {
-						return httpErr
+					By("waiting for Build API route to respond")
+					httpClient := &http.Client{
+						Timeout: 2 * time.Second,
+						Transport: &http.Transport{
+							TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12},
+						},
 					}
-					_ = resp.Body.Close()
-					if resp.StatusCode == http.StatusOK {
-						return nil
+					waitForBuildAPI := func() error {
+						resp, httpErr := httpClient.Get(caibServer + "/v1/healthz")
+						if httpErr != nil {
+							return httpErr
+						}
+						_ = resp.Body.Close()
+						if resp.StatusCode == http.StatusOK {
+							return nil
+						}
+						return fmt.Errorf("unexpected status %d from Build API /v1/healthz", resp.StatusCode)
 					}
-					return fmt.Errorf("unexpected status %d from Build API /v1/healthz", resp.StatusCode)
+					EventuallyWithOffset(1, waitForBuildAPI, 2*time.Minute, 5*time.Second).Should(Succeed(),
+						"Build API route did not become ready")
+				} else {
+					// Kind-specific workaround: the local registry uses plain HTTP (no TLS),
+					// so oras push needs --plain-http. On OpenShift the internal registry has
+					// TLS and this flag is not required.
+					// runAsUser: 0 is needed because plain Kubernetes lacks OpenShift's SCC
+					// (Security Context Constraints) that would grant the push step access to
+					// root-owned build artifacts in the shared workspace.
+					By("patching " + tektonTaskPushArtifactRegistry + " Task for Kind (plain-http + runAsUser 0)")
+					cmd = exec.Command("kubectl", "annotate", "task", tektonTaskPushArtifactRegistry,
+						"-n", namespace, "automotive.sdv.cloud.redhat.com/unmanaged=true", "--overwrite")
+					_, err = utils.Run(cmd)
+					ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
+					err = utils.PatchTektonTaskStep(namespace, tektonTaskPushArtifactRegistry, 0,
+						map[string]string{
+							"push --disable-path-validation": "push --plain-http --disable-path-validation",
+						},
+						map[string]any{"securityContext": map[string]any{"runAsUser": 0}})
+					ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
+					By("ensuring port 8080 is free before starting port-forward")
+					if conn, dialErr := net.DialTimeout("tcp", "localhost:8080", 500*time.Millisecond); dialErr == nil {
+						_ = conn.Close()
+						Fail("port 8080 is already in use; cannot set up port-forward to Build API")
+					}
+
+					By("setting up port-forward to Build API")
+					portForwardCmd = exec.Command("kubectl", "port-forward",
+						"-n", namespace, "svc/ado-build-api", "8080:8080")
+					err = portForwardCmd.Start()
+					ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
+					By("waiting for Build API to respond on port-forward")
+					httpClient := &http.Client{Timeout: 2 * time.Second}
+					waitForBuildAPI := func() error {
+						resp, httpErr := httpClient.Get("http://localhost:8080/v1/healthz")
+						if httpErr != nil {
+							return httpErr
+						}
+						_ = resp.Body.Close()
+						if resp.StatusCode == http.StatusOK {
+							return nil
+						}
+						return fmt.Errorf("unexpected status %d from Build API /v1/healthz", resp.StatusCode)
+					}
+					EventuallyWithOffset(1, waitForBuildAPI, 30*time.Second, 1*time.Second).Should(Succeed(),
+						"Build API on localhost:8080 did not become ready")
+					caibServer = "http://localhost:8080"
 				}
-				EventuallyWithOffset(1, waitForBuildAPI, 30*time.Second, 1*time.Second).Should(Succeed(),
-					"Build API on localhost:8080 did not become ready")
 
 				By("creating service account and token")
 				cmd = exec.Command("kubectl", "create", "serviceaccount", "caib",
@@ -363,24 +375,48 @@ var _ = Describe("controller", Ordered, func() {
 				ExpectWithOffset(1, tokenErr).NotTo(HaveOccurred())
 				caibToken = strings.TrimSpace(string(tokenOutput))
 				ExpectWithOffset(1, caibToken).NotTo(BeEmpty(), "CAIB_TOKEN must not be empty")
-				prevToken, hadPrevToken := os.LookupEnv("CAIB_TOKEN")
-				prevServer, hadPrevServer := os.LookupEnv("CAIB_SERVER")
-				DeferCleanup(func() {
-					if hadPrevToken {
-						_ = os.Setenv("CAIB_TOKEN", prevToken)
-					} else {
-						_ = os.Unsetenv("CAIB_TOKEN")
+
+				By("setting caib environment variables")
+				caibEnv = append([]string{}, os.Environ()...)
+				setEnv := func(key, value string) {
+					prefix := key + "="
+					filtered := caibEnv[:0]
+					for _, entry := range caibEnv {
+						if !strings.HasPrefix(entry, prefix) {
+							filtered = append(filtered, entry)
+						}
 					}
-					if hadPrevServer {
-						_ = os.Setenv("CAIB_SERVER", prevServer)
-					} else {
-						_ = os.Unsetenv("CAIB_SERVER")
-					}
-				})
-				setErr := os.Setenv("CAIB_TOKEN", caibToken)
-				ExpectWithOffset(1, setErr).NotTo(HaveOccurred())
-				setErr = os.Setenv("CAIB_SERVER", "http://localhost:8080")
-				ExpectWithOffset(1, setErr).NotTo(HaveOccurred())
+					caibEnv = append(filtered, prefix+value)
+				}
+				setEnv("CAIB_TOKEN", caibToken)
+				setEnv("CAIB_SERVER", caibServer)
+				if openShiftCluster {
+					setEnv("CAIB_INSECURE", "true")
+				}
+
+				By("setting registry credentials")
+				registryUsername := os.Getenv("REGISTRY_USERNAME")
+				registryPassword := os.Getenv("REGISTRY_PASSWORD")
+				if openShiftCluster {
+					// Registry tokens must be passed only via process env (caib / REGISTRY_* for
+					// subprocesses) or stdin (e.g. podman --password-stdin in test utils), never
+					// as CLI args, so Ginkgo/Run logs cannot leak them.
+					ocUser, ocErr := utils.Run(exec.Command("oc", "whoami"))
+					ExpectWithOffset(1, ocErr).NotTo(HaveOccurred())
+					ocToken, ocErr := utils.Run(exec.Command("oc", "whoami", "-t"))
+					ExpectWithOffset(1, ocErr).NotTo(HaveOccurred())
+					registryUsername = strings.TrimSpace(string(ocUser))
+					registryPassword = strings.TrimSpace(string(ocToken))
+				} else if registryUsername == "" {
+					registryUsername = "kind"
+					registryPassword = "kind"
+				}
+				if registryUsername != "" {
+					setEnv("REGISTRY_USERNAME", registryUsername)
+				}
+				if registryPassword != "" {
+					setEnv("REGISTRY_PASSWORD", registryPassword)
+				}
 			})
 
 			AfterAll(func() {
@@ -393,7 +429,8 @@ var _ = Describe("controller", Ordered, func() {
 			})
 
 			verifyCaibList := func(caibBuildName string) {
-				listCmd := exec.Command("bin/caib", "image", "list")
+				listCmd := utils.NewCaibCommand(context.Background(), caibEnv,
+					"image", "list")
 				listOutput, listErr := utils.Run(listCmd)
 				ExpectWithOffset(2, listErr).NotTo(HaveOccurred())
 				lines := strings.Split(string(listOutput), "\n")
@@ -422,12 +459,19 @@ var _ = Describe("controller", Ordered, func() {
 
 				containerCh := make(chan buildResult, 1)
 
+				pushNamespace := kindPushNamespace
+				if openShiftCluster {
+					pushNamespace = namespace
+				}
+
 				By("launching bootc container build")
 				go func() {
-					cmd := exec.CommandContext(ctx, "bin/caib", "image", "build-dev", "test/config/test-manifest.aib.yml",
+					cmd := utils.NewCaibCommand(ctx, caibEnv,
+						"image", "build-dev",
+						"test/config/test-manifest.aib.yml",
 						"--name", containerBuildName,
 						"--arch", arch,
-						"--push", fmt.Sprintf("%s:5000/myorg/automotive-os-test1:latest", registryHost),
+						"--push", fmt.Sprintf("%s:5000/%s/%s", registryHost, pushNamespace, artifactImageName),
 						"--follow")
 					out, err := utils.RunSafe(cmd)
 					containerCh <- buildResult{output: out, err: err}
@@ -457,23 +501,22 @@ var _ = Describe("OIDC Authentication", Ordered, func() {
 		var err error
 		var projectimage = "example.com/automotive-dev-operator:v0.0.1"
 
-		if !hasOpenShiftRouteCRD() {
+		if !utils.IsOpenShiftCluster() {
 			Skip("OIDC e2e requires OpenShift (Route CRD); skipping on kind")
 		}
 		oidcSuiteCreatedNamespace = true
 
+		// The controller suite's AfterAll may have just deleted this namespace.
+		// Wait for it to be fully gone before creating it again — otherwise the
+		// registry storage backend is in a torn-down state and podman push gets 500.
+		By("waiting for namespace to be fully gone before creating it")
+		utils.CleanupNamespace(namespace)
+
 		By("creating manager namespace")
 		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, _ = utils.Run(cmd) // Ignore error if namespace already exists
+		_, _ = utils.Run(cmd)
 
-		By("building the manager(Operator) image")
-		cmd = exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectimage))
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred())
-
-		By("loading the manager(Operator) image on Kind")
-		err = utils.LoadImageToKindClusterWithName(projectimage)
-		Expect(err).NotTo(HaveOccurred())
+		deployedImage := utils.PrepareOperatorImage(projectimage, namespace)
 
 		By("installing CRDs")
 		cmd = exec.Command("make", "install")
@@ -481,7 +524,7 @@ var _ = Describe("OIDC Authentication", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		By("deploying the operator")
-		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectimage))
+		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", deployedImage))
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred())
 
@@ -511,7 +554,7 @@ var _ = Describe("OIDC Authentication", Ordered, func() {
 			if err != nil {
 				return err
 			}
-			if string(status) != "Running" {
+			if string(status) != statusRunning {
 				return fmt.Errorf("controller pod in %s status", status)
 			}
 			return nil
@@ -538,7 +581,7 @@ var _ = Describe("OIDC Authentication", Ordered, func() {
 		}
 		Eventually(verifyBuildAPIDeployment, 3*time.Minute, 5*time.Second).Should(Succeed())
 
-		if getBuildAPIURL() == "" {
+		if utils.GetBuildAPIURL(namespace) == "" {
 			Skip("OIDC e2e requires OpenShift Route (ado-build-api); skipping on kind")
 		}
 	})
@@ -566,29 +609,19 @@ var _ = Describe("OIDC Authentication", Ordered, func() {
 		Eventually(waitForOperatorConfigGone, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("removing manager namespace")
-		cmd = exec.Command("kubectl", "delete", "ns", namespace, "--timeout=120s")
-		_, _ = utils.Run(cmd)
-		By("waiting for namespace deletion to complete before next suite")
-		waitForNamespaceGone := func() error {
-			cmd := exec.Command("kubectl", "get", "ns", namespace)
-			_, err := utils.Run(cmd)
-			if err != nil {
-				return nil // namespace gone
-			}
-			return fmt.Errorf("namespace still exists or terminating")
-		}
-		Eventually(waitForNamespaceGone, 5*time.Minute, 10*time.Second).Should(Succeed())
+		utils.CleanupNamespace(namespace)
 	})
 
 	Context("Build API OIDC Configuration", func() {
 		It("should return 404 when OIDC is not configured", func() {
 			By("getting Build API URL")
-			apiURL := getBuildAPIURL()
+			apiURL := utils.GetBuildAPIURL(namespace)
 
 			By("checking /v1/auth/config endpoint returns 404 when OIDC not configured")
 			client := &http.Client{
+				Timeout: 5 * time.Second,
 				Transport: &http.Transport{
-					TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+					TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12},
 				},
 			}
 			resp, err := client.Get(apiURL + "/v1/auth/config")
@@ -602,54 +635,51 @@ var _ = Describe("OIDC Authentication", Ordered, func() {
 		})
 
 		It("should handle OIDC configuration when provided", func() {
-			By("creating OperatorConfig with OIDC authentication")
-			operatorConfigYAML := `
-apiVersion: automotive.sdv.cloud.redhat.com/v1alpha1
-kind: OperatorConfig
-metadata:
-  name: config
-  namespace: automotive-dev-operator-system
-spec:
-  buildAPI:
-    authentication:
-      clientId: test-client-id
-      jwt:
-        - issuer:
-            url: https://issuer.example.com
-            audiences:
-              - test-audience
-          claimMappings:
-            username:
-              claim: preferred_username
-              prefix: ""
-`
-			cmd := exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(operatorConfigYAML)
+			By("patching OperatorConfig to add OIDC authentication")
+			// Use merge-patch so existing spec fields (osBuilds, etc.) are preserved.
+			// A full kubectl apply with only buildAPI would strip osBuilds, triggering
+			// cleanupOSBuilds in the reconciler which deletes the Route and deployment.
+			oidcPatch := `{"spec":{"buildAPI":{"authentication":{"clientId":"test-client-id","jwt":[{"issuer":{"url":"https://issuer.example.com","audiences":["test-audience"]},"claimMappings":{"username":{"claim":"preferred_username","prefix":""}}}]}}}}`
+			cmd := exec.Command("kubectl", "patch", "operatorconfig", "config",
+				"-n", namespace, "--type=merge", "-p", oidcPatch)
 			_, err := utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
-			By("waiting for operator to reconcile and Build API to reload configuration")
-			time.Sleep(10 * time.Second)
-
 			By("checking /v1/auth/config endpoint returns OIDC config")
-			apiURL := getBuildAPIURL()
+			apiURL := utils.GetBuildAPIURL(namespace)
 			if apiURL == "" {
 				Skip("Build API Route not found (OpenShift required)")
 			}
-			client := &http.Client{
+			httpClient := &http.Client{
+				Timeout: 5 * time.Second,
 				Transport: &http.Transport{
-					TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+					TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12},
 				},
 			}
-			resp, err := client.Get(apiURL + "/v1/auth/config")
-			Expect(err).NotTo(HaveOccurred())
-			defer func() {
-				_ = resp.Body.Close()
-			}()
-			Expect(resp.StatusCode).To(Equal(200))
-			body, err := io.ReadAll(resp.Body)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(string(body)).To(And(ContainSubstring("jwt"), ContainSubstring("clientId")))
+			// The Build API pod restarts after the OperatorConfig patch; poll until the
+			// new OIDC config is served (up to 2 minutes).
+			var authBody string
+			EventuallyWithOffset(1, func() error {
+				resp, httpErr := httpClient.Get(apiURL + "/v1/auth/config")
+				if httpErr != nil {
+					return httpErr
+				}
+				defer func() { _ = resp.Body.Close() }()
+				if resp.StatusCode != 200 {
+					return fmt.Errorf("unexpected status %d from /v1/auth/config", resp.StatusCode)
+				}
+				b, readErr := io.ReadAll(resp.Body)
+				if readErr != nil {
+					return readErr
+				}
+				if !strings.Contains(string(b), "jwt") || !strings.Contains(string(b), "clientId") {
+					return fmt.Errorf("OIDC config not yet reflected: %s", string(b))
+				}
+				authBody = string(b)
+				return nil
+			}, 2*time.Minute, 5*time.Second).Should(Succeed(),
+				"Build API did not serve OIDC config in time")
+			Expect(authBody).To(And(ContainSubstring("jwt"), ContainSubstring("clientId")))
 
 			By("cleaning up OIDC configuration from OperatorConfig")
 			cmd = exec.Command("kubectl", "patch", "operatorconfig", "config",
@@ -660,15 +690,20 @@ spec:
 
 	Context("Internal JWT Validation", func() {
 		It("should have Build API pod running", func() {
-			// Verify the Build API pod is running
 			By("verifying Build API pod is running")
-			cmd := exec.Command("kubectl", "get", "pod", "-l", "app.kubernetes.io/component=build-api",
-				"-n", namespace, "-o", "jsonpath={.items[0].status.phase}")
-			output, err := utils.Run(cmd)
-			if err != nil {
-				Skip("Build API pod not found")
-			}
-			Expect(strings.TrimSpace(string(output))).To(Equal("Running"))
+			EventuallyWithOffset(1, func() error {
+				cmd := exec.Command("kubectl", "get", "pod", "-l", "app.kubernetes.io/component=build-api",
+					"-n", namespace, "-o", "jsonpath={.items[0].status.phase}")
+				output, err := utils.Run(cmd)
+				if err != nil {
+					return fmt.Errorf("build-api pod not found: %w", err)
+				}
+				phase := strings.TrimSpace(string(output))
+				if phase != statusRunning {
+					return fmt.Errorf("build-api pod in %q phase", phase)
+				}
+				return nil
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 	})
 })
