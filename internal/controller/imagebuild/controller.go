@@ -160,6 +160,8 @@ func (r *ImageBuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		phaseResult, err = r.handleFlashingState(ctx, imageBuild)
 	case phaseCompleted:
 		phaseResult = r.handleCompletedState(ctx, imageBuild)
+	case automotivev1alpha1.ImageBuildPhaseExpired:
+		phaseResult = r.handleExpiredState(ctx, imageBuild)
 	case phaseCancelled, phaseFailed:
 		if shutdownErr := r.shutdownUploadPod(ctx, imageBuild); shutdownErr != nil {
 			log.Error(shutdownErr, "Failed to shutdown upload pod, will retry")
@@ -240,25 +242,37 @@ func (r *ImageBuildReconciler) ensureImageStreamOwnerRef(
 	return nil
 }
 
-// extractImageStreamName extracts the ImageStream name from the ImageBuild's
-// internal registry URLs (GetContainerPush and GetExportOCI).
-func extractImageStreamName(imageBuild *automotivev1alpha1.ImageBuild) string {
+// extractInternalImageStreamTags returns ImageStreamTag names ("name:tag") for
+// any internal registry URLs in the ImageBuild's export configuration.
+func extractInternalImageStreamTags(imageBuild *automotivev1alpha1.ImageBuild) []string {
 	prefix := tasks.DefaultInternalRegistryURL + "/"
-	for _, ref := range []string{imageBuild.Spec.GetContainerPush(), imageBuild.Spec.GetExportOCI()} {
+	refs := []string{imageBuild.Spec.GetContainerPush(), imageBuild.Spec.GetExportOCI()}
+	tags := make([]string, 0, len(refs))
+	for _, ref := range refs {
 		after, ok := strings.CutPrefix(ref, prefix)
 		if !ok {
 			continue
 		}
 		parts := strings.SplitN(after, "/", 2)
-		if len(parts) < 2 {
+		if len(parts) < 2 || parts[1] == "" {
 			continue
 		}
-		nameTag := strings.SplitN(parts[1], ":", 2)
-		if nameTag[0] != "" {
-			return nameTag[0]
+		ist := parts[1]
+		if !strings.Contains(ist, ":") {
+			ist += ":latest"
 		}
+		tags = append(tags, ist)
 	}
-	return ""
+	return tags
+}
+
+func extractImageStreamName(imageBuild *automotivev1alpha1.ImageBuild) string {
+	tags := extractInternalImageStreamTags(imageBuild)
+	if len(tags) == 0 {
+		return ""
+	}
+	name, _, _ := strings.Cut(tags[0], ":")
+	return name
 }
 
 func (r *ImageBuildReconciler) handleInitialState(
@@ -409,7 +423,12 @@ func (r *ImageBuildReconciler) checkExpiry(
 		types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace},
 	)
 
-	if imageBuild.Annotations[automotivev1alpha1.NoExpireAnnotation] == "true" {
+	if imageBuild.Status.Phase == automotivev1alpha1.ImageBuildPhaseExpired {
+		return ctrl.Result{}, false, nil
+	}
+
+	if imageBuild.Annotations[automotivev1alpha1.NoExpireAnnotation] == "true" ||
+		imageBuild.Spec.Workspace != "" {
 		if err := r.updateExpiresAt(ctx, imageBuild, nil); err != nil {
 			return ctrl.Result{}, false, err
 		}
@@ -430,12 +449,10 @@ func (r *ImageBuildReconciler) checkExpiry(
 		return ctrl.Result{}, false, nil
 	}
 
-	var anchor time.Time
-	if imageBuild.Status.CompletionTime != nil {
-		anchor = imageBuild.Status.CompletionTime.Time
-	} else {
-		anchor = imageBuild.CreationTimestamp.Time
+	if imageBuild.Status.CompletionTime == nil {
+		return ctrl.Result{}, false, nil
 	}
+	anchor := imageBuild.Status.CompletionTime.Time
 
 	expiresAt := anchor.Add(ttl)
 	remaining := time.Until(expiresAt)
@@ -449,14 +466,13 @@ func (r *ImageBuildReconciler) checkExpiry(
 		return ctrl.Result{RequeueAfter: remaining}, false, nil
 	}
 
-	log.Info("Build expired, deleting", "ttl", ttl, "anchor", anchor)
+	log.Info("Build expired, transitioning to Expired phase", "ttl", ttl, "anchor", anchor)
 	r.emitEventf(imageBuild, corev1.EventTypeNormal, eventReasonBuildExpired,
-		"Build expired after %s, deleting", ttl)
+		"Build expired after %s, cleaning up resources", ttl)
 
-	if err := r.Delete(ctx, imageBuild); err != nil {
-		if !errors.IsNotFound(err) {
-			return ctrl.Result{}, false, fmt.Errorf("failed to delete expired build: %w", err)
-		}
+	if err := r.updateStatus(ctx, imageBuild, automotivev1alpha1.ImageBuildPhaseExpired,
+		fmt.Sprintf("Build expired after %s", ttl)); err != nil {
+		return ctrl.Result{}, false, fmt.Errorf("failed to transition expired build: %w", err)
 	}
 	return ctrl.Result{}, true, nil
 }
@@ -541,6 +557,104 @@ func (r *ImageBuildReconciler) handleCompletedState(
 		return ctrl.Result{RequeueAfter: secretCleanupRequeue}
 	}
 	return ctrl.Result{}
+}
+
+func (r *ImageBuildReconciler) handleExpiredState(
+	ctx context.Context,
+	imageBuild *automotivev1alpha1.ImageBuild,
+) ctrl.Result {
+	log := r.Log.WithValues(
+		"imagebuild",
+		types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace},
+	)
+
+	var retryNeeded bool
+	deleteObj := func(obj client.Object, kind string) {
+		if err := r.Delete(ctx, obj); err != nil {
+			if !errors.IsNotFound(err) {
+				log.Error(err, "Failed to delete "+kind, "name", obj.GetName())
+				retryNeeded = true
+			}
+		} else {
+			log.Info("Deleted "+kind, "name", obj.GetName())
+		}
+	}
+
+	ns := imageBuild.Namespace
+
+	if err := r.shutdownUploadPod(ctx, imageBuild); err != nil {
+		log.Error(err, "Failed to shutdown upload pod")
+		retryNeeded = true
+	}
+
+	if name := imageBuild.Status.PipelineRunName; name != "" {
+		deleteObj(&tektonv1.PipelineRun{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}, "PipelineRun")
+	}
+	if name := imageBuild.Status.PushTaskRunName; name != "" {
+		deleteObj(&tektonv1.TaskRun{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}, "push TaskRun")
+	}
+	if name := imageBuild.Status.FlashTaskRunName; name != "" {
+		deleteObj(&tektonv1.TaskRun{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}, "flash TaskRun")
+	}
+	if name := imageBuild.Status.PVCName; name != "" {
+		if name == imageBuild.Spec.BuildCachePVC {
+			log.Info("Skipping PVC deletion: shared build-cache PVC", "pvc", name)
+		} else {
+			deleteObj(&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}, "PVC")
+		}
+	}
+
+	cmName := safeDerivedName(imageBuild.Name, "-manifest")
+	deleteObj(&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: ns}}, "manifest ConfigMap")
+
+	if r.deleteExpiredImageStreams(ctx, imageBuild, log) {
+		retryNeeded = true
+	}
+
+	if err := r.cleanupTransientSecrets(ctx, imageBuild, log); err != nil {
+		retryNeeded = true
+	}
+
+	if retryNeeded {
+		log.Info("Some expired resources could not be cleaned up, will retry",
+			"requeueAfter", secretCleanupRequeue)
+		return ctrl.Result{RequeueAfter: secretCleanupRequeue}
+	}
+	return ctrl.Result{}
+}
+
+func (r *ImageBuildReconciler) deleteExpiredImageStreams(
+	ctx context.Context,
+	imageBuild *automotivev1alpha1.ImageBuild,
+	log logr.Logger,
+) bool {
+	var failed bool
+	tags := extractInternalImageStreamTags(imageBuild)
+	seen := make(map[string]struct{}, len(tags))
+	for _, tag := range tags {
+		name, _, _ := strings.Cut(tag, ":")
+		if _, ok := seen[name]; ok || name == "" {
+			continue
+		}
+		seen[name] = struct{}{}
+
+		is := &unstructured.Unstructured{}
+		is.SetGroupVersionKind(schema.GroupVersionKind{
+			Group: "image.openshift.io", Version: "v1", Kind: "ImageStream",
+		})
+		is.SetName(name)
+		is.SetNamespace(imageBuild.Namespace)
+
+		if err := r.Delete(ctx, is); err != nil {
+			if !errors.IsNotFound(err) {
+				log.Error(err, "Failed to delete ImageStream", "name", name)
+				failed = true
+			}
+		} else {
+			log.Info("Deleted ImageStream", "name", name)
+		}
+	}
+	return failed
 }
 
 func (r *ImageBuildReconciler) checkBuildProgress(
@@ -2293,6 +2407,9 @@ func (r *ImageBuildReconciler) updateStatus(
 	}
 
 	if fresh.Status.Phase == phaseCancelled && phase != phaseCancelled {
+		return nil
+	}
+	if fresh.Status.Phase == automotivev1alpha1.ImageBuildPhaseExpired && phase != automotivev1alpha1.ImageBuildPhaseExpired {
 		return nil
 	}
 

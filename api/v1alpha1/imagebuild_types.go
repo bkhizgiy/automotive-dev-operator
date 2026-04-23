@@ -30,11 +30,13 @@ const (
 	ImageBuildPhaseCompleted = "Completed"
 	ImageBuildPhaseFailed    = "Failed"
 	ImageBuildPhaseCancelled = "Cancelled"
+	ImageBuildPhaseExpired   = "Expired"
 )
 
 // IsTerminalBuildPhase reports whether phase is a final build state.
 func IsTerminalBuildPhase(phase string) bool {
-	return phase == ImageBuildPhaseCompleted || phase == ImageBuildPhaseFailed || phase == ImageBuildPhaseCancelled
+	return phase == ImageBuildPhaseCompleted || phase == ImageBuildPhaseFailed ||
+		phase == ImageBuildPhaseCancelled || phase == ImageBuildPhaseExpired
 }
 
 // ImageBuildSpec defines the desired state of ImageBuild
@@ -94,8 +96,10 @@ type ImageBuildSpec struct {
 	// +optional
 	TaskBundleRef string `json:"taskBundleRef,omitempty"`
 
-	// TTL is the time-to-live for this build. The build is automatically deleted
-	// after this duration past its completion (or creation if still in progress).
+	// TTL is the time-to-live for this build. After this duration past its
+	// completion, the build transitions to the Expired phase and its resources
+	// (PipelineRuns, TaskRuns, PVCs, registry images) are cleaned up.
+	// The ImageBuild CR itself is preserved. In-progress builds never expire.
 	// Uses Go duration format (e.g. "24h", "72h", "168h").
 	// Empty uses the OperatorConfig default. Set to "0" to disable expiry.
 	// +optional
@@ -220,8 +224,8 @@ type ImageBuildStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Phase represents the current phase of the build (Building, Completed, Failed, Cancelled)
-	// +kubebuilder:validation:Enum=Pending;Uploading;Building;Pushing;Flashing;Completed;Failed;Cancelled
+	// Phase represents the current phase of the build
+	// +kubebuilder:validation:Enum=Pending;Uploading;Building;Pushing;Flashing;Completed;Failed;Cancelled;Expired
 	Phase string `json:"phase,omitempty"`
 
 	// StartTime is when the build started
@@ -264,8 +268,10 @@ type ImageBuildStatus struct {
 	// +optional
 	LeaseID string `json:"leaseId,omitempty"`
 
-	// ExpiresAt is when this build will be automatically deleted.
-	// Nil if expiry is disabled (TTL "0" or no-expire annotation).
+	// ExpiresAt is when this build will transition to the Expired phase
+	// and have its associated resources cleaned up. The ImageBuild CR itself
+	// is preserved. Nil if expiry is disabled (TTL "0", no-expire annotation,
+	// or workspace build).
 	// +optional
 	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 }
