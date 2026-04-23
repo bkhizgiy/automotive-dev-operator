@@ -684,6 +684,24 @@ spec:
                       exporter configurations
                     type: object
                 type: object
+              monitoring:
+                description: Monitoring defines configuration for Prometheus metrics
+                  collection
+                properties:
+                  enabled:
+                    default: false
+                    description: Enabled determines if a ServiceMonitor should be
+                      deployed for Prometheus scraping
+                    type: boolean
+                  interval:
+                    description: |-
+                      Interval defines the Prometheus scrape interval
+                      Default: "30s"
+                    pattern: ^(0|(([0-9]+)y)?(([0-9]+)w)?(([0-9]+)d)?(([0-9]+)h)?(([0-9]+)m)?(([0-9]+)s)?(([0-9]+)ms)?)$
+                    type: string
+                required:
+                - enabled
+                type: object
               osBuilds:
                 description: OSBuilds defines the configuration for OS build operations
                 properties:
@@ -1065,6 +1083,10 @@ spec:
               message:
                 description: Message provides detail about the current phase
                 type: string
+              monitoringEnabled:
+                description: MonitoringEnabled indicates if the ServiceMonitor is
+                  currently deployed
+                type: boolean
               observedGeneration:
                 description: ObservedGeneration is the most recent generation observed
                   by the controller.

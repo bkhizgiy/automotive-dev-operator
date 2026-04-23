@@ -23,7 +23,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -197,6 +199,7 @@ type OperatorConfigReconciler struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=tekton.dev,resources=tasks;pipelines;pipelineruns,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=security.openshift.io,resources=securitycontextconstraints,verbs=get;list;watch;create;update;patch;delete;use
+// +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile reconciles the OperatorConfig resource lifecycle.
 func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -231,6 +234,10 @@ func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		log.Info("Handling deletion")
 		if err := r.cleanupOSBuilds(ctx, config); err != nil {
 			log.Error(err, "Failed to cleanup OSBuilds")
+			return ctrl.Result{}, err
+		}
+		if err := r.cleanupServiceMonitor(ctx, config); err != nil {
+			log.Error(err, "Failed to cleanup ServiceMonitor")
 			return ctrl.Result{}, err
 		}
 		log.Info("Removing finalizer")
@@ -293,11 +300,33 @@ func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		statusChanged = true
 	}
 
+	// Reconcile monitoring (ServiceMonitor)
+	if config.Spec.Monitoring != nil && config.Spec.Monitoring.Enabled {
+		if err := r.deployServiceMonitor(ctx, config); err != nil {
+			log.Error(err, "Failed to deploy ServiceMonitor")
+			return ctrl.Result{}, fmt.Errorf("failed to deploy ServiceMonitor: %w", err)
+		}
+		if !config.Status.MonitoringEnabled {
+			config.Status.MonitoringEnabled = true
+			statusChanged = true
+		}
+	} else {
+		if err := r.cleanupServiceMonitor(ctx, config); err != nil {
+			log.Error(err, "Failed to cleanup ServiceMonitor")
+			return ctrl.Result{}, fmt.Errorf("failed to cleanup ServiceMonitor: %w", err)
+		}
+		if config.Status.MonitoringEnabled {
+			config.Status.MonitoringEnabled = false
+			statusChanged = true
+		}
+	}
+
 	if statusChanged {
 		log.Info("Updating status",
 			"phase", config.Status.Phase,
 			"osBuildsDeployed", config.Status.OSBuildsDeployed,
-			"jumpstarterAvailable", config.Status.JumpstarterAvailable)
+			"jumpstarterAvailable", config.Status.JumpstarterAvailable,
+			"monitoringEnabled", config.Status.MonitoringEnabled)
 		if err := r.Status().Update(ctx, config); err != nil {
 			log.Error(err, "Failed to update status")
 			return ctrl.Result{}, err
@@ -1004,6 +1033,73 @@ func (r *OperatorConfigReconciler) cleanupWorkspaceInfra(ctx context.Context, co
 	}
 
 	r.Log.Info("Workspace infrastructure cleanup completed")
+	return nil
+}
+
+func (r *OperatorConfigReconciler) deployServiceMonitor(ctx context.Context, config *automotivev1alpha1.OperatorConfig) error {
+	tokenSecret := r.buildMetricsTokenSecret(config.Namespace)
+	if err := r.createOrUpdate(ctx, tokenSecret, config); err != nil {
+		return fmt.Errorf("failed to create/update metrics token secret: %w", err)
+	}
+
+	role := r.buildMetricsReaderRole(config.Namespace)
+	if err := r.createOrUpdate(ctx, role, config); err != nil {
+		return fmt.Errorf("failed to create/update metrics reader role: %w", err)
+	}
+
+	binding := r.buildMetricsReaderRoleBinding(config.Namespace)
+	if err := r.createOrUpdate(ctx, binding, config); err != nil {
+		return fmt.Errorf("failed to create/update metrics reader role binding: %w", err)
+	}
+
+	clusterBinding := r.buildMetricsReaderClusterRoleBinding(config.Namespace)
+	if err := r.createOrUpdate(ctx, clusterBinding, config); err != nil {
+		return fmt.Errorf("failed to create/update metrics reader cluster role binding: %w", err)
+	}
+
+	sm := r.buildServiceMonitor(config.Namespace, config.Spec.Monitoring)
+	return r.createOrUpdate(ctx, sm, config)
+}
+
+func (r *OperatorConfigReconciler) cleanupServiceMonitor(ctx context.Context, config *automotivev1alpha1.OperatorConfig) error {
+	sm := &unstructured.Unstructured{}
+	sm.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "monitoring.coreos.com",
+		Version: "v1",
+		Kind:    "ServiceMonitor",
+	})
+	sm.SetName(serviceMonitorName)
+	sm.SetNamespace(config.Namespace)
+	if err := r.Delete(ctx, sm); err != nil && !errors.IsNotFound(err) && !apimeta.IsNoMatchError(err) {
+		return fmt.Errorf("failed to delete ServiceMonitor: %w", err)
+	}
+
+	secret := &corev1.Secret{}
+	secret.Name = serviceMonitorTokenSecret
+	secret.Namespace = config.Namespace
+	if err := r.Delete(ctx, secret); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete metrics token secret: %w", err)
+	}
+
+	role := &rbacv1.Role{}
+	role.Name = metricsReaderRoleName
+	role.Namespace = config.Namespace
+	if err := r.Delete(ctx, role); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete metrics reader role: %w", err)
+	}
+
+	binding := &rbacv1.RoleBinding{}
+	binding.Name = metricsReaderRoleName
+	binding.Namespace = config.Namespace
+	if err := r.Delete(ctx, binding); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete metrics reader role binding: %w", err)
+	}
+
+	clusterBinding := &rbacv1.ClusterRoleBinding{}
+	clusterBinding.Name = metricsReaderBindingName
+	if err := r.Delete(ctx, clusterBinding); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete metrics reader cluster role binding: %w", err)
+	}
 	return nil
 }
 
