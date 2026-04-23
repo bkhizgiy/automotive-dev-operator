@@ -49,6 +49,16 @@ var (
 		[]string{"mode", "distro", "target", "format", "arch", "status"},
 	)
 
+	// ActiveBuilds tracks the number of currently in-progress builds.
+	ActiveBuilds = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: metricsNamespace,
+			Subsystem: metricsSubsystem,
+			Name:      "active",
+			Help:      "Number of currently in-progress builds",
+		},
+	)
+
 	// FlashTotal counts pipeline-triggered flash operations by status.
 	FlashTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -78,7 +88,19 @@ func init() {
 		BuildDuration,
 		BuildPhaseDuration,
 		BuildTotal,
+		ActiveBuilds,
 		FlashTotal,
 		FlashDuration,
 	)
+}
+
+func adjustActiveBuildsGauge(oldPhase, newPhase string) {
+	if oldPhase == newPhase {
+		return
+	}
+	if newPhase == "Building" {
+		ActiveBuilds.Inc()
+	} else if oldPhase == "Building" {
+		ActiveBuilds.Dec()
+	}
 }

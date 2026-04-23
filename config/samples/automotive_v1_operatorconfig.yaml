@@ -50,6 +50,13 @@ spec:
     #   value: "automotive"
     #   effect: "NoExecute"
 
+  # Monitoring configuration for Prometheus ServiceMonitor
+  # Requires user-workload-monitoring enabled on the cluster
+  # monitoring:
+  #   enabled: true
+  #   # Optional: scrape interval (default: 30s)
+  #   # interval: "15s"
+
   # BuildAPI configuration for the Build API server
   buildAPI:
     # Optional: Authentication configuration for OIDC/JWT providers
