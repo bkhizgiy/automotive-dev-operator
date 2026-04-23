@@ -2019,7 +2019,7 @@ func (r *ImageBuildReconciler) seedActiveBuildsGauge(mgr ctrl.Manager) manager.R
 		var builds automotivev1alpha1.ImageBuildList
 		if err := mgr.GetClient().List(ctx, &builds); err != nil {
 			r.Log.Error(err, "Failed to seed ActiveBuilds gauge")
-			return nil
+			return err
 		}
 		var active float64
 		for i := range builds.Items {

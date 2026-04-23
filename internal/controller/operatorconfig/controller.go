@@ -302,12 +302,13 @@ func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Reconcile monitoring (ServiceMonitor)
 	if config.Spec.Monitoring != nil && config.Spec.Monitoring.Enabled {
-		if err := r.deployServiceMonitor(ctx, config); err != nil {
+		deployed, err := r.deployServiceMonitor(ctx, config)
+		if err != nil {
 			log.Error(err, "Failed to deploy ServiceMonitor")
 			return ctrl.Result{}, fmt.Errorf("failed to deploy ServiceMonitor: %w", err)
 		}
-		if !config.Status.MonitoringEnabled {
-			config.Status.MonitoringEnabled = true
+		if config.Status.MonitoringEnabled != deployed {
+			config.Status.MonitoringEnabled = deployed
 			statusChanged = true
 		}
 	} else {
@@ -1036,29 +1037,36 @@ func (r *OperatorConfigReconciler) cleanupWorkspaceInfra(ctx context.Context, co
 	return nil
 }
 
-func (r *OperatorConfigReconciler) deployServiceMonitor(ctx context.Context, config *automotivev1alpha1.OperatorConfig) error {
+func (r *OperatorConfigReconciler) deployServiceMonitor(ctx context.Context, config *automotivev1alpha1.OperatorConfig) (bool, error) {
 	tokenSecret := r.buildMetricsTokenSecret(config.Namespace)
 	if err := r.createOrUpdate(ctx, tokenSecret, config); err != nil {
-		return fmt.Errorf("failed to create/update metrics token secret: %w", err)
+		return false, fmt.Errorf("failed to create/update metrics token secret: %w", err)
 	}
 
 	role := r.buildMetricsReaderRole(config.Namespace)
 	if err := r.createOrUpdate(ctx, role, config); err != nil {
-		return fmt.Errorf("failed to create/update metrics reader role: %w", err)
+		return false, fmt.Errorf("failed to create/update metrics reader role: %w", err)
 	}
 
 	binding := r.buildMetricsReaderRoleBinding(config.Namespace)
 	if err := r.createOrUpdate(ctx, binding, config); err != nil {
-		return fmt.Errorf("failed to create/update metrics reader role binding: %w", err)
+		return false, fmt.Errorf("failed to create/update metrics reader role binding: %w", err)
 	}
 
 	clusterBinding := r.buildMetricsReaderClusterRoleBinding(config.Namespace)
 	if err := r.createOrUpdate(ctx, clusterBinding, config); err != nil {
-		return fmt.Errorf("failed to create/update metrics reader cluster role binding: %w", err)
+		return false, fmt.Errorf("failed to create/update metrics reader cluster role binding: %w", err)
 	}
 
 	sm := r.buildServiceMonitor(config.Namespace, config.Spec.Monitoring)
-	return r.createOrUpdate(ctx, sm, config)
+	if err := r.createOrUpdate(ctx, sm, config); err != nil {
+		if apimeta.IsNoMatchError(err) {
+			r.Log.Info("ServiceMonitor CRD not available, skipping (install Prometheus Operator to enable)")
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to create/update ServiceMonitor: %w", err)
+	}
+	return true, nil
 }
 
 func (r *OperatorConfigReconciler) cleanupServiceMonitor(ctx context.Context, config *automotivev1alpha1.OperatorConfig) error {
