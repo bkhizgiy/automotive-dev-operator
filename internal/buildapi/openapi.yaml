@@ -233,18 +233,62 @@ components:
         requestedBy:
           type: string
           nullable: true
+        startTime:
+          type: string
+          format: date-time
+          description: When the build started (RFC 3339)
+        completionTime:
+          type: string
+          format: date-time
+          description: When the build completed (RFC 3339)
+        containerImage:
+          type: string
+          description: Container image reference for the built image
+        diskImage:
+          type: string
+          description: Disk image artifact reference
+        registryToken:
+          type: string
+          description: Short-lived token for pulling from internal registry
+        traceId:
+          type: string
+          description: OTel trace ID for cross-pod log and trace correlation
+        warning:
+          type: string
+          description: Non-fatal warnings (e.g. token expiry notices)
         expiresAt:
           type: string
           format: date-time
           description: When the build will be automatically deleted (RFC 3339)
+        jumpstarter:
+          $ref: '#/components/schemas/JumpstarterInfo'
+        parameters:
+          $ref: '#/components/schemas/BuildParameters'
     BuildListItem:
       type: object
       properties:
         name:
           type: string
+        phase:
+          type: string
+        message:
+          type: string
         requestedBy:
           type: string
           nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        startTime:
+          type: string
+          format: date-time
+        completionTime:
+          type: string
+          format: date-time
+        containerImage:
+          type: string
+        diskImage:
+          type: string
     BuildProgress:
       type: object
       properties:
@@ -272,6 +316,56 @@ components:
         - stage
         - done
         - total
+    JumpstarterInfo:
+      type: object
+      description: Information about Jumpstarter device flashing availability
+      properties:
+        available:
+          type: boolean
+          description: Whether Jumpstarter is installed in the cluster
+        exporterSelector:
+          type: string
+          description: Label selector for matching Jumpstarter exporters
+        flashCmd:
+          type: string
+          description: Command for flashing the device
+        leaseId:
+          type: string
+          description: Jumpstarter lease ID acquired during flash
+    BuildParameters:
+      type: object
+      description: Key input parameters that produced an ImageBuild
+      properties:
+        architecture:
+          type: string
+        distro:
+          type: string
+        target:
+          type: string
+        mode:
+          type: string
+        exportFormat:
+          type: string
+        compression:
+          type: string
+        storageClass:
+          type: string
+        automotiveImageBuilder:
+          type: string
+        builderImage:
+          type: string
+        containerRef:
+          type: string
+        buildDiskImage:
+          type: boolean
+        flashEnabled:
+          type: boolean
+        flashLeaseDuration:
+          type: string
+        flashLeaseName:
+          type: string
+        useServiceAccountAuth:
+          type: boolean
     BuildTemplateResponse:
       allOf:
         - $ref: '#/components/schemas/BuildRequest'
@@ -281,11 +375,11 @@ components:
               type: array
               items:
                 type: string
-        phase:
-          type: string
-        message:
-          type: string
-        createdAt:
-          type: string
-          format: date-time
+            phase:
+              type: string
+            message:
+              type: string
+            createdAt:
+              type: string
+              format: date-time
 

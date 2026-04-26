@@ -3,6 +3,7 @@ package imagebuild
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -19,6 +20,9 @@ import (
 	routev1 "github.com/openshift/api/route/v1"
 	pod "github.com/tektoncd/pipeline/pkg/apis/pipeline/pod"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	authnv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -38,6 +42,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
+
+var ibTracer = otel.Tracer("imagebuild-controller")
 
 const (
 	// OperatorNamespace is the namespace where the operator is deployed.
@@ -102,6 +108,69 @@ func safeDerivedName(baseName, suffix string) string {
 	return fmt.Sprintf("%s-%s%s", truncated, hexHash, suffix)
 }
 
+func getTraceID(imageBuild *automotivev1alpha1.ImageBuild) string {
+	if imageBuild.Annotations != nil {
+		return imageBuild.Annotations[automotivev1alpha1.AnnotationTraceID]
+	}
+	return ""
+}
+
+func buildLabels(imageBuild *automotivev1alpha1.ImageBuild, taskType string) map[string]string {
+	labels := map[string]string{
+		tektonv1.ManagedByLabelKey:             "automotive-dev-operator",
+		automotivev1alpha1.LabelImageBuildName: imageBuild.Name,
+		automotivev1alpha1.LabelDistro:         controllerutils.SanitizeLabelValue(imageBuild.Spec.GetDistro()),
+		automotivev1alpha1.LabelArchitecture:   controllerutils.SanitizeLabelValue(imageBuild.Spec.Architecture),
+		automotivev1alpha1.LabelTarget:         controllerutils.SanitizeLabelValue(imageBuild.Spec.GetTarget()),
+		automotivev1alpha1.LabelBuildMode:      controllerutils.SanitizeLabelValue(imageBuild.Spec.GetMode()),
+	}
+	if traceID := getTraceID(imageBuild); traceID != "" {
+		labels[automotivev1alpha1.LabelTraceID] = traceID
+	}
+	if taskType != "" {
+		labels[automotivev1alpha1.LabelTaskType] = taskType
+	}
+	return labels
+}
+
+func ensureTraceID(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) string {
+	if id := getTraceID(imageBuild); id != "" {
+		return id
+	}
+	if imageBuild.Annotations == nil {
+		imageBuild.Annotations = map[string]string{}
+	}
+
+	// Use the OTel trace ID from the active span when tracing is enabled.
+	// When tracing is disabled (noop provider), generate a random trace ID
+	// in the same 32-hex-char format so log correlation always works and
+	// the value matches OTel conventions if tracing is enabled later.
+	sc := trace.SpanFromContext(ctx).SpanContext()
+	var id string
+	if sc.TraceID().IsValid() {
+		id = sc.TraceID().String()
+	} else {
+		id = generateTraceID()
+	}
+
+	imageBuild.Annotations[automotivev1alpha1.AnnotationTraceID] = id
+	return id
+}
+
+func generateTraceID() string {
+	var tid trace.TraceID
+	_, _ = rand.Read(tid[:])
+	return tid.String()
+}
+
+func (r *ImageBuildReconciler) buildLogger(imageBuild *automotivev1alpha1.ImageBuild) logr.Logger {
+	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
+	if traceID := getTraceID(imageBuild); traceID != "" {
+		log = log.WithValues("traceID", traceID)
+	}
+	return log
+}
+
 // ImageBuildReconciler reconciles a ImageBuild object
 //
 //nolint:revive // Name follows Kubebuilder convention for reconcilers
@@ -135,7 +204,15 @@ type ImageBuildReconciler struct {
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile handles ImageBuild reconciliation and manages the build lifecycle
-func (r *ImageBuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *ImageBuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, err error) {
+	ctx, span := ibTracer.Start(ctx, "ImageBuild.Reconcile",
+		trace.WithAttributes(
+			attribute.String("imagebuild.name", req.Name),
+			attribute.String("imagebuild.namespace", req.Namespace),
+		),
+	)
+	defer controllerutils.EndSpanWithError(span, &err)
+
 	log := r.Log.WithValues("imagebuild", req.NamespacedName)
 
 	imageBuild := &automotivev1alpha1.ImageBuild{}
@@ -143,23 +220,36 @@ func (r *ImageBuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	expiryResult, expired, err := r.checkExpiry(ctx, imageBuild)
-	if expired || err != nil {
-		return expiryResult, err
+	if getTraceID(imageBuild) == "" {
+		ensureTraceID(ctx, imageBuild)
+		if err := r.Update(ctx, imageBuild); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to set trace-id annotation: %w", err)
+		}
+	}
+	log = log.WithValues("traceID", getTraceID(imageBuild))
+
+	span.SetAttributes(
+		attribute.String("imagebuild.phase", imageBuild.Status.Phase),
+	)
+
+	expiryResult, expired, expiryErr := r.checkExpiry(ctx, imageBuild)
+	if expired || expiryErr != nil {
+		return expiryResult, expiryErr
 	}
 
 	var phaseResult ctrl.Result
+	var phaseErr error
 	switch imageBuild.Status.Phase {
 	case "":
-		phaseResult, err = r.handleInitialState(ctx, imageBuild)
+		phaseResult, phaseErr = r.handleInitialState(ctx, imageBuild)
 	case "Uploading":
-		phaseResult, err = r.handleUploadingState(ctx, imageBuild)
+		phaseResult, phaseErr = r.handleUploadingState(ctx, imageBuild)
 	case phaseBuilding:
-		phaseResult, err = r.handleBuildingState(ctx, imageBuild)
+		phaseResult, phaseErr = r.handleBuildingState(ctx, imageBuild)
 	case "Pushing":
-		phaseResult, err = r.handlePushingState(ctx, imageBuild)
+		phaseResult, phaseErr = r.handlePushingState(ctx, imageBuild)
 	case "Flashing":
-		phaseResult, err = r.handleFlashingState(ctx, imageBuild)
+		phaseResult, phaseErr = r.handleFlashingState(ctx, imageBuild)
 	case phaseCompleted:
 		phaseResult = r.handleCompletedState(ctx, imageBuild)
 	case automotivev1alpha1.ImageBuildPhaseExpired:
@@ -175,8 +265,12 @@ func (r *ImageBuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	default:
 		log.Info("Unknown phase", "phase", imageBuild.Status.Phase)
 	}
-	if err != nil {
-		return phaseResult, err
+	if traceID := getTraceID(imageBuild); traceID != "" {
+		span.SetAttributes(attribute.String("imagebuild.trace_id", traceID))
+	}
+
+	if phaseErr != nil {
+		return phaseResult, phaseErr
 	}
 
 	if expiryResult.RequeueAfter > 0 &&
@@ -202,10 +296,7 @@ func (r *ImageBuildReconciler) ensureImageStreamOwnerRef(
 		return nil
 	}
 
-	log := r.Log.WithValues(
-		"imagebuild",
-		types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace},
-	)
+	log := r.buildLogger(imageBuild)
 
 	is := &unstructured.Unstructured{}
 	is.SetGroupVersionKind(schema.GroupVersionKind{
@@ -280,11 +371,11 @@ func extractImageStreamName(imageBuild *automotivev1alpha1.ImageBuild) string {
 func (r *ImageBuildReconciler) handleInitialState(
 	ctx context.Context,
 	imageBuild *automotivev1alpha1.ImageBuild,
-) (ctrl.Result, error) {
-	log := r.Log.WithValues(
-		"imagebuild",
-		types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace},
-	)
+) (result ctrl.Result, err error) {
+	ctx, span := ibTracer.Start(ctx, "ImageBuild.HandleInitialState")
+	defer controllerutils.EndSpanWithError(span, &err)
+
+	log := r.buildLogger(imageBuild)
 
 	if err := r.ensureImageStreamOwnerRef(ctx, imageBuild); err != nil {
 		return ctrl.Result{}, err
@@ -311,11 +402,11 @@ func (r *ImageBuildReconciler) handleInitialState(
 func (r *ImageBuildReconciler) handleUploadingState(
 	ctx context.Context,
 	imageBuild *automotivev1alpha1.ImageBuild,
-) (ctrl.Result, error) {
-	log := r.Log.WithValues(
-		"imagebuild",
-		types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace},
-	)
+) (result ctrl.Result, err error) {
+	ctx, span := ibTracer.Start(ctx, "ImageBuild.HandleUploadingState")
+	defer controllerutils.EndSpanWithError(span, &err)
+
+	log := r.buildLogger(imageBuild)
 
 	// Fail the build if uploads have not completed within the configured timeout
 	uploadTimeout := 30 * time.Minute // default
@@ -364,11 +455,10 @@ func (r *ImageBuildReconciler) handleUploadingState(
 func (r *ImageBuildReconciler) handleBuildingState(
 	ctx context.Context,
 	imageBuild *automotivev1alpha1.ImageBuild,
-) (ctrl.Result, error) {
-	log := r.Log.WithValues(
-		"imagebuild",
-		types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace},
-	)
+) (result ctrl.Result, err error) {
+	ctx, span := ibTracer.Start(ctx, "ImageBuild.HandleBuildingState")
+	defer controllerutils.EndSpanWithError(span, &err)
+	log := r.buildLogger(imageBuild)
 
 	if imageBuild.Status.PipelineRunName != "" {
 		return r.checkBuildProgress(ctx, imageBuild)
@@ -420,10 +510,7 @@ func (r *ImageBuildReconciler) checkExpiry(
 	ctx context.Context,
 	imageBuild *automotivev1alpha1.ImageBuild,
 ) (ctrl.Result, bool, error) {
-	log := r.Log.WithValues(
-		"imagebuild",
-		types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace},
-	)
+	log := r.buildLogger(imageBuild)
 
 	if imageBuild.Status.Phase == automotivev1alpha1.ImageBuildPhaseExpired {
 		return ctrl.Result{}, false, nil
@@ -565,10 +652,7 @@ func (r *ImageBuildReconciler) handleExpiredState(
 	ctx context.Context,
 	imageBuild *automotivev1alpha1.ImageBuild,
 ) ctrl.Result {
-	log := r.Log.WithValues(
-		"imagebuild",
-		types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace},
-	)
+	log := r.buildLogger(imageBuild)
 
 	var retryNeeded bool
 	deleteObj := func(obj client.Object, kind string) {
@@ -662,14 +746,14 @@ func (r *ImageBuildReconciler) deleteExpiredImageStreams(
 func (r *ImageBuildReconciler) checkBuildProgress(
 	ctx context.Context,
 	imageBuild *automotivev1alpha1.ImageBuild,
-) (ctrl.Result, error) {
-	log := r.Log.WithValues(
-		"imagebuild",
-		types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace},
-	)
+) (result ctrl.Result, err error) {
+	ctx, span := ibTracer.Start(ctx, "ImageBuild.CheckBuildProgress")
+	defer controllerutils.EndSpanWithError(span, &err)
+
+	log := r.buildLogger(imageBuild)
 
 	pipelineRun := &tektonv1.PipelineRun{}
-	err := r.Get(ctx, types.NamespacedName{
+	err = r.Get(ctx, types.NamespacedName{
 		Name:      imageBuild.Status.PipelineRunName,
 		Namespace: imageBuild.Namespace,
 	}, pipelineRun)
@@ -793,7 +877,10 @@ func (r *ImageBuildReconciler) checkBuildProgress(
 func (r *ImageBuildReconciler) startNewBuild(
 	ctx context.Context,
 	imageBuild *automotivev1alpha1.ImageBuild,
-) (ctrl.Result, error) {
+) (result ctrl.Result, err error) {
+	ctx, span := ibTracer.Start(ctx, "ImageBuild.StartNewBuild")
+	defer controllerutils.EndSpanWithError(span, &err)
+
 	// PVC is now created via VolumeClaimTemplate in createBuildTaskRun
 	// to ensure proper zone affinity with WaitForFirstConsumer
 	if err := r.createBuildTaskRun(ctx, imageBuild); err != nil {
@@ -817,8 +904,7 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 	ctx context.Context,
 	imageBuild *automotivev1alpha1.ImageBuild,
 ) error {
-	nsName := types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}
-	log := r.Log.WithValues("imagebuild", nsName)
+	log := r.buildLogger(imageBuild)
 	log.Info("Creating PipelineRun for ImageBuild")
 
 	// Fetch OperatorConfig from the operator namespace to get build configuration
@@ -989,6 +1075,13 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
 				StringVal: fmt.Sprintf("%t", imageBuild.Spec.SecureBuild),
+			},
+		},
+		{
+			Name: "trace-id",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: getTraceID(imageBuild),
 			},
 		},
 	}
@@ -1363,10 +1456,7 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: safeDerivedName(imageBuild.Name, "-build-"),
 			Namespace:    imageBuild.Namespace,
-			Labels: map[string]string{
-				tektonv1.ManagedByLabelKey:                        "automotive-dev-operator",
-				"automotive.sdv.cloud.redhat.com/imagebuild-name": imageBuild.Name,
-			},
+			Labels:       buildLabels(imageBuild, "build"),
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion: imageBuild.APIVersion,
@@ -1457,8 +1547,11 @@ func (r *ImageBuildReconciler) createOrUpdateManifestConfigMap(
 	return configMapName, nil
 }
 
-func (r *ImageBuildReconciler) createPushTaskRun(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild, artifactFilename string) error {
-	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
+func (r *ImageBuildReconciler) createPushTaskRun(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild, artifactFilename string) (err error) {
+	ctx, span := ibTracer.Start(ctx, "ImageBuild.CreatePushTaskRun")
+	defer controllerutils.EndSpanWithError(span, &err)
+
+	log := r.buildLogger(imageBuild)
 	log.Info("Creating push TaskRun for ImageBuild", "artifactFilename", artifactFilename)
 
 	if !imageBuild.Spec.HasDiskExport() {
@@ -1550,6 +1643,13 @@ func (r *ImageBuildReconciler) createPushTaskRun(ctx context.Context, imageBuild
 				StringVal: artifactFilename,
 			},
 		},
+		{
+			Name: "trace-id",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: getTraceID(imageBuild),
+			},
+		},
 	}
 
 	workspaces := []tektonv1.WorkspaceBinding{
@@ -1565,11 +1665,7 @@ func (r *ImageBuildReconciler) createPushTaskRun(ctx context.Context, imageBuild
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: safeDerivedName(imageBuild.Name, "-push-"),
 			Namespace:    imageBuild.Namespace,
-			Labels: map[string]string{
-				tektonv1.ManagedByLabelKey:                        "automotive-dev-operator",
-				"automotive.sdv.cloud.redhat.com/imagebuild-name": imageBuild.Name,
-				"automotive.sdv.cloud.redhat.com/task-type":       "push",
-			},
+			Labels:       buildLabels(imageBuild, "push"),
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion: imageBuild.APIVersion,
@@ -1608,9 +1704,11 @@ func (r *ImageBuildReconciler) createPushTaskRun(ctx context.Context, imageBuild
 func (r *ImageBuildReconciler) handlePushingState(
 	ctx context.Context,
 	imageBuild *automotivev1alpha1.ImageBuild,
-) (ctrl.Result, error) {
-	nsName := types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}
-	log := r.Log.WithValues("imagebuild", nsName)
+) (result ctrl.Result, err error) {
+	ctx, span := ibTracer.Start(ctx, "ImageBuild.HandlePushingState")
+	defer controllerutils.EndSpanWithError(span, &err)
+
+	log := r.buildLogger(imageBuild)
 
 	if imageBuild.Status.PushTaskRunName == "" {
 		// Fetch PipelineRun to get artifact filename from results
@@ -1639,7 +1737,7 @@ func (r *ImageBuildReconciler) handlePushingState(
 
 	// Check push TaskRun status
 	taskRun := &tektonv1.TaskRun{}
-	err := r.Get(ctx, types.NamespacedName{
+	err = r.Get(ctx, types.NamespacedName{
 		Name:      imageBuild.Status.PushTaskRunName,
 		Namespace: imageBuild.Namespace,
 	}, taskRun)
@@ -1708,9 +1806,11 @@ func (r *ImageBuildReconciler) handlePushingState(
 func (r *ImageBuildReconciler) handleFlashingState(
 	ctx context.Context,
 	imageBuild *automotivev1alpha1.ImageBuild,
-) (ctrl.Result, error) {
-	nsName := types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace}
-	log := r.Log.WithValues("imagebuild", nsName)
+) (result ctrl.Result, err error) {
+	ctx, span := ibTracer.Start(ctx, "ImageBuild.HandleFlashingState")
+	defer controllerutils.EndSpanWithError(span, &err)
+
+	log := r.buildLogger(imageBuild)
 
 	if imageBuild.Status.FlashTaskRunName == "" {
 		// No flash TaskRun yet, create one
@@ -1728,7 +1828,7 @@ func (r *ImageBuildReconciler) handleFlashingState(
 
 	// Check flash TaskRun status
 	taskRun := &tektonv1.TaskRun{}
-	err := r.Get(ctx, types.NamespacedName{
+	err = r.Get(ctx, types.NamespacedName{
 		Name:      imageBuild.Status.FlashTaskRunName,
 		Namespace: imageBuild.Namespace,
 	}, taskRun)
@@ -1793,8 +1893,11 @@ func (r *ImageBuildReconciler) handleFlashingState(
 func (r *ImageBuildReconciler) createFlashTaskRun(
 	ctx context.Context,
 	imageBuild *automotivev1alpha1.ImageBuild,
-) error {
-	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
+) (err error) {
+	ctx, span := ibTracer.Start(ctx, "ImageBuild.CreateFlashTaskRun")
+	defer controllerutils.EndSpanWithError(span, &err)
+
+	log := r.buildLogger(imageBuild)
 	log.Info("Creating flash TaskRun for ImageBuild")
 
 	if !imageBuild.Spec.IsFlashEnabled() {
@@ -1803,7 +1906,7 @@ func (r *ImageBuildReconciler) createFlashTaskRun(
 
 	// Get exporter selector from OperatorConfig based on target
 	operatorConfig := &automotivev1alpha1.OperatorConfig{}
-	err := r.Get(ctx, types.NamespacedName{Name: "config", Namespace: OperatorNamespace}, operatorConfig)
+	err = r.Get(ctx, types.NamespacedName{Name: "config", Namespace: OperatorNamespace}, operatorConfig)
 	if err != nil {
 		return fmt.Errorf("failed to get OperatorConfig: %w", err)
 	}
@@ -1866,6 +1969,10 @@ func (r *ImageBuildReconciler) createFlashTaskRun(
 			Name:  "lease-name",
 			Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: imageBuild.Spec.GetFlashLeaseName()},
 		},
+		{
+			Name:  "trace-id",
+			Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: getTraceID(imageBuild)},
+		},
 	}
 
 	workspaces := []tektonv1.WorkspaceBinding{
@@ -1881,11 +1988,7 @@ func (r *ImageBuildReconciler) createFlashTaskRun(
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: safeDerivedName(imageBuild.Name, "-flash-"),
 			Namespace:    imageBuild.Namespace,
-			Labels: map[string]string{
-				tektonv1.ManagedByLabelKey:                        "automotive-dev-operator",
-				"automotive.sdv.cloud.redhat.com/imagebuild-name": imageBuild.Name,
-				"automotive.sdv.cloud.redhat.com/task-type":       "flash",
-			},
+			Labels:       buildLabels(imageBuild, "flash"),
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion: imageBuild.APIVersion,
@@ -2227,7 +2330,7 @@ func isTaskRunSuccessful(taskRun *tektonv1.TaskRun) bool {
 }
 
 func (r *ImageBuildReconciler) createUploadPod(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) error {
-	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
+	log := r.buildLogger(imageBuild)
 
 	podName := safeDerivedName(imageBuild.Name, "-upload-pod")
 	existingPod := &corev1.Pod{}
@@ -2648,7 +2751,7 @@ func (r *ImageBuildReconciler) getOrCreateWorkspacePVC(
 	ctx context.Context,
 	imageBuild *automotivev1alpha1.ImageBuild,
 ) (string, error) {
-	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
+	log := r.buildLogger(imageBuild)
 
 	if imageBuild.Status.PVCName != "" {
 		existingPVC := &corev1.PersistentVolumeClaim{}
@@ -2725,7 +2828,7 @@ func (r *ImageBuildReconciler) getOrCreateWorkspacePVC(
 }
 
 func (r *ImageBuildReconciler) shutdownUploadPod(ctx context.Context, imageBuild *automotivev1alpha1.ImageBuild) error {
-	log := r.Log.WithValues("imagebuild", types.NamespacedName{Name: imageBuild.Name, Namespace: imageBuild.Namespace})
+	log := r.buildLogger(imageBuild)
 
 	podName := safeDerivedName(imageBuild.Name, "-upload-pod")
 	pod := &corev1.Pod{

@@ -21,6 +21,7 @@ import (
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/telemetry"
 )
 
 func main() {
@@ -65,8 +66,27 @@ func main() {
 		}
 	}
 
-	// Load API limits from OperatorConfig
-	limits := loadLimitsFromOperatorConfig(*namespace, logger)
+	// Load config from OperatorConfig
+	configNamespace := os.Getenv("WATCH_NAMESPACE")
+	if configNamespace == "" {
+		configNamespace = *namespace
+	}
+	limits, tracingEnabled, tracingEndpoint, tracingSamplingRatio, tracingInsecure := loadFromOperatorConfig(configNamespace, logger)
+
+	shutdownTracing := func(context.Context) error { return nil }
+	if tracingEnabled {
+		var err error
+		shutdownTracing, err = telemetry.InitTracing(context.Background(), "build-api", tracingEndpoint, tracingSamplingRatio, tracingInsecure)
+		if err != nil {
+			slog.Warn("failed to initialize tracing, continuing without it", "error", err)
+			shutdownTracing = func(context.Context) error { return nil }
+		}
+	}
+	defer func() {
+		if err := shutdownTracing(context.Background()); err != nil {
+			slog.Error("failed to shutdown tracing", "error", err)
+		}
+	}()
 
 	slog.Info("starting build-api server",
 		"addr", addr,
@@ -96,21 +116,28 @@ func main() {
 	}
 }
 
-func loadLimitsFromOperatorConfig(namespace string, logger logr.Logger) buildapi.APILimits {
+func loadFromOperatorConfig(namespace string, logger logr.Logger) (buildapi.APILimits, bool, string, float64, bool) {
 	k8sClient, err := createK8sClient()
 	if err != nil {
-		logger.Info("could not create Kubernetes client, using default limits", "error", err)
-		return buildapi.DefaultAPILimits()
+		logger.Info("could not create Kubernetes client, using defaults", "error", err)
+		return buildapi.DefaultAPILimits(), true, "", 1.0, true
 	}
 
 	operatorConfig := &automotivev1alpha1.OperatorConfig{}
 	key := types.NamespacedName{Name: "config", Namespace: namespace}
 	if err := k8sClient.Get(context.Background(), key, operatorConfig); err != nil {
-		logger.Info("could not get OperatorConfig, using default limits", "error", err)
-		return buildapi.DefaultAPILimits()
+		logger.Info("could not get OperatorConfig, using defaults", "error", err)
+		return buildapi.DefaultAPILimits(), true, "", 1.0, true
 	}
 
-	return buildapi.LoadLimitsFromConfig(operatorConfig.Spec.BuildAPI)
+	limits := buildapi.LoadLimitsFromConfig(operatorConfig.Spec.BuildAPI)
+
+	if operatorConfig.Spec.Tracing == nil || !operatorConfig.Spec.Tracing.Enabled {
+		return limits, false, "", 1.0, true
+	}
+
+	return limits, true, operatorConfig.Spec.Tracing.GetEndpoint(),
+		operatorConfig.Spec.Tracing.GetSamplingRatio(), operatorConfig.Spec.Tracing.IsInsecure()
 }
 
 func createK8sClient() (client.Client, error) {

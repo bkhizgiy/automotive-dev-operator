@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
@@ -44,8 +45,32 @@ import (
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi/catalog"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/labels"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	authnv1 "k8s.io/api/authentication/v1"
 )
+
+var apiTracer = otel.Tracer("build-api")
+
+func spanError(span trace.Span, err error) {
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
+}
+
+type traceIDContextKey struct{}
+
+func extractTraceID(ctx context.Context) string {
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		return sc.TraceID().String()
+	}
+	if id, ok := ctx.Value(traceIDContextKey{}).(string); ok && id != "" {
+		return id
+	}
+	return ""
+}
 
 const (
 	// Build phase constants — aliases for readability; canonical values in api/v1alpha1
@@ -252,7 +277,7 @@ func NewAPIServerWithLimits(addr string, logger logr.Logger, limits APILimits) *
 		logger.Info("failed to create k8s client for OperatorConfig, will use kubeconfig fallback", "error", err)
 	}
 	a.router = a.createRouter()
-	a.server = &http.Server{Addr: addr, Handler: a.router}
+	a.server = &http.Server{Addr: addr, Handler: otelhttp.NewHandler(a.router, "build-api")}
 	return a
 }
 
@@ -335,7 +360,16 @@ func (a *APIServer) createRouter() *gin.Engine {
 	router.Use(func(c *gin.Context) {
 		reqID := uuid.New().String()
 		c.Set("reqID", reqID)
-		a.log.Info("http request", "method", c.Request.Method, "path", c.Request.URL.Path, "reqID", reqID)
+
+		ctx := c.Request.Context()
+		if sc := trace.SpanContextFromContext(ctx); !sc.IsValid() {
+			var tid trace.TraceID
+			_, _ = rand.Read(tid[:])
+			ctx = context.WithValue(ctx, traceIDContextKey{}, tid.String())
+			c.Request = c.Request.WithContext(ctx)
+		}
+
+		a.log.Info("http request", "method", c.Request.Method, "path", c.Request.URL.Path, "reqID", reqID, "traceID", extractTraceID(ctx))
 		c.Next()
 	})
 
@@ -1252,8 +1286,13 @@ func validateSecureBuild(ctx context.Context, k8sClient client.Client, namespace
 }
 
 func (a *APIServer) createBuild(c *gin.Context) {
+	ctx, span := apiTracer.Start(c.Request.Context(), "createBuild")
+	defer span.End()
+	c.Request = c.Request.WithContext(ctx)
+
 	var req BuildRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		spanError(span, err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON request"})
 		return
 	}
@@ -1261,26 +1300,29 @@ func (a *APIServer) createBuild(c *gin.Context) {
 	needsUpload := req.HasLocalFiles || manifestNeedsUpload(req.Manifest)
 
 	if err := validateBuildRequest(&req); err != nil {
+		spanError(span, err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	if err := applyBuildDefaults(&req); err != nil {
+		spanError(span, err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	k8sClient, err := getClientFromRequest(c)
 	if err != nil {
+		spanError(span, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
 		return
 	}
 
-	ctx := c.Request.Context()
 	namespace := resolveNamespace()
 
 	effectiveTTL, ttlErr := resolveAndClampTTL(ctx, k8sClient, namespace, req.TTL)
 	if ttlErr != nil {
+		spanError(span, ttlErr)
 		c.JSON(http.StatusBadRequest, gin.H{"error": ttlErr.Error()})
 		return
 	}
@@ -1289,10 +1331,12 @@ func (a *APIServer) createBuild(c *gin.Context) {
 	if len(req.ExtraRepos) > 0 {
 		restCfgForRepos, err := getRESTConfigFromRequest(c)
 		if err != nil {
+			spanError(span, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get kubernetes config"})
 			return
 		}
 		if err := a.resolveExtraRepos(ctx, k8sClient, restCfgForRepos, &req); err != nil {
+			spanError(span, err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
@@ -1300,6 +1344,7 @@ func (a *APIServer) createBuild(c *gin.Context) {
 
 	// Append a short random suffix to ensure unique names for parallel builds
 	req.Name = fmt.Sprintf("%s-%s", req.Name, uuid.New().String()[:5])
+	span.SetAttributes(attribute.String("build.name", req.Name))
 
 	requestedBy := a.resolveRequester(c)
 
@@ -1311,6 +1356,7 @@ func (a *APIServer) createBuild(c *gin.Context) {
 		var err error
 		taskBundleRef, statusCode, err = validateSecureBuild(ctx, k8sClient, namespace)
 		if err != nil {
+			spanError(span, err)
 			c.JSON(statusCode, gin.H{"error": err.Error()})
 			return
 		}
@@ -1321,11 +1367,13 @@ func (a *APIServer) createBuild(c *gin.Context) {
 	if req.Workspace != "" {
 		restCfg, restErr := getRESTConfigFromRequest(c)
 		if restErr != nil {
+			spanError(span, restErr)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get kubernetes config"})
 			return
 		}
 		pvcName, wsErr := a.resolveWorkspaceForBuild(ctx, k8sClient, restCfg, namespace, req.Workspace, requestedBy, &req)
 		if wsErr != nil {
+			spanError(span, wsErr)
 			c.JSON(http.StatusBadRequest, gin.H{"error": wsErr.Error()})
 			return
 		}
@@ -1334,9 +1382,12 @@ func (a *APIServer) createBuild(c *gin.Context) {
 
 	existing := &automotivev1alpha1.ImageBuild{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: namespace}, existing); err == nil {
-		c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("ImageBuild %s already exists", req.Name)})
+		conflictErr := fmt.Errorf("ImageBuild %s already exists", req.Name)
+		spanError(span, conflictErr)
+		c.JSON(http.StatusConflict, gin.H{"error": conflictErr.Error()})
 		return
 	} else if !k8serrors.IsNotFound(err) {
+		spanError(span, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error checking existing build: %v", err)})
 		return
 	}
@@ -1352,6 +1403,7 @@ func (a *APIServer) createBuild(c *gin.Context) {
 
 	envSecretRef, pushSecretName, apiErr := a.resolveRegistryForBuild(ctx, c, k8sClient, namespace, &req)
 	if apiErr != nil {
+		spanError(span, apiErr)
 		return
 	}
 
@@ -1359,11 +1411,14 @@ func (a *APIServer) createBuild(c *gin.Context) {
 	var flashSecretName string
 	if req.FlashEnabled {
 		if req.FlashClientConfig == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "flash enabled but client config is required"})
+			flashErr := fmt.Errorf("flash enabled but client config is required")
+			spanError(span, flashErr)
+			c.JSON(http.StatusBadRequest, gin.H{"error": flashErr.Error()})
 			return
 		}
 		flashSecretName = req.Name + "-jumpstarter-client"
 		if err := createFlashClientSecret(ctx, k8sClient, namespace, flashSecretName, req.FlashClientConfig); err != nil {
+			spanError(span, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error creating flash client secret: %v", err)})
 			return
 		}
@@ -1376,14 +1431,18 @@ func (a *APIServer) createBuild(c *gin.Context) {
 		}
 	}
 
+	traceID := extractTraceID(ctx)
+	annotations := map[string]string{
+		automotivev1alpha1.AnnotationRequestedBy: requestedBy,
+		automotivev1alpha1.AnnotationTraceID:     traceID,
+	}
+
 	imageBuild := &automotivev1alpha1.ImageBuild{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      req.Name,
-			Namespace: namespace,
-			Labels:    buildLabels,
-			Annotations: map[string]string{
-				labels.RequestedBy: requestedBy,
-			},
+			Name:        req.Name,
+			Namespace:   namespace,
+			Labels:      buildLabels,
+			Annotations: annotations,
 		},
 		Spec: automotivev1alpha1.ImageBuildSpec{
 			Architecture:  string(req.Architecture),
@@ -1401,6 +1460,7 @@ func (a *APIServer) createBuild(c *gin.Context) {
 		},
 	}
 	if err := k8sClient.Create(ctx, imageBuild); err != nil {
+		spanError(span, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error creating ImageBuild: %v", err)})
 		return
 	}
@@ -1441,6 +1501,7 @@ func (a *APIServer) createBuild(c *gin.Context) {
 		Phase:       phaseBuilding,
 		Message:     "Build triggered",
 		RequestedBy: requestedBy,
+		TraceID:     traceID,
 	})
 }
 
@@ -1610,6 +1671,7 @@ func (a *APIServer) getBuild(c *gin.Context, name string) {
 		Phase:       build.Status.Phase,
 		Message:     build.Status.Message,
 		RequestedBy: build.Annotations[labels.RequestedBy],
+		TraceID:     build.Annotations[automotivev1alpha1.AnnotationTraceID],
 		StartTime: func() string {
 			if build.Status.StartTime != nil {
 				return build.Status.StartTime.Format(time.RFC3339)

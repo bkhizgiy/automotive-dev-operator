@@ -22,6 +22,10 @@ OSBUILD_PATH="/usr/bin/osbuild"
 OSBUILD_STORE="/_build"
 OSBUILD_RUN="/run/osbuild/"
 
+if [[ -n "${ADO_TRACE_ID:-}" ]]; then
+  echo "{\"traceID\":\"${ADO_TRACE_ID}\",\"msg\":\"task started\",\"hostname\":\"${HOSTNAME:-unknown}\"}"
+fi
+
 # --- Validation ---
 
 validate_container_ref() {

@@ -42,6 +42,35 @@ const (
 	tektonResolverBundles = "bundles"
 )
 
+func traceIDParamSpec() tektonv1.ParamSpec {
+	return tektonv1.ParamSpec{
+		Name:        "trace-id",
+		Type:        tektonv1.ParamTypeString,
+		Description: "Trace ID for cross-pod log correlation",
+		Default: &tektonv1.ParamValue{
+			Type:      tektonv1.ParamTypeString,
+			StringVal: "",
+		},
+	}
+}
+
+func traceIDEnvVar() corev1.EnvVar {
+	return corev1.EnvVar{
+		Name:  "ADO_TRACE_ID",
+		Value: "$(params.trace-id)",
+	}
+}
+
+func traceIDPipelineParam() tektonv1.Param {
+	return tektonv1.Param{
+		Name: "trace-id",
+		Value: tektonv1.ParamValue{
+			Type:      tektonv1.ParamTypeString,
+			StringVal: "$(params.trace-id)",
+		},
+	}
+}
+
 // buildTaskRef constructs a TaskRef that uses either the cluster resolver or the
 // bundles resolver, depending on BuildConfig.TaskResolver.
 func buildTaskRef(taskName, namespace string, buildConfig *BuildConfig) *tektonv1.TaskRef {
@@ -295,6 +324,7 @@ func GeneratePushArtifactRegistryTask(namespace string, buildConfig *BuildConfig
 						StringVal: buildConfig.getYQHelperImage(),
 					},
 				},
+				traceIDParamSpec(),
 			},
 			Results: []tektonv1.TaskResult{
 				{
@@ -322,6 +352,7 @@ func GeneratePushArtifactRegistryTask(namespace string, buildConfig *BuildConfig
 							Name:  "DOCKER_CONFIG",
 							Value: "/docker-config",
 						},
+						traceIDEnvVar(),
 					},
 					Script:     PushArtifactScript,
 					WorkingDir: "/workspace/shared",
@@ -514,6 +545,7 @@ func GenerateBuildAutomotiveImageTask(namespace string, buildConfig *BuildConfig
 						StringVal: buildConfig.getYQHelperImage(),
 					},
 				},
+				traceIDParamSpec(),
 			},
 			Results: []tektonv1.TaskResult{
 				{
@@ -614,6 +646,7 @@ func GenerateBuildAutomotiveImageTask(namespace string, buildConfig *BuildConfig
 							Name:  "USE_MEMORY_VOLUMES",
 							Value: fmt.Sprintf("%t", buildConfig != nil && buildConfig.UseMemoryVolumes),
 						},
+						traceIDEnvVar(),
 					},
 					VolumeMounts: []corev1.VolumeMount{
 						{
@@ -1020,6 +1053,7 @@ func GenerateTektonPipeline(name, namespace string, buildConfig *BuildConfig) *t
 						StringVal: "false",
 					},
 				},
+				traceIDParamSpec(),
 			},
 			Workspaces: []tektonv1.PipelineWorkspaceDeclaration{
 				{Name: workspaceNameShared},
@@ -1195,6 +1229,7 @@ func GenerateTektonPipeline(name, namespace string, buildConfig *BuildConfig) *t
 								StringVal: "$(params.yq-helper-image)",
 							},
 						},
+						traceIDPipelineParam(),
 					},
 					Workspaces: []tektonv1.WorkspacePipelineTaskBinding{
 						{Name: workspaceNameShared, Workspace: workspaceNameShared},
@@ -1305,6 +1340,7 @@ func GenerateTektonPipeline(name, namespace string, buildConfig *BuildConfig) *t
 								StringVal: "$(params.yq-helper-image)",
 							},
 						},
+						traceIDPipelineParam(),
 					},
 					Workspaces: []tektonv1.WorkspacePipelineTaskBinding{
 						{Name: workspaceNameShared, Workspace: workspaceNameShared},
@@ -1369,6 +1405,7 @@ func GenerateTektonPipeline(name, namespace string, buildConfig *BuildConfig) *t
 								StringVal: "$(params.jumpstarter-image)",
 							},
 						},
+						traceIDPipelineParam(),
 					},
 					Workspaces: []tektonv1.WorkspacePipelineTaskBinding{
 						{Name: "jumpstarter-client", Workspace: "jumpstarter-client"},
@@ -1737,6 +1774,7 @@ func GenerateFlashTask(namespace string, buildConfig *BuildConfig) *tektonv1.Tas
 						StringVal: automotivev1alpha1.DefaultJumpstarterImage,
 					},
 				},
+				traceIDParamSpec(),
 			},
 			Results: []tektonv1.TaskResult{
 				{
@@ -1796,6 +1834,7 @@ func GenerateFlashTask(namespace string, buildConfig *BuildConfig) *tektonv1.Tas
 							Name:  "RESULTS_LEASE_ID_PATH",
 							Value: "$(results.lease-id.path)",
 						},
+						traceIDEnvVar(),
 					},
 					Script:  FlashImageScript,
 					Timeout: &metav1.Duration{Duration: time.Duration(buildConfig.getFlashTimeoutMinutes()) * time.Minute},

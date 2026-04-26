@@ -11,7 +11,11 @@ import (
 	"time"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/controllerutils"
 	"github.com/go-logr/logr"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -26,6 +30,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
+
+var wsTracer = otel.Tracer("workspace-controller")
 
 const (
 	containerName               = "toolchain"
@@ -54,7 +60,15 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;delete
 
 // Reconcile handles Workspace CR changes.
-func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, err error) {
+	ctx, span := wsTracer.Start(ctx, "Workspace.Reconcile",
+		trace.WithAttributes(
+			attribute.String("workspace.name", req.Name),
+			attribute.String("workspace.namespace", req.Namespace),
+		),
+	)
+	defer controllerutils.EndSpanWithError(span, &err)
+
 	log := r.Log.WithValues("workspace", req.NamespacedName)
 
 	ws := &automotivev1alpha1.Workspace{}
@@ -123,12 +137,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return ctrl.Result{}, nil
 }
 
-func (r *Reconciler) ensurePVC(ctx context.Context, ws *automotivev1alpha1.Workspace) error {
+func (r *Reconciler) ensurePVC(ctx context.Context, ws *automotivev1alpha1.Workspace) (err error) {
+	ctx, span := wsTracer.Start(ctx, "Workspace.EnsurePVC")
+	defer controllerutils.EndSpanWithError(span, &err)
+
 	pvcName := ws.Name + pvcSuffix
 
 	// Check if the PVC already exists
 	existing := &corev1.PersistentVolumeClaim{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: pvcName}, existing)
+	err = r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: pvcName}, existing)
 	if err == nil {
 		// PVC exists; ensure status is up to date
 		if ws.Status.PVCName != pvcName {
@@ -181,10 +198,13 @@ func (r *Reconciler) ensurePVC(ctx context.Context, ws *automotivev1alpha1.Works
 	return r.Status().Patch(ctx, ws, patch)
 }
 
-func (r *Reconciler) ensurePod(ctx context.Context, ws *automotivev1alpha1.Workspace, log logr.Logger) (*corev1.Pod, error) {
+func (r *Reconciler) ensurePod(ctx context.Context, ws *automotivev1alpha1.Workspace, log logr.Logger) (_ *corev1.Pod, err error) {
+	ctx, span := wsTracer.Start(ctx, "Workspace.EnsurePod")
+	defer controllerutils.EndSpanWithError(span, &err)
+
 	podName := "workspace-" + ws.Name
 	existing := &corev1.Pod{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: podName}, existing)
+	err = r.Get(ctx, client.ObjectKey{Namespace: ws.Namespace, Name: podName}, existing)
 	if err == nil {
 		return existing, nil // already exists
 	}
@@ -414,12 +434,26 @@ chown -R 1000:1000 /workspace/src /workspace/cache /workspace/.cache /workspace/
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        podName,
 			Namespace:   ws.Namespace,
+			Labels:      workspacePodLabels(ws, arch),
 			Annotations: annotations,
 		},
 		Spec: podSpec,
 	}
 
 	return pod
+}
+
+func workspacePodLabels(ws *automotivev1alpha1.Workspace, arch string) map[string]string {
+	labels := map[string]string{
+		"app.kubernetes.io/managed-by":        "automotive-dev-operator",
+		"app.kubernetes.io/component":         "workspace",
+		automotivev1alpha1.LabelWorkspaceName: controllerutils.SanitizeLabelValue(ws.Name),
+		automotivev1alpha1.LabelArchitecture:  controllerutils.SanitizeLabelValue(arch),
+	}
+	if owner := controllerutils.SanitizeLabelValue(ws.Spec.Owner); owner != "" {
+		labels[automotivev1alpha1.LabelOwner] = owner
+	}
+	return labels
 }
 
 func (r *Reconciler) deleteWorkspacePod(ctx context.Context, ws *automotivev1alpha1.Workspace, log logr.Logger) error {

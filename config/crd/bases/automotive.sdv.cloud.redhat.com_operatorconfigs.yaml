@@ -875,6 +875,37 @@ spec:
                 required:
                 - enabled
                 type: object
+              tracing:
+                description: Tracing defines configuration for OpenTelemetry distributed
+                  tracing
+                properties:
+                  enabled:
+                    default: false
+                    description: Enabled determines if the operator should export
+                      trace spans
+                    type: boolean
+                  endpoint:
+                    description: |-
+                      Endpoint is the OTLP gRPC collector endpoint (e.g. "otel-collector.namespace.svc:4317").
+                      Falls back to OTEL_EXPORTER_OTLP_ENDPOINT env var when empty.
+                    type: string
+                  insecure:
+                    default: true
+                    description: |-
+                      Insecure disables TLS for the OTLP gRPC connection.
+                      Default: true (plaintext, appropriate for in-cluster collectors).
+                      Set to false when connecting to external/managed tracing backends that require TLS.
+                    type: boolean
+                  samplingRatio:
+                    description: |-
+                      SamplingRatio controls the fraction of traces sampled, as a string representation
+                      of a decimal between "0" and "1" (e.g. "0.1" for 10%, "1" for 100%).
+                      Default: "1" (sample everything).
+                    pattern: ^(0(\.\d+)?|1(\.0+)?)$
+                    type: string
+                required:
+                - enabled
+                type: object
               workspaces:
                 description: Workspaces defines configuration for developer workspaces
                 properties:
@@ -1169,6 +1200,10 @@ spec:
                 description: Phase represents the current phase (Ready, Reconciling,
                   Failed)
                 type: string
+              tracingEnabled:
+                description: TracingEnabled indicates if tracing is configured and
+                  active
+                type: boolean
               userNamespacesSupported:
                 description: |-
                   UserNamespacesSupported indicates if the cluster supports user namespaces in pods

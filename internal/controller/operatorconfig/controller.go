@@ -320,21 +320,13 @@ func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	r.setCondition(config, automotivev1alpha1.OperatorConfigConditionDegraded, metav1.ConditionFalse, "ReconcileSucceeded", "OperatorConfig reconciled successfully")
 	r.setCondition(config, automotivev1alpha1.OperatorConfigConditionReconciling, metav1.ConditionFalse, "ReconcileSucceeded", "Reconciliation complete")
 
-	// Reconcile monitoring (ServiceMonitor)
-	if config.Spec.Monitoring != nil && config.Spec.Monitoring.Enabled {
-		deployed, err := r.deployServiceMonitor(ctx, config)
-		if err != nil {
-			log.Error(err, "Failed to deploy ServiceMonitor")
-			return ctrl.Result{}, fmt.Errorf("failed to deploy ServiceMonitor: %w", err)
-		}
-		config.Status.MonitoringEnabled = deployed
-	} else {
-		if err := r.cleanupServiceMonitor(ctx, config); err != nil {
-			log.Error(err, "Failed to cleanup ServiceMonitor")
-			return ctrl.Result{}, fmt.Errorf("failed to cleanup ServiceMonitor: %w", err)
-		}
-		config.Status.MonitoringEnabled = false
+	// Reconcile monitoring and tracing status
+	if _, err := r.reconcileMonitoring(ctx, config); err != nil {
+		return ctrl.Result{}, err
 	}
+
+	tracingEnabled := config.Spec.Tracing != nil && config.Spec.Tracing.Enabled
+	config.Status.TracingEnabled = tracingEnabled
 
 	// Always persist final status: conditions change on every reconcile (Reconciling flips to False),
 	// so a len()-based guard would miss in-place condition status changes.
@@ -342,7 +334,8 @@ func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		"phase", config.Status.Phase,
 		"osBuildsDeployed", config.Status.OSBuildsDeployed,
 		"jumpstarterAvailable", config.Status.JumpstarterAvailable,
-		"monitoringEnabled", config.Status.MonitoringEnabled)
+		"monitoringEnabled", config.Status.MonitoringEnabled,
+		"tracingEnabled", config.Status.TracingEnabled)
 	if err := r.Status().Update(ctx, config); err != nil {
 		log.Error(err, "Failed to update status")
 		return ctrl.Result{}, err
@@ -1049,6 +1042,31 @@ func (r *OperatorConfigReconciler) cleanupWorkspaceInfra(ctx context.Context, co
 
 	r.Log.Info("Workspace infrastructure cleanup completed")
 	return nil
+}
+
+func (r *OperatorConfigReconciler) reconcileMonitoring(ctx context.Context, config *automotivev1alpha1.OperatorConfig) (bool, error) {
+	if config.Spec.Monitoring != nil && config.Spec.Monitoring.Enabled {
+		deployed, err := r.deployServiceMonitor(ctx, config)
+		if err != nil {
+			r.Log.Error(err, "Failed to deploy ServiceMonitor")
+			return false, fmt.Errorf("failed to deploy ServiceMonitor: %w", err)
+		}
+		if config.Status.MonitoringEnabled != deployed {
+			config.Status.MonitoringEnabled = deployed
+			return true, nil
+		}
+		return false, nil
+	}
+
+	if err := r.cleanupServiceMonitor(ctx, config); err != nil {
+		r.Log.Error(err, "Failed to cleanup ServiceMonitor")
+		return false, fmt.Errorf("failed to cleanup ServiceMonitor: %w", err)
+	}
+	if config.Status.MonitoringEnabled {
+		config.Status.MonitoringEnabled = false
+		return true, nil
+	}
+	return false, nil
 }
 
 func (r *OperatorConfigReconciler) deployServiceMonitor(ctx context.Context, config *automotivev1alpha1.OperatorConfig) (bool, error) {
