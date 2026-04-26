@@ -618,6 +618,7 @@ ensure_lz4() {
     if ! command -v lz4 >/dev/null 2>&1; then
       echo "lz4 still not available; falling back to gzip"
       COMPRESSION="gzip"
+      setup_gzip_compressor
     fi
   fi
 }
@@ -631,10 +632,32 @@ setup_gzip_compressor() {
   fi
 }
 
+ensure_xz() {
+  if ! command -v xz >/dev/null 2>&1; then
+    echo "xz not found. Attempting to install..."
+    if command -v dnf >/dev/null 2>&1; then
+      dnf -y install xz || true
+    fi
+    if command -v microdnf >/dev/null 2>&1; then
+      microdnf install -y xz || true
+    fi
+    if command -v yum >/dev/null 2>&1; then
+      yum -y install xz || true
+    fi
+    if ! command -v xz >/dev/null 2>&1; then
+      echo "xz still not available; falling back to gzip"
+      COMPRESSION="gzip"
+      setup_gzip_compressor
+    fi
+  fi
+}
+
 if [ "$COMPRESSION" = "lz4" ]; then
   ensure_lz4
 elif [ "$COMPRESSION" = "gzip" ]; then
   setup_gzip_compressor
+elif [ "$COMPRESSION" = "xz" ]; then
+  ensure_xz
 fi
 
 # Simplified compression functions - no unnecessary dispatching
@@ -642,6 +665,7 @@ compress_file() {
   local src="$1" dest="$2"
   case "$COMPRESSION" in
     lz4) lz4 -z -f -q "$src" "$dest" ;;
+    xz) xz -T0 -c "$src" > "$dest" ;;
     gzip|*) "$GZIP_COMPRESSOR" -c "$src" > "$dest" ;;
   esac
 }
@@ -650,6 +674,7 @@ tar_dir() {
   local dir="$1" out="$2"
   case "$COMPRESSION" in
     lz4) tar -C "$WORKSPACE_PATH" -cf - "$dir" | lz4 -z -f -q > "$out" ;;
+    xz) tar -C "$WORKSPACE_PATH" -cf - "$dir" | xz -T0 -c > "$out" ;;
     gzip|*) tar -C "$WORKSPACE_PATH" -cf - "$dir" | "$GZIP_COMPRESSOR" -c > "$out" ;;
   esac
 }
@@ -658,6 +683,10 @@ case "$COMPRESSION" in
   lz4)
     EXT_FILE=".lz4"
     EXT_DIR=".tar.lz4"
+    ;;
+  xz)
+    EXT_FILE=".xz"
+    EXT_DIR=".tar.xz"
     ;;
   gzip|*)
     EXT_FILE=".gz"

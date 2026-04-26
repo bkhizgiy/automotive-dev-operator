@@ -61,15 +61,14 @@ const (
 	phaseFlashing  = automotivev1alpha1.ImageBuildPhaseFlashing
 	phaseRunning   = "Running"
 
-	// Image format and compression constants
-	formatImage     = "image"
-	formatQcow2     = "qcow2"
-	compressionGzip = "gzip"
-	extensionRaw    = ".raw"
-	extensionQcow2  = ".qcow2"
-	statusUnknown   = "unknown"
-	statusMissing   = "MISSING"
-	buildAPIName    = "ado-build-api"
+	// Image format constants
+	formatImage    = "image"
+	formatQcow2    = "qcow2"
+	extensionRaw   = ".raw"
+	extensionQcow2 = ".qcow2"
+	statusUnknown  = "unknown"
+	statusMissing  = "MISSING"
+	buildAPIName   = "ado-build-api"
 
 	// Flash TaskRun constants
 	flashTaskRunLabel = "automotive.sdv.cloud.redhat.com/flash-taskrun"
@@ -1233,11 +1232,11 @@ func applyBuildDefaults(req *BuildRequest) error {
 	if req.Mode == "" {
 		req.Mode = ModeBootc
 	}
-	if strings.TrimSpace(req.Compression) == "" {
-		req.Compression = compressionGzip
+	if strings.TrimSpace(string(req.Compression)) == "" {
+		req.Compression = CompressionGzip
 	}
-	if req.Compression != "lz4" && req.Compression != compressionGzip {
-		return fmt.Errorf("invalid compression: must be lz4 or gzip")
+	if !req.Compression.IsValid() {
+		return fmt.Errorf("invalid compression %q: must be lz4, gzip, or xz", req.Compression)
 	}
 	if !req.Distro.IsValid() {
 		return fmt.Errorf("distro cannot be empty")
@@ -1416,7 +1415,7 @@ func (a *APIServer) setupInternalRegistryBuild(
 func buildExportSpec(req *BuildRequest) *automotivev1alpha1.ExportSpec {
 	export := &automotivev1alpha1.ExportSpec{
 		Format:                string(req.ExportFormat),
-		Compression:           req.Compression,
+		Compression:           string(req.Compression),
 		BuildDiskImage:        req.BuildDiskImage,
 		Container:             req.ContainerPush,
 		UseServiceAccountAuth: req.UseInternalRegistry,
@@ -2110,7 +2109,7 @@ func getBuildTemplate(c *gin.Context, name string) {
 			AutomotiveImageBuilder: build.Spec.GetAIBImage(),
 			CustomDefs:             build.Spec.GetCustomDefs(),
 			AIBExtraArgs:           build.Spec.GetAIBExtraArgs(),
-			Compression:            build.Spec.GetCompression(),
+			Compression:            Compression(build.Spec.GetCompression()),
 			SecureBuild:            build.Spec.SecureBuild,
 			TTL:                    build.Spec.GetTTL(),
 		},

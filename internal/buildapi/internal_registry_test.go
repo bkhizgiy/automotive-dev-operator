@@ -54,7 +54,7 @@ var _ = Describe("Internal Registry", func() {
 			req := &BuildRequest{
 				UseInternalRegistry: true,
 				ExportFormat:        "qcow2",
-				Compression:         "gzip",
+				Compression:         CompressionGzip,
 				ContainerPush:       "registry/ns/img:tag",
 			}
 			export := buildExportSpec(req)
@@ -66,7 +66,7 @@ var _ = Describe("Internal Registry", func() {
 			req := &BuildRequest{
 				UseInternalRegistry: false,
 				ExportFormat:        "qcow2",
-				Compression:         "gzip",
+				Compression:         CompressionGzip,
 				ContainerPush:       "quay.io/org/img:tag",
 			}
 			export := buildExportSpec(req)
@@ -76,7 +76,7 @@ var _ = Describe("Internal Registry", func() {
 		It("should set Disk.OCI when ExportOCI is provided", func() {
 			req := &BuildRequest{
 				ExportFormat: "simg",
-				Compression:  "gzip",
+				Compression:  CompressionGzip,
 				ExportOCI:    "registry/ns/disk:tag",
 			}
 			export := buildExportSpec(req)
@@ -87,7 +87,7 @@ var _ = Describe("Internal Registry", func() {
 		It("should not set Disk when ExportOCI is empty", func() {
 			req := &BuildRequest{
 				ExportFormat: "qcow2",
-				Compression:  "gzip",
+				Compression:  CompressionGzip,
 			}
 			export := buildExportSpec(req)
 			Expect(export.Disk).To(BeNil())
@@ -173,6 +173,43 @@ var _ = Describe("Internal Registry", func() {
 				}
 				err := validateBuildRequest(req)
 				Expect(err).NotTo(HaveOccurred())
+			})
+		})
+
+		Context("compression validation", func() {
+			It("should accept gzip compression", func() {
+				req := &BuildRequest{Compression: CompressionGzip}
+				err := applyBuildDefaults(req)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(req.Compression).To(Equal(CompressionGzip))
+			})
+
+			It("should accept lz4 compression", func() {
+				req := &BuildRequest{Compression: CompressionLZ4}
+				err := applyBuildDefaults(req)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(req.Compression).To(Equal(CompressionLZ4))
+			})
+
+			It("should accept xz compression", func() {
+				req := &BuildRequest{Compression: CompressionXZ}
+				err := applyBuildDefaults(req)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(req.Compression).To(Equal(CompressionXZ))
+			})
+
+			It("should default to gzip when compression is empty", func() {
+				req := &BuildRequest{}
+				err := applyBuildDefaults(req)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(req.Compression).To(Equal(CompressionGzip))
+			})
+
+			It("should reject invalid compression", func() {
+				req := &BuildRequest{Compression: "zstd"}
+				err := applyBuildDefaults(req)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("invalid compression"))
 			})
 		})
 

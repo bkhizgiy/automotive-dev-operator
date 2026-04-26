@@ -211,7 +211,7 @@ func buildParametersFromTemplate(tpl *buildapitypes.BuildTemplateResponse) *buil
 		Target:                 string(tpl.Target),
 		Mode:                   string(tpl.Mode),
 		ExportFormat:           string(tpl.ExportFormat),
-		Compression:            tpl.Compression,
+		Compression:            string(tpl.Compression),
 		StorageClass:           tpl.StorageClass,
 		AutomotiveImageBuilder: tpl.AutomotiveImageBuilder,
 		BuilderImage:           tpl.BuilderImage,

@@ -17,8 +17,18 @@ type Architecture string
 // ExportFormat represents the disk image format (e.g., qcow2, raw, simg).
 type ExportFormat string
 
+// Compression represents the artifact compression algorithm.
+type Compression string
+
 // Mode represents the build mode (bootc, image, package, or disk).
 type Mode string
+
+// Supported compression algorithms for build artifacts.
+const (
+	CompressionGzip Compression = "gzip"
+	CompressionLZ4  Compression = "lz4"
+	CompressionXZ   Compression = "xz"
+)
 
 const (
 	// ModeBootc creates immutable, container-based OS images using bootc (default)
@@ -47,6 +57,15 @@ func (a Architecture) IsValid() bool { return IsValid(string(a)) }
 
 // IsValid returns true if the export format value is non-empty.
 func (e ExportFormat) IsValid() bool { return IsValid(string(e)) }
+
+// IsValid returns true if the compression value is a supported algorithm.
+func (c Compression) IsValid() bool {
+	switch c {
+	case CompressionGzip, CompressionLZ4, CompressionXZ:
+		return true
+	}
+	return false
+}
 
 // IsValid returns true if the mode value is non-empty.
 func (m Mode) IsValid() bool { return IsValid(string(m)) }
@@ -125,7 +144,7 @@ type BuildRequest struct {
 	AIBExtraArgs           []string             `json:"aibExtraArgs"`
 	ExtraRepos             []string             `json:"extraRepos,omitempty"` // workspace-name:/path pairs
 	Workspace              string               `json:"workspace,omitempty"`  // workspace name for build caching and lease forwarding
-	Compression            string               `json:"compression,omitempty"`
+	Compression            Compression          `json:"compression,omitempty"`
 	RegistryCredentials    *RegistryCredentials `json:"registryCredentials,omitempty"`
 	PushRepository         string               `json:"pushRepository,omitempty"`
 
