@@ -8,6 +8,7 @@ import (
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -442,4 +443,136 @@ func TestSafeDerivedName(t *testing.T) {
 			t.Errorf("safeDerivedName() results don't have correct suffix: %q, %q", result1, result2)
 		}
 	})
+}
+
+func TestSetImageBuildConditions(t *testing.T) {
+	tests := []struct {
+		name            string
+		phase           string
+		message         string
+		wantProgressing metav1.ConditionStatus
+		wantReady       metav1.ConditionStatus
+		wantReadyReason string
+	}{
+		{
+			name:            "pending",
+			phase:           "Pending",
+			message:         "Waiting for resources",
+			wantProgressing: metav1.ConditionTrue,
+			wantReady:       metav1.ConditionFalse,
+			wantReadyReason: "Pending",
+		},
+		{
+			name:            "uploading",
+			phase:           "Uploading",
+			message:         "Uploading manifest",
+			wantProgressing: metav1.ConditionTrue,
+			wantReady:       metav1.ConditionFalse,
+			wantReadyReason: "Uploading",
+		},
+		{
+			name:            "building",
+			phase:           "Building",
+			message:         "Build started",
+			wantProgressing: metav1.ConditionTrue,
+			wantReady:       metav1.ConditionFalse,
+			wantReadyReason: "Building",
+		},
+		{
+			name:            "pushing",
+			phase:           "Pushing",
+			message:         "Pushing artifact",
+			wantProgressing: metav1.ConditionTrue,
+			wantReady:       metav1.ConditionFalse,
+			wantReadyReason: "Pushing",
+		},
+		{
+			name:            "flashing",
+			phase:           "Flashing",
+			message:         "Flashing to device",
+			wantProgressing: metav1.ConditionTrue,
+			wantReady:       metav1.ConditionFalse,
+			wantReadyReason: "Flashing",
+		},
+		{
+			name:            "completed",
+			phase:           "Completed",
+			message:         "Build completed successfully",
+			wantProgressing: metav1.ConditionFalse,
+			wantReady:       metav1.ConditionTrue,
+			wantReadyReason: "BuildSucceeded",
+		},
+		{
+			name:            "failed",
+			phase:           "Failed",
+			message:         "PipelineRun failed",
+			wantProgressing: metav1.ConditionFalse,
+			wantReady:       metav1.ConditionFalse,
+			wantReadyReason: "Failed",
+		},
+		{
+			name:            "cancelled",
+			phase:           "Cancelled",
+			message:         "Build cancelled by user",
+			wantProgressing: metav1.ConditionFalse,
+			wantReady:       metav1.ConditionFalse,
+			wantReadyReason: "Cancelled",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ib := &automotivev1alpha1.ImageBuild{}
+			setImageBuildConditions(ib, tt.phase, tt.message)
+
+			progressing := meta.FindStatusCondition(ib.Status.Conditions, automotivev1alpha1.ImageBuildConditionProgressing)
+			if progressing == nil {
+				t.Fatal("Progressing condition not set")
+			}
+			if progressing.Status != tt.wantProgressing {
+				t.Errorf("Progressing status = %v, want %v", progressing.Status, tt.wantProgressing)
+			}
+			if progressing.Message != tt.message {
+				t.Errorf("Progressing message = %q, want %q", progressing.Message, tt.message)
+			}
+
+			ready := meta.FindStatusCondition(ib.Status.Conditions, automotivev1alpha1.ImageBuildConditionReady)
+			if ready == nil {
+				t.Fatal("Ready condition not set")
+			}
+			if ready.Status != tt.wantReady {
+				t.Errorf("Ready status = %v, want %v", ready.Status, tt.wantReady)
+			}
+			if ready.Reason != tt.wantReadyReason {
+				t.Errorf("Ready reason = %q, want %q", ready.Reason, tt.wantReadyReason)
+			}
+			if ready.Message != tt.message {
+				t.Errorf("Ready message = %q, want %q", ready.Message, tt.message)
+			}
+		})
+	}
+}
+
+func TestSetImageBuildConditionsTransition(t *testing.T) {
+	ib := &automotivev1alpha1.ImageBuild{}
+
+	setImageBuildConditions(ib, "Building", "Build started")
+	ready := meta.FindStatusCondition(ib.Status.Conditions, automotivev1alpha1.ImageBuildConditionReady)
+	if ready.Status != metav1.ConditionFalse {
+		t.Fatalf("Ready should be False during Building, got %v", ready.Status)
+	}
+
+	setImageBuildConditions(ib, "Completed", "Build done")
+	ready = meta.FindStatusCondition(ib.Status.Conditions, automotivev1alpha1.ImageBuildConditionReady)
+	if ready.Status != metav1.ConditionTrue {
+		t.Fatalf("Ready should be True after Completed, got %v", ready.Status)
+	}
+	progressing := meta.FindStatusCondition(ib.Status.Conditions, automotivev1alpha1.ImageBuildConditionProgressing)
+	if progressing.Status != metav1.ConditionFalse {
+		t.Fatalf("Progressing should be False after Completed, got %v", progressing.Status)
+	}
+
+	if len(ib.Status.Conditions) != 2 {
+		t.Errorf("Expected 2 conditions after transitions, got %d", len(ib.Status.Conditions))
+	}
 }

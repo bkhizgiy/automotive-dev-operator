@@ -33,6 +33,12 @@ const (
 	ImageBuildPhaseExpired   = "Expired"
 )
 
+// ImageBuild condition types for Status.Conditions.
+const (
+	ImageBuildConditionReady       = "Ready"
+	ImageBuildConditionProgressing = "Progressing"
+)
+
 // IsTerminalBuildPhase reports whether phase is a final build state.
 func IsTerminalBuildPhase(phase string) bool {
 	return phase == ImageBuildPhaseCompleted || phase == ImageBuildPhaseFailed ||
