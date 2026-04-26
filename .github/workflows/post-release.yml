@@ -55,7 +55,7 @@ jobs:
 
             - name: Create pull request
               if: steps.next.outputs.skip != 'true'
-              uses: peter-evans/create-pull-request@v7
+              uses: peter-evans/create-pull-request@v8
               with:
                   branch: chore/bump-version-${{ steps.next.outputs.dev_version }}
                   commit-message: "chore: bump version to ${{ steps.next.outputs.dev_version }} for next development cycle"
