@@ -646,6 +646,18 @@ func (c *OSBuildsConfig) GetUsePVCScratchVolumes() bool {
 	return true
 }
 
+// Condition types for OperatorConfig
+const (
+	// OperatorConfigConditionReady indicates the operator configuration has been fully reconciled
+	OperatorConfigConditionReady = "Ready"
+
+	// OperatorConfigConditionReconciling indicates the operator is actively reconciling resources
+	OperatorConfigConditionReconciling = "Reconciling"
+
+	// OperatorConfigConditionDegraded indicates the operator encountered errors during reconciliation
+	OperatorConfigConditionDegraded = "Degraded"
+)
+
 // OperatorConfigStatus defines the observed state of OperatorConfig
 type OperatorConfigStatus struct {
 	// ObservedGeneration is the most recent generation observed by the controller.
@@ -670,6 +682,14 @@ type OperatorConfigStatus struct {
 
 	// MonitoringEnabled indicates if the ServiceMonitor is currently deployed
 	MonitoringEnabled bool `json:"monitoringEnabled,omitempty"`
+
+	// Conditions represent the latest available observations of the OperatorConfig's state
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	// +patchStrategy=merge
+	// +patchMergeKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
