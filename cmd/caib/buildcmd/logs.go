@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	common "github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/common"
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/logstream"
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/ui"
@@ -152,6 +153,11 @@ func (h *Handler) waitForBuildCompletion(ctx context.Context, api *buildapiclien
 				pb.Clear()
 				fmt.Println("Build was cancelled.")
 				return fmt.Errorf("build cancelled")
+			}
+			if st.Phase == automotivev1alpha1.ImageBuildPhaseExpired {
+				pb.Clear()
+				fmt.Printf("Build expired: %s\n", st.Message)
+				return fmt.Errorf("build expired")
 			}
 			if st.Phase == phaseFailed {
 				pb.Clear()

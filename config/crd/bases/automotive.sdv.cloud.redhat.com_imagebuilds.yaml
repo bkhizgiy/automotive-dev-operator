@@ -217,8 +217,10 @@ spec:
                 type: string
               ttl:
                 description: |-
-                  TTL is the time-to-live for this build. The build is automatically deleted
-                  after this duration past its completion (or creation if still in progress).
+                  TTL is the time-to-live for this build. After this duration past its
+                  completion, the build transitions to the Expired phase and its resources
+                  (PipelineRuns, TaskRuns, PVCs, registry images) are cleaned up.
+                  The ImageBuild CR itself is preserved. In-progress builds never expire.
                   Uses Go duration format (e.g. "24h", "72h", "168h").
                   Empty uses the OperatorConfig default. Set to "0" to disable expiry.
                 type: string
@@ -305,8 +307,10 @@ spec:
                 type: array
               expiresAt:
                 description: |-
-                  ExpiresAt is when this build will be automatically deleted.
-                  Nil if expiry is disabled (TTL "0" or no-expire annotation).
+                  ExpiresAt is when this build will transition to the Expired phase
+                  and have its associated resources cleaned up. The ImageBuild CR itself
+                  is preserved. Nil if expiry is disabled (TTL "0", no-expire annotation,
+                  or workspace build).
                 format: date-time
                 type: string
               flashTaskRunName:
@@ -325,8 +329,7 @@ spec:
                 format: int64
                 type: integer
               phase:
-                description: Phase represents the current phase of the build (Building,
-                  Completed, Failed, Cancelled)
+                description: Phase represents the current phase of the build
                 enum:
                 - Pending
                 - Uploading
@@ -336,6 +339,7 @@ spec:
                 - Completed
                 - Failed
                 - Cancelled
+                - Expired
                 type: string
               pipelineRunName:
                 description: PipelineRunName is the name of the active PipelineRun
