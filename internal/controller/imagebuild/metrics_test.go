@@ -11,6 +11,38 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+func gaugeValue(g prometheus.Gauge) float64 {
+	m := &io_prometheus_client.Metric{}
+	if err := g.Write(m); err != nil {
+		return 0
+	}
+	return m.GetGauge().GetValue()
+}
+
+func TestAdjustActiveBuildsGauge(t *testing.T) {
+	ActiveBuilds.Set(0)
+
+	adjustActiveBuildsGauge("", "Building")
+	if v := gaugeValue(ActiveBuilds); v != 1 {
+		t.Errorf("after entering Building: got %v, want 1", v)
+	}
+
+	adjustActiveBuildsGauge("Building", "Building")
+	if v := gaugeValue(ActiveBuilds); v != 1 {
+		t.Errorf("same phase should not change gauge: got %v, want 1", v)
+	}
+
+	adjustActiveBuildsGauge("Building", "Completed")
+	if v := gaugeValue(ActiveBuilds); v != 0 {
+		t.Errorf("after leaving Building: got %v, want 0", v)
+	}
+
+	adjustActiveBuildsGauge("Completed", "Failed")
+	if v := gaugeValue(ActiveBuilds); v != 0 {
+		t.Errorf("non-Building transition should not change gauge: got %v, want 0", v)
+	}
+}
+
 // counterValue returns the current value of a counter with the given labels.
 func counterValue(cv *prometheus.CounterVec, labels ...string) float64 {
 	m := &io_prometheus_client.Metric{}

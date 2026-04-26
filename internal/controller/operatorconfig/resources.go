@@ -16,6 +16,8 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 )
@@ -26,6 +28,10 @@ const (
 	sccPrivilegedRoleName       = "ado-build-privileged"
 	workspaceServiceAccountName = "ado-workspace"
 	workspaceSCCName            = "ado-workspace-scc"
+	serviceMonitorName          = "ado-operator-metrics"
+	serviceMonitorTokenSecret   = "ado-operator-metrics-token"
+	metricsReaderRoleName       = "ado-metrics-reader"
+	metricsReaderBindingName    = "ado-metrics-reader"
 )
 
 // getOperatorImage returns the operator image from env var, then config, then default constant
@@ -1061,4 +1067,119 @@ func (r *OperatorConfigReconciler) buildWorkspaceSCCPrivileged() *securityv1.Sec
 			securityv1.FSTypeAll,
 		},
 	}
+}
+
+func (r *OperatorConfigReconciler) buildMetricsTokenSecret(namespace string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      serviceMonitorTokenSecret,
+			Namespace: namespace,
+			Annotations: map[string]string{
+				"kubernetes.io/service-account.name": "ado-operator",
+			},
+		},
+		Type: corev1.SecretTypeServiceAccountToken,
+	}
+}
+
+func (r *OperatorConfigReconciler) buildMetricsReaderRole(namespace string) *rbacv1.Role {
+	return &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      metricsReaderRoleName,
+			Namespace: namespace,
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups:     []string{""},
+				Resources:     []string{"secrets"},
+				ResourceNames: []string{serviceMonitorTokenSecret},
+				Verbs:         []string{"get"},
+			},
+		},
+	}
+}
+
+func (r *OperatorConfigReconciler) buildMetricsReaderRoleBinding(namespace string) *rbacv1.RoleBinding {
+	return &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      metricsReaderRoleName,
+			Namespace: namespace,
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "Role",
+			Name:     metricsReaderRoleName,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      "prometheus-user-workload",
+				Namespace: "openshift-user-workload-monitoring",
+			},
+		},
+	}
+}
+
+func (r *OperatorConfigReconciler) buildMetricsReaderClusterRoleBinding(namespace string) *rbacv1.ClusterRoleBinding {
+	return &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: metricsReaderBindingName,
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "ClusterRole",
+			Name:     "metrics-reader",
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      "ado-operator",
+				Namespace: namespace,
+			},
+		},
+	}
+}
+
+func (r *OperatorConfigReconciler) buildServiceMonitor(namespace string, config *automotivev1alpha1.MonitoringConfig) *unstructured.Unstructured {
+	interval := config.GetInterval()
+
+	sm := &unstructured.Unstructured{}
+	sm.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "monitoring.coreos.com",
+		Version: "v1",
+		Kind:    "ServiceMonitor",
+	})
+	sm.SetName(serviceMonitorName)
+	sm.SetNamespace(namespace)
+	sm.SetLabels(map[string]string{
+		"control-plane":                "operator",
+		"app.kubernetes.io/name":       "automotive-dev-operator",
+		"app.kubernetes.io/managed-by": "operator",
+		"app.kubernetes.io/component":  "monitoring",
+	})
+
+	sm.Object["spec"] = map[string]interface{}{
+		"selector": map[string]interface{}{
+			"matchLabels": map[string]interface{}{
+				"control-plane": "operator",
+			},
+		},
+		"endpoints": []interface{}{
+			map[string]interface{}{
+				"path":     "/metrics",
+				"port":     "https",
+				"scheme":   "https",
+				"interval": interval,
+				"bearerTokenSecret": map[string]interface{}{
+					"name": serviceMonitorTokenSecret,
+					"key":  "token",
+				},
+				"tlsConfig": map[string]interface{}{
+					"insecureSkipVerify": true,
+				},
+			},
+		},
+	}
+
+	return sm
 }

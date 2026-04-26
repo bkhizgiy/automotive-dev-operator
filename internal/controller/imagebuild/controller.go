@@ -36,6 +36,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
 
 const (
@@ -720,6 +721,7 @@ func (r *ImageBuildReconciler) checkBuildProgress(
 			log.Error(err, "Failed to patch status to Completed")
 			return ctrl.Result{}, err
 		}
+		adjustActiveBuildsGauge(phaseBuilding, phaseCompleted)
 		recordBuildMetrics(fresh, pipelineRun, buildStatusSuccess)
 		if fresh.Spec.IsFlashEnabled() {
 			r.recordPipelineFlashMetrics(ctx, fresh, pipelineRun, buildStatusSuccess)
@@ -1993,6 +1995,10 @@ func (r *ImageBuildReconciler) deleteSecret(
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ImageBuildReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.Add(r.seedActiveBuildsGauge(mgr)); err != nil {
+		return fmt.Errorf("failed to register ActiveBuilds seeder: %w", err)
+	}
+
 	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&automotivev1alpha1.ImageBuild{}).
 		Owns(&tektonv1.PipelineRun{}).
@@ -2004,6 +2010,28 @@ func (r *ImageBuildReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Secret{})
 
 	return builder.Complete(r)
+}
+
+func (r *ImageBuildReconciler) seedActiveBuildsGauge(mgr ctrl.Manager) manager.RunnableFunc {
+	return func(ctx context.Context) error {
+		if !mgr.GetCache().WaitForCacheSync(ctx) {
+			return fmt.Errorf("cache sync failed")
+		}
+		var builds automotivev1alpha1.ImageBuildList
+		if err := mgr.GetClient().List(ctx, &builds); err != nil {
+			r.Log.Error(err, "Failed to seed ActiveBuilds gauge")
+			return err
+		}
+		var active float64
+		for i := range builds.Items {
+			if builds.Items[i].Status.Phase == phaseBuilding {
+				active++
+			}
+		}
+		ActiveBuilds.Set(active)
+		r.Log.Info("Seeded ActiveBuilds gauge", "active", active)
+		return nil
+	}
 }
 
 func isTaskRunCompleted(taskRun *tektonv1.TaskRun) bool {
@@ -2434,6 +2462,7 @@ func (r *ImageBuildReconciler) updateStatus(
 	if err := r.Status().Patch(ctx, fresh, patch); err != nil {
 		return err
 	}
+	adjustActiveBuildsGauge(oldPhase, phase)
 	if oldPhase != phase || oldMessage != message {
 		r.emitEventf(
 			fresh,

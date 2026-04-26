@@ -436,6 +436,27 @@ func (c *WorkspacesConfig) GetAutoPauseTimeoutMinutes() int32 {
 	return DefaultAutoPauseTimeoutMinutes
 }
 
+// MonitoringConfig defines configuration for Prometheus metrics collection
+type MonitoringConfig struct {
+	// Enabled determines if a ServiceMonitor should be deployed for Prometheus scraping
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled"`
+
+	// Interval defines the Prometheus scrape interval
+	// Default: "30s"
+	// +optional
+	// +kubebuilder:validation:Pattern=`^(0|(([0-9]+)y)?(([0-9]+)w)?(([0-9]+)d)?(([0-9]+)h)?(([0-9]+)m)?(([0-9]+)s)?(([0-9]+)ms)?)$`
+	Interval string `json:"interval,omitempty"`
+}
+
+// GetInterval returns the scrape interval, falling back to "30s"
+func (c *MonitoringConfig) GetInterval() string {
+	if c != nil && c.Interval != "" {
+		return c.Interval
+	}
+	return "30s"
+}
+
 // OperatorConfigSpec defines the desired state of OperatorConfig
 type OperatorConfigSpec struct {
 	// OSBuilds defines the configuration for OS build operations
@@ -461,6 +482,10 @@ type OperatorConfigSpec struct {
 	// Workspaces defines configuration for developer workspaces
 	// +optional
 	Workspaces *WorkspacesConfig `json:"workspaces,omitempty"`
+
+	// Monitoring defines configuration for Prometheus metrics collection
+	// +optional
+	Monitoring *MonitoringConfig `json:"monitoring,omitempty"`
 }
 
 // OSBuildsConfig defines configuration for OS build operations
@@ -642,6 +667,9 @@ type OperatorConfigStatus struct {
 	// UserNamespacesSupported indicates if the cluster supports user namespaces in pods
 	// (SCC userNamespaceLevel field). When false, workspace pods use privileged mode.
 	UserNamespacesSupported bool `json:"userNamespacesSupported,omitempty"`
+
+	// MonitoringEnabled indicates if the ServiceMonitor is currently deployed
+	MonitoringEnabled bool `json:"monitoringEnabled,omitempty"`
 }
 
 // +kubebuilder:object:root=true
