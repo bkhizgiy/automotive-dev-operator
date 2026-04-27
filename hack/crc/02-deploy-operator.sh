@@ -17,6 +17,7 @@ set -euo pipefail
 ###############################################################################
 NAMESPACE="automotive-dev-operator-system"
 IMAGE_NAME="automotive-dev-operator"
+CRC_API_URL="https://api.crc.testing:6443"
 
 OS="$(uname -s)"
 
@@ -77,7 +78,7 @@ export KUBECONFIG="$CRC_KUBECONFIG"
 
 KUBE_PASS=$(get_kubeadmin_pass)
 [[ -n "$KUBE_PASS" ]] || fail "Could not extract kubeadmin password from 'crc console --credentials'."
-oc login -u kubeadmin -p "$KUBE_PASS" https://api.crc.testing:6443 || fail "Failed to login to cluster."
+oc login -u kubeadmin -p "$KUBE_PASS" "$CRC_API_URL" || fail "Failed to login to cluster."
 ok "Logged in as kubeadmin (KUBECONFIG=$KUBECONFIG)."
 
 ###############################################################################
