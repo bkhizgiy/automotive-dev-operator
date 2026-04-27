@@ -201,6 +201,22 @@ type OperatorConfigReconciler struct {
 // +kubebuilder:rbac:groups=security.openshift.io,resources=securitycontextconstraints,verbs=get;list;watch;create;update;patch;delete;use
 // +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors,verbs=get;list;watch;create;update;patch;delete
 
+// setCondition sets a condition on the OperatorConfig status
+func (r *OperatorConfigReconciler) setCondition(
+	config *automotivev1alpha1.OperatorConfig,
+	conditionType string,
+	status metav1.ConditionStatus,
+	reason, message string,
+) {
+	apimeta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
+		Type:               conditionType,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: config.Generation,
+	})
+}
+
 // Reconcile reconciles the OperatorConfig resource lifecycle.
 func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log.WithValues("operatorconfig", req.NamespacedName)
@@ -250,55 +266,59 @@ func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, nil
 	}
 
-	statusChanged := false
+	// Mark as reconciling and persist immediately so observers see it before long-running work
+	r.setCondition(config, automotivev1alpha1.OperatorConfigConditionReconciling, metav1.ConditionTrue, "Reconciling", "Reconciliation in progress")
+	if err := r.Status().Update(ctx, config); err != nil {
+		log.Error(err, "Failed to persist Reconciling condition")
+		return ctrl.Result{}, err
+	}
 
 	// Reconcile OSBuilds
 	log.Info("Processing OSBuilds configuration", "osBuilds", config.Spec.OSBuilds, "generation", config.Generation)
 	if config.Spec.OSBuilds != nil && config.Spec.OSBuilds.Enabled {
 		if err := r.deployOSBuilds(ctx, config); err != nil {
 			log.Error(err, "Failed to deploy OSBuilds")
-			if config.Status.Phase != phaseFailed || config.Status.OSBuildsDeployed {
-				config.Status.Phase = phaseFailed
-				config.Status.Message = fmt.Sprintf("Failed to deploy OSBuilds: %v", err)
-				config.Status.OSBuildsDeployed = false
-				statusChanged = true
-			}
-			if statusChanged {
-				_ = r.Status().Update(ctx, config)
+			failMsg := fmt.Sprintf("Failed to deploy OSBuilds: %v", err)
+			config.Status.Phase = phaseFailed
+			config.Status.Message = failMsg
+			config.Status.OSBuildsDeployed = false
+			r.setCondition(config, automotivev1alpha1.OperatorConfigConditionReady, metav1.ConditionFalse, "DeployFailed", failMsg)
+			r.setCondition(config, automotivev1alpha1.OperatorConfigConditionDegraded, metav1.ConditionTrue, "DeployFailed", failMsg)
+			r.setCondition(config, automotivev1alpha1.OperatorConfigConditionReconciling, metav1.ConditionFalse, "ReconcileFailed", failMsg)
+			if updateErr := r.Status().Update(ctx, config); updateErr != nil {
+				log.Error(updateErr, "Failed to update status on deploy error")
 			}
 			return ctrl.Result{}, err
 		}
-		if !config.Status.OSBuildsDeployed {
-			config.Status.OSBuildsDeployed = true
-			config.Status.Phase = "Ready"
-			config.Status.Message = "OSBuilds deployed successfully"
-			statusChanged = true
-		}
+		config.Status.OSBuildsDeployed = true
+		config.Status.Phase = "Ready"
+		config.Status.Message = "OSBuilds deployed successfully"
 	} else {
 		if err := r.cleanupOSBuilds(ctx, config); err != nil {
 			log.Error(err, "Failed to cleanup OSBuilds")
-			if config.Status.Phase != phaseFailed {
-				config.Status.Phase = phaseFailed
-				config.Status.Message = fmt.Sprintf("Failed to cleanup OSBuilds: %v", err)
-				statusChanged = true
-			}
-			if statusChanged {
-				_ = r.Status().Update(ctx, config)
+			failMsg := fmt.Sprintf("Failed to cleanup OSBuilds: %v", err)
+			config.Status.Phase = phaseFailed
+			config.Status.Message = failMsg
+			r.setCondition(config, automotivev1alpha1.OperatorConfigConditionReady, metav1.ConditionFalse, "CleanupFailed", failMsg)
+			r.setCondition(config, automotivev1alpha1.OperatorConfigConditionDegraded, metav1.ConditionTrue, "CleanupFailed", failMsg)
+			r.setCondition(config, automotivev1alpha1.OperatorConfigConditionReconciling, metav1.ConditionFalse, "ReconcileFailed", failMsg)
+			if updateErr := r.Status().Update(ctx, config); updateErr != nil {
+				log.Error(updateErr, "Failed to update status on cleanup error")
 			}
 			return ctrl.Result{}, err
 		}
-		if config.Status.OSBuildsDeployed {
-			config.Status.OSBuildsDeployed = false
-			statusChanged = true
-		}
+		config.Status.OSBuildsDeployed = false
+		config.Status.Phase = "Ready"
+		config.Status.Message = "OSBuilds disabled"
 	}
 
 	// Detect Jumpstarter availability: explicitly configured or auto-detected from local CRDs
-	jumpstarterAvailable := config.Spec.Jumpstarter != nil || r.detectJumpstarter(ctx)
-	if config.Status.JumpstarterAvailable != jumpstarterAvailable {
-		config.Status.JumpstarterAvailable = jumpstarterAvailable
-		statusChanged = true
-	}
+	config.Status.JumpstarterAvailable = config.Spec.Jumpstarter != nil || r.detectJumpstarter(ctx)
+
+	// Reconciliation succeeded -- set final conditions
+	r.setCondition(config, automotivev1alpha1.OperatorConfigConditionReady, metav1.ConditionTrue, "ReconcileSucceeded", "OperatorConfig reconciled successfully")
+	r.setCondition(config, automotivev1alpha1.OperatorConfigConditionDegraded, metav1.ConditionFalse, "ReconcileSucceeded", "OperatorConfig reconciled successfully")
+	r.setCondition(config, automotivev1alpha1.OperatorConfigConditionReconciling, metav1.ConditionFalse, "ReconcileSucceeded", "Reconciliation complete")
 
 	// Reconcile monitoring (ServiceMonitor)
 	if config.Spec.Monitoring != nil && config.Spec.Monitoring.Enabled {
@@ -307,31 +327,25 @@ func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			log.Error(err, "Failed to deploy ServiceMonitor")
 			return ctrl.Result{}, fmt.Errorf("failed to deploy ServiceMonitor: %w", err)
 		}
-		if config.Status.MonitoringEnabled != deployed {
-			config.Status.MonitoringEnabled = deployed
-			statusChanged = true
-		}
+		config.Status.MonitoringEnabled = deployed
 	} else {
 		if err := r.cleanupServiceMonitor(ctx, config); err != nil {
 			log.Error(err, "Failed to cleanup ServiceMonitor")
 			return ctrl.Result{}, fmt.Errorf("failed to cleanup ServiceMonitor: %w", err)
 		}
-		if config.Status.MonitoringEnabled {
-			config.Status.MonitoringEnabled = false
-			statusChanged = true
-		}
+		config.Status.MonitoringEnabled = false
 	}
 
-	if statusChanged {
-		log.Info("Updating status",
-			"phase", config.Status.Phase,
-			"osBuildsDeployed", config.Status.OSBuildsDeployed,
-			"jumpstarterAvailable", config.Status.JumpstarterAvailable,
-			"monitoringEnabled", config.Status.MonitoringEnabled)
-		if err := r.Status().Update(ctx, config); err != nil {
-			log.Error(err, "Failed to update status")
-			return ctrl.Result{}, err
-		}
+	// Always persist final status: conditions change on every reconcile (Reconciling flips to False),
+	// so a len()-based guard would miss in-place condition status changes.
+	log.Info("Updating status",
+		"phase", config.Status.Phase,
+		"osBuildsDeployed", config.Status.OSBuildsDeployed,
+		"jumpstarterAvailable", config.Status.JumpstarterAvailable,
+		"monitoringEnabled", config.Status.MonitoringEnabled)
+	if err := r.Status().Update(ctx, config); err != nil {
+		log.Error(err, "Failed to update status")
+		return ctrl.Result{}, err
 	}
 
 	log.Info("=== Reconciliation completed successfully ===")
