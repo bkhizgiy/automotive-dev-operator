@@ -45,9 +45,6 @@ import (
 )
 
 const (
-	// OperatorNamespace is the namespace where the operator is deployed.
-	OperatorNamespace = "automotive-dev-operator-system"
-
 	phasePending   = "Pending"
 	phaseRunning   = "Running"
 	phaseCompleted = "Completed"
@@ -733,7 +730,7 @@ func (r *Reconciler) isTransientSecret(ctx context.Context, namespace, name stri
 
 func (r *Reconciler) resolveBuildConfig(ctx context.Context) (*tasks.BuildConfig, error) {
 	operatorConfig := &automotivev1alpha1.OperatorConfig{}
-	if err := r.Get(ctx, client.ObjectKey{Name: "config", Namespace: OperatorNamespace}, operatorConfig); err != nil {
+	if err := r.Get(ctx, client.ObjectKey{Name: "config", Namespace: controllerutils.OperatorNamespace()}, operatorConfig); err != nil {
 		if k8serrors.IsNotFound(err) {
 			return &tasks.BuildConfig{}, nil
 		}

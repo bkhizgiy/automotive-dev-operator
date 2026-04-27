@@ -6,6 +6,7 @@ import (
 	"time"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
+	controllerutils "github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/controllerutils"
 	shipwrightv1beta1 "github.com/shipwright-io/build/pkg/apis/build/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -74,7 +75,7 @@ func TestSafeDerivedName(t *testing.T) {
 // newTestContainerBuild creates a ContainerBuild in the operator namespace for testing.
 func newTestContainerBuild(name string, spec automotivev1alpha1.ContainerBuildSpec) *automotivev1alpha1.ContainerBuild {
 	return &automotivev1alpha1.ContainerBuild{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: OperatorNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: controllerutils.OperatorNamespace()},
 		Spec:       spec,
 	}
 }
@@ -109,8 +110,8 @@ func TestBuildRunBasic(t *testing.T) {
 	if br.Name != "test-build-br" {
 		t.Errorf("BuildRun name = %q, want %q", br.Name, "test-build-br")
 	}
-	if br.Namespace != OperatorNamespace {
-		t.Errorf("namespace = %q, want %q", br.Namespace, OperatorNamespace)
+	if br.Namespace != controllerutils.OperatorNamespace() {
+		t.Errorf("namespace = %q, want %q", br.Namespace, controllerutils.OperatorNamespace())
 	}
 
 	spec := br.Spec.Build.Spec

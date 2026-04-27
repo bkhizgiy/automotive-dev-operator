@@ -7,6 +7,7 @@ import (
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/tasks"
+	controllerutils "github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/controllerutils"
 	"github.com/go-logr/logr"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -543,7 +544,7 @@ func TestResolveEffectiveTTL(t *testing.T) {
 
 			if tc.hasConfig {
 				builder = builder.WithObjects(&automotivev1alpha1.OperatorConfig{
-					ObjectMeta: metav1.ObjectMeta{Name: "config", Namespace: OperatorNamespace},
+					ObjectMeta: metav1.ObjectMeta{Name: "config", Namespace: controllerutils.OperatorNamespace()},
 					Spec: automotivev1alpha1.OperatorConfigSpec{
 						OSBuilds: &automotivev1alpha1.OSBuildsConfig{
 							DefaultBuildTTL: tc.configBuildTTL,

@@ -46,9 +46,6 @@ import (
 var ibTracer = otel.Tracer("imagebuild-controller")
 
 const (
-	// OperatorNamespace is the namespace where the operator is deployed.
-	OperatorNamespace = "automotive-dev-operator-system"
-
 	// Phase constants — aliases for readability; canonical values in api/v1alpha1
 	phaseBuilding  = automotivev1alpha1.ImageBuildPhaseBuilding
 	phaseCancelled = automotivev1alpha1.ImageBuildPhaseCancelled
@@ -411,7 +408,7 @@ func (r *ImageBuildReconciler) handleUploadingState(
 	// Fail the build if uploads have not completed within the configured timeout
 	uploadTimeout := 30 * time.Minute // default
 	operatorConfig := &automotivev1alpha1.OperatorConfig{}
-	if err := r.Get(ctx, types.NamespacedName{Name: "config", Namespace: OperatorNamespace}, operatorConfig); err == nil {
+	if err := r.Get(ctx, types.NamespacedName{Name: "config", Namespace: controllerutils.OperatorNamespace()}, operatorConfig); err == nil {
 		if operatorConfig.Spec.OSBuilds != nil && operatorConfig.Spec.OSBuilds.UploadTimeoutMinutes > 0 {
 			uploadTimeout = time.Duration(operatorConfig.Spec.OSBuilds.UploadTimeoutMinutes) * time.Minute
 		}
@@ -576,7 +573,7 @@ func (r *ImageBuildReconciler) resolveEffectiveTTL(
 	if ttlStr == "" {
 		operatorConfig := &automotivev1alpha1.OperatorConfig{}
 		if err := r.Get(ctx, types.NamespacedName{
-			Name: "config", Namespace: OperatorNamespace,
+			Name: "config", Namespace: controllerutils.OperatorNamespace(),
 		}, operatorConfig); err != nil {
 			if !errors.IsNotFound(err) {
 				return 0, fmt.Errorf("failed to load OperatorConfig: %w", err)
@@ -909,7 +906,7 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 
 	// Fetch OperatorConfig from the operator namespace to get build configuration
 	operatorConfig := &automotivev1alpha1.OperatorConfig{}
-	err := r.Get(ctx, types.NamespacedName{Name: "config", Namespace: OperatorNamespace}, operatorConfig)
+	err := r.Get(ctx, types.NamespacedName{Name: "config", Namespace: controllerutils.OperatorNamespace()}, operatorConfig)
 	if err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to get OperatorConfig configuration: %w", err)
 	}
@@ -1591,7 +1588,7 @@ func (r *ImageBuildReconciler) createPushTaskRun(ctx context.Context, imageBuild
 
 	// Fetch OperatorConfig to resolve image overrides for the push task
 	pushBuildConfig := r.resolveBuildConfig(ctx)
-	pushTask := tasks.GeneratePushArtifactRegistryTask(OperatorNamespace, pushBuildConfig)
+	pushTask := tasks.GeneratePushArtifactRegistryTask(controllerutils.OperatorNamespace(), pushBuildConfig)
 
 	params := []tektonv1.Param{
 		{
@@ -1906,7 +1903,7 @@ func (r *ImageBuildReconciler) createFlashTaskRun(
 
 	// Get exporter selector from OperatorConfig based on target
 	operatorConfig := &automotivev1alpha1.OperatorConfig{}
-	err = r.Get(ctx, types.NamespacedName{Name: "config", Namespace: OperatorNamespace}, operatorConfig)
+	err = r.Get(ctx, types.NamespacedName{Name: "config", Namespace: controllerutils.OperatorNamespace()}, operatorConfig)
 	if err != nil {
 		return fmt.Errorf("failed to get OperatorConfig: %w", err)
 	}
@@ -1946,7 +1943,7 @@ func (r *ImageBuildReconciler) createFlashTaskRun(
 		FlashTimeoutMinutes:  operatorConfig.Spec.OSBuilds.GetFlashTimeoutMinutes(),
 		DefaultLeaseDuration: operatorConfig.Spec.Jumpstarter.GetDefaultLeaseDuration(),
 	}
-	flashTask := tasks.GenerateFlashTask(OperatorNamespace, flashBuildConfig)
+	flashTask := tasks.GenerateFlashTask(controllerutils.OperatorNamespace(), flashBuildConfig)
 
 	params := []tektonv1.Param{
 		{
@@ -2393,7 +2390,7 @@ func (r *ImageBuildReconciler) createUploadPod(ctx context.Context, imageBuild *
 	// This ensures the upload pod (the PVC's first consumer) schedules in the same
 	// availability zone as the build pod.
 	operatorConfig := &automotivev1alpha1.OperatorConfig{}
-	if err := r.Get(ctx, types.NamespacedName{Name: "config", Namespace: OperatorNamespace}, operatorConfig); err != nil && !errors.IsNotFound(err) {
+	if err := r.Get(ctx, types.NamespacedName{Name: "config", Namespace: controllerutils.OperatorNamespace()}, operatorConfig); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to get OperatorConfig: %w", err)
 	}
 
@@ -2505,7 +2502,7 @@ func (r *ImageBuildReconciler) createUploadPod(ctx context.Context, imageBuild *
 // Returns a minimal BuildConfig with defaults if OperatorConfig is unavailable.
 func (r *ImageBuildReconciler) resolveBuildConfig(ctx context.Context) *tasks.BuildConfig {
 	operatorConfig := &automotivev1alpha1.OperatorConfig{}
-	if err := r.Get(ctx, types.NamespacedName{Name: "config", Namespace: OperatorNamespace}, operatorConfig); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Name: "config", Namespace: controllerutils.OperatorNamespace()}, operatorConfig); err != nil {
 		return &tasks.BuildConfig{}
 	}
 	bc := &tasks.BuildConfig{
@@ -2771,7 +2768,7 @@ func (r *ImageBuildReconciler) getOrCreateWorkspacePVC(
 
 	// Fetch OperatorConfig to get PVC size and storage class configuration
 	operatorConfig := &automotivev1alpha1.OperatorConfig{}
-	err := r.Get(ctx, types.NamespacedName{Name: "config", Namespace: OperatorNamespace}, operatorConfig)
+	err := r.Get(ctx, types.NamespacedName{Name: "config", Namespace: controllerutils.OperatorNamespace()}, operatorConfig)
 
 	storageSize := resource.MustParse("8Gi")
 	if err == nil && operatorConfig.Spec.OSBuilds != nil && operatorConfig.Spec.OSBuilds.PVCSize != "" {

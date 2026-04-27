@@ -9,6 +9,7 @@ import (
 	"time"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
+	controllerutils "github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/controllerutils"
 	"github.com/go-logr/logr"
 	shipwrightv1beta1 "github.com/shipwright-io/build/pkg/apis/build/v1beta1"
 	corev1 "k8s.io/api/core/v1"
@@ -29,9 +30,6 @@ const (
 	phaseBuilding  = "Building"
 
 	maxK8sNameLength = 63
-
-	// OperatorNamespace is the namespace where the operator is deployed.
-	OperatorNamespace = "automotive-dev-operator-system"
 
 	// defaultUploadTimeoutMinutes is the default source upload timeout for container builds.
 	defaultUploadTimeoutMinutes = 10
@@ -122,7 +120,7 @@ func (r *ContainerBuildReconciler) reconcilePending(
 	// Read upload timeout from OperatorConfig, falling back to default
 	uploadTimeout := time.Duration(defaultUploadTimeoutMinutes) * time.Minute
 	operatorConfig := &automotivev1alpha1.OperatorConfig{}
-	if err := r.Get(ctx, types.NamespacedName{Name: "config", Namespace: OperatorNamespace}, operatorConfig); err == nil {
+	if err := r.Get(ctx, types.NamespacedName{Name: "config", Namespace: controllerutils.OperatorNamespace()}, operatorConfig); err == nil {
 		if operatorConfig.Spec.ContainerBuilds != nil && operatorConfig.Spec.ContainerBuilds.UploadTimeoutMinutes > 0 {
 			uploadTimeout = time.Duration(operatorConfig.Spec.ContainerBuilds.UploadTimeoutMinutes) * time.Minute
 		}
