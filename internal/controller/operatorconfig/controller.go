@@ -27,8 +27,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/tasks"
@@ -266,12 +268,7 @@ func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, nil
 	}
 
-	// Mark as reconciling and persist immediately so observers see it before long-running work
 	r.setCondition(config, automotivev1alpha1.OperatorConfigConditionReconciling, metav1.ConditionTrue, "Reconciling", "Reconciliation in progress")
-	if err := r.Status().Update(ctx, config); err != nil {
-		log.Error(err, "Failed to persist Reconciling condition")
-		return ctrl.Result{}, err
-	}
 
 	// Reconcile OSBuilds
 	log.Info("Processing OSBuilds configuration", "osBuilds", config.Spec.OSBuilds, "generation", config.Generation)
@@ -328,8 +325,6 @@ func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	tracingEnabled := config.Spec.Tracing != nil && config.Spec.Tracing.Enabled
 	config.Status.TracingEnabled = tracingEnabled
 
-	// Always persist final status: conditions change on every reconcile (Reconciling flips to False),
-	// so a len()-based guard would miss in-place condition status changes.
 	log.Info("Updating status",
 		"phase", config.Status.Phase,
 		"osBuildsDeployed", config.Status.OSBuildsDeployed,
@@ -1154,7 +1149,7 @@ func (r *OperatorConfigReconciler) createOrUpdatePipeline(ctx context.Context, p
 // SetupWithManager sets up the controller with the Manager.
 func (r *OperatorConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&automotivev1alpha1.OperatorConfig{}).
+		For(&automotivev1alpha1.OperatorConfig{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
