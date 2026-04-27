@@ -14,6 +14,7 @@ import (
 	"time"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/labels"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	corev1 "k8s.io/api/core/v1"
@@ -999,7 +1000,7 @@ func (a *APIServer) resolveLeaseFromBuild(ctx context.Context, k8sClient client.
 	if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: buildName}, build); err != nil {
 		return "", fmt.Errorf("ImageBuild %q not found: %w", buildName, err)
 	}
-	if owner := build.Annotations["automotive.sdv.cloud.redhat.com/requested-by"]; owner != requester {
+	if owner := build.Annotations[labels.RequestedBy]; owner != requester {
 		return "", fmt.Errorf("ImageBuild %q is owned by a different user", buildName)
 	}
 	if build.Status.LeaseID == "" {

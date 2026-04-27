@@ -29,9 +29,7 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	apiserverv1beta1 "k8s.io/apiserver/pkg/apis/apiserver/v1beta1"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
@@ -44,7 +42,7 @@ import (
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi/catalog"
-	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/tasks"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/labels"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 	authnv1 "k8s.io/api/authentication/v1"
 )
@@ -70,17 +68,9 @@ const (
 	statusMissing  = "MISSING"
 	buildAPIName   = "ado-build-api"
 
-	// Flash TaskRun constants
-	flashTaskRunLabel = "automotive.sdv.cloud.redhat.com/flash-taskrun"
-
 	// maxManifestSize is the maximum allowed manifest size in bytes.
 	// Manifests are stored in ConfigMaps, which are limited by etcd's ~1MB object size.
 	maxManifestSize = 900 * 1024
-
-	// Registry auth type constants
-	authTypeUsernamePassword = "username-password"
-	authTypeToken            = "token"
-	authTypeDockerConfig     = "docker-config"
 )
 
 var getClientFromRequestFn = getClientFromRequest
@@ -106,7 +96,6 @@ var newPodExecExecutorFn = func(
 		}, kscheme.ParameterCodec)
 	return remotecommand.NewSPDYExecutor(config, http.MethodPost, req.URL())
 }
-var errRegistryCredentialsRequiredForPush = errors.New("registry credentials are required when push repository is specified")
 var loadOperatorConfigFn = func(
 	ctx context.Context,
 	k8sClient client.Client,
@@ -160,204 +149,6 @@ var loadTargetDefaultsFn = func(
 		}
 	}
 	return result, nil
-}
-
-// defaultInternalRegistryURL is an alias for the shared constant.
-const defaultInternalRegistryURL = tasks.DefaultInternalRegistryURL
-
-func generateRegistryImageRef(host, namespace, imageName, tag string) string {
-	return fmt.Sprintf("%s/%s/%s:%s", host, namespace, imageName, tag)
-}
-
-func translateToExternalURL(internalURL, externalRouteHost string) string {
-	return strings.Replace(internalURL, defaultInternalRegistryURL, externalRouteHost, 1)
-}
-
-func getExternalRegistryRoute(ctx context.Context, k8sClient client.Client, namespace string) (string, error) {
-	operatorConfig := &automotivev1alpha1.OperatorConfig{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "config", Namespace: namespace}, operatorConfig); err != nil {
-		if !k8serrors.IsNotFound(err) {
-			return "", fmt.Errorf("error reading OperatorConfig: %w", err)
-		}
-		// OperatorConfig not found, fall through to auto-detection
-	} else if operatorConfig.Spec.OSBuilds != nil && operatorConfig.Spec.OSBuilds.ClusterRegistryRoute != "" {
-		return operatorConfig.Spec.OSBuilds.ClusterRegistryRoute, nil
-	}
-
-	// Auto-detect from OpenShift Route
-	route := &unstructured.Unstructured{}
-	route.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "route.openshift.io",
-		Version: "v1",
-		Kind:    "Route",
-	})
-	if err := k8sClient.Get(ctx, types.NamespacedName{
-		Name:      "default-route",
-		Namespace: "openshift-image-registry",
-	}, route); err != nil {
-		return "", fmt.Errorf("cannot determine external registry route: set clusterRegistryRoute in OperatorConfig or expose default-route in openshift-image-registry")
-	}
-
-	host, _, _ := unstructured.NestedString(route.Object, "spec", "host")
-	if host == "" {
-		return "", fmt.Errorf("default-route exists but has no host")
-	}
-	return host, nil
-}
-
-func createInternalRegistrySecret(ctx context.Context, restCfg *rest.Config, namespace, buildName string) (string, error) {
-	clientset, err := kubernetes.NewForConfig(restCfg)
-	if err != nil {
-		return "", fmt.Errorf("error creating clientset: %w", err)
-	}
-
-	// Request a 4-hour token for the pipeline SA (covers build + push duration)
-	expSeconds := int64(4 * 3600)
-	tokenReq := &authnv1.TokenRequest{
-		Spec: authnv1.TokenRequestSpec{
-			ExpirationSeconds: &expSeconds,
-		},
-	}
-	tokenResp, err := clientset.CoreV1().ServiceAccounts(namespace).
-		CreateToken(ctx, automotivev1alpha1.BuildServiceAccountName, tokenReq, metav1.CreateOptions{})
-	if err != nil {
-		return "", fmt.Errorf("error creating SA token: %w", err)
-	}
-
-	// Build dockerconfigjson
-	auth := base64.StdEncoding.EncodeToString([]byte("serviceaccount:" + tokenResp.Status.Token))
-	dockerConfig := fmt.Sprintf(`{"auths":{"%s":{"auth":"%s"}}}`, defaultInternalRegistryURL, auth)
-
-	secretName := buildName + "-registry-auth"
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretName,
-			Namespace: namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by":                  "build-api",
-				"app.kubernetes.io/part-of":                     "automotive-dev",
-				"automotive.sdv.cloud.redhat.com/resource-type": "registry-auth",
-				"automotive.sdv.cloud.redhat.com/build-name":    buildName,
-				"automotive.sdv.cloud.redhat.com/transient":     "true",
-			},
-		},
-		Type: corev1.SecretTypeDockerConfigJson,
-		Data: map[string][]byte{
-			".dockerconfigjson": []byte(dockerConfig),
-		},
-	}
-
-	if _, err := clientset.CoreV1().Secrets(namespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
-		return "", fmt.Errorf("error creating internal registry secret: %w", err)
-	}
-	return secretName, nil
-}
-
-// ensureImageStream creates an ImageStream if it doesn't already exist.
-// The OpenShift internal registry requires an ImageStream before oras can push to it.
-func ensureImageStream(ctx context.Context, k8sClient client.Client, namespace, name string) (bool, error) {
-	is := &unstructured.Unstructured{}
-	is.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "image.openshift.io",
-		Version: "v1",
-		Kind:    "ImageStream",
-	})
-
-	// Check if it already exists
-	err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, is)
-	if err == nil {
-		return false, nil // already exists
-	}
-	if !k8serrors.IsNotFound(err) {
-		return false, fmt.Errorf("error checking ImageStream %s: %w", name, err)
-	}
-
-	// Create it
-	newIS := &unstructured.Unstructured{}
-	newIS.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "image.openshift.io",
-		Version: "v1",
-		Kind:    "ImageStream",
-	})
-	newIS.SetName(name)
-	newIS.SetNamespace(namespace)
-	newIS.SetLabels(map[string]string{
-		"app.kubernetes.io/managed-by":              "build-api",
-		"app.kubernetes.io/part-of":                 "automotive-dev",
-		"automotive.sdv.cloud.redhat.com/transient": "true",
-	})
-
-	if err := k8sClient.Create(ctx, newIS); err != nil {
-		if k8serrors.IsAlreadyExists(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("error creating ImageStream %s: %w", name, err)
-	}
-	return true, nil
-}
-
-func deleteImageStream(ctx context.Context, k8sClient client.Client, namespace, name string) error {
-	is := &unstructured.Unstructured{}
-	is.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "image.openshift.io",
-		Version: "v1",
-		Kind:    "ImageStream",
-	})
-	is.SetName(name)
-	is.SetNamespace(namespace)
-	return k8sClient.Delete(ctx, is)
-}
-
-func deleteImageStreamTag(ctx context.Context, k8sClient client.Client, namespace, stream, tag string) error {
-	ist := &unstructured.Unstructured{}
-	ist.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "image.openshift.io",
-		Version: "v1",
-		Kind:    "ImageStreamTag",
-	})
-	ist.SetName(stream + ":" + tag)
-	ist.SetNamespace(namespace)
-	return k8sClient.Delete(ctx, ist)
-}
-
-// imageStreamHasTags checks whether an ImageStream still has any tags.
-func imageStreamHasTags(ctx context.Context, k8sClient client.Client, namespace, name string) (bool, error) {
-	is := &unstructured.Unstructured{}
-	is.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "image.openshift.io",
-		Version: "v1",
-		Kind:    "ImageStream",
-	})
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, is); err != nil {
-		return false, err
-	}
-	tags, _, _ := unstructured.NestedSlice(is.Object, "status", "tags")
-	return len(tags) > 0, nil
-}
-
-// mintRegistryToken creates a fresh short-lived token for the pipeline SA
-// so the caller can pull images from the internal registry.
-func (a *APIServer) mintRegistryToken(ctx context.Context, c *gin.Context, namespace string) (string, metav1.Time, error) {
-	restCfg, err := getRESTConfigFromRequest(c)
-	if err != nil {
-		return "", metav1.Time{}, fmt.Errorf("error getting REST config for token mint: %w", err)
-	}
-	clientset, err := kubernetes.NewForConfig(restCfg)
-	if err != nil {
-		return "", metav1.Time{}, fmt.Errorf("error creating clientset for token mint: %w", err)
-	}
-	expSeconds := int64(4 * 3600)
-	tokenReq := &authnv1.TokenRequest{
-		Spec: authnv1.TokenRequestSpec{
-			ExpirationSeconds: &expSeconds,
-		},
-	}
-	tokenResp, err := clientset.CoreV1().ServiceAccounts(namespace).
-		CreateToken(ctx, automotivev1alpha1.BuildServiceAccountName, tokenReq, metav1.CreateOptions{})
-	if err != nil {
-		return "", metav1.Time{}, fmt.Errorf("error creating token for SA %s in %s: %w", automotivev1alpha1.BuildServiceAccountName, namespace, err)
-	}
-	return tokenResp.Status.Token, tokenResp.Status.ExpirationTimestamp, nil
 }
 
 // APILimits holds configurable limits for the API server
@@ -736,7 +527,7 @@ func (a *APIServer) handleCreateBuildToken(c *gin.Context) {
 
 	// Verify the requesting user owns this build
 	requester := a.resolveRequester(c)
-	owner := build.Annotations["automotive.sdv.cloud.redhat.com/requested-by"]
+	owner := build.Annotations[labels.RequestedBy]
 	if owner != requester {
 		c.JSON(http.StatusForbidden, gin.H{"error": "you can only request tokens for your own builds"})
 		return
@@ -762,7 +553,8 @@ func (a *APIServer) handleCreateBuildToken(c *gin.Context) {
 		return
 	}
 
-	token, expiresAt, err := a.mintRegistryToken(ctx, c, namespace)
+	tokenLifetime := resolveTokenLifetime(ctx, k8sClient, namespace)
+	token, expiresAt, err := a.mintRegistryToken(ctx, c, namespace, tokenLifetime)
 	if err != nil {
 		a.log.Error(err, "failed to mint registry token", "build", name)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to mint registry token: %v", err)})
@@ -814,7 +606,7 @@ func (a *APIServer) deleteBuild(c *gin.Context, name string) {
 	}
 
 	requester := a.resolveRequester(c)
-	owner := build.Annotations["automotive.sdv.cloud.redhat.com/requested-by"]
+	owner := build.Annotations[labels.RequestedBy]
 	if owner != requester {
 		c.JSON(http.StatusForbidden, gin.H{"error": "you can only delete your own builds"})
 		return
@@ -886,7 +678,7 @@ func (a *APIServer) cancelBuild(c *gin.Context, name string) {
 	}
 
 	requester := a.resolveRequester(c)
-	owner := build.Annotations["automotive.sdv.cloud.redhat.com/requested-by"]
+	owner := build.Annotations[labels.RequestedBy]
 	if owner != requester {
 		c.JSON(http.StatusForbidden, gin.H{"error": "you can only cancel your own builds"})
 		return
@@ -943,37 +735,6 @@ func (a *APIServer) cancelBuild(c *gin.Context, name string) {
 	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("build %q cancelled", name)})
 }
 
-// resolveImageStreamRefs extracts the ImageStream name and the set of tags
-// this build pushed to from its internal registry URLs.
-// URL pattern: image-registry.openshift-image-registry.svc:5000/{namespace}/{stream}:{tag}
-func resolveImageStreamRefs(build *automotivev1alpha1.ImageBuild) (string, []string) {
-	prefix := defaultInternalRegistryURL + "/"
-	var streamName string
-	var tags []string
-	for _, ref := range []string{build.Spec.GetContainerPush(), build.Spec.GetExportOCI()} {
-		after, ok := strings.CutPrefix(ref, prefix)
-		if !ok {
-			continue
-		}
-		// "ns/name:tag" -> ["ns", "name:tag"]
-		parts := strings.SplitN(after, "/", 2)
-		if len(parts) < 2 {
-			continue
-		}
-		// "name:tag" -> name, tag
-		nameTag := strings.SplitN(parts[1], ":", 2)
-		name := nameTag[0]
-		if name == "" {
-			continue
-		}
-		streamName = name
-		if len(nameTag) == 2 && nameTag[1] != "" {
-			tags = append(tags, nameTag[1])
-		}
-	}
-	return streamName, tags
-}
-
 func (a *APIServer) handleStreamLogs(c *gin.Context) {
 	name := c.Param("name")
 	a.log.Info("logs requested", "build", name, "reqID", c.GetString("reqID"))
@@ -990,158 +751,6 @@ func (a *APIServer) handleUploadFiles(c *gin.Context) {
 	name := c.Param("name")
 	a.log.Info("uploads", "build", name, "reqID", c.GetString("reqID"))
 	a.uploadFiles(c, name)
-}
-
-func createRegistrySecret(
-	ctx context.Context, k8sClient client.Client, namespace, buildName string, creds *RegistryCredentials,
-) (string, error) {
-	if creds == nil || !creds.Enabled {
-		return "", nil
-	}
-
-	secretName := fmt.Sprintf("%s-external-registry-auth", buildName)
-	secretData := make(map[string][]byte)
-
-	switch creds.AuthType {
-	case authTypeUsernamePassword:
-		if creds.RegistryURL == "" || creds.Username == "" || creds.Password == "" {
-			return "", fmt.Errorf("registry URL, username, and password are required for username-password authentication")
-		}
-		secretData["REGISTRY_URL"] = []byte(creds.RegistryURL)
-		secretData["REGISTRY_USERNAME"] = []byte(creds.Username)
-		secretData["REGISTRY_PASSWORD"] = []byte(creds.Password)
-
-		// Also create dockerconfigjson format for tools that need it (oras, skopeo, etc.)
-		auth := base64.StdEncoding.EncodeToString([]byte(creds.Username + ":" + creds.Password))
-		dockerConfig, err := json.Marshal(map[string]interface{}{
-			"auths": map[string]interface{}{
-				creds.RegistryURL: map[string]string{
-					"auth": auth,
-				},
-			},
-		})
-		if err != nil {
-			return "", fmt.Errorf("failed to create docker config: %w", err)
-		}
-		secretData[".dockerconfigjson"] = dockerConfig
-	case authTypeToken:
-		if creds.RegistryURL == "" || creds.Token == "" {
-			return "", fmt.Errorf("registry URL and token are required for token authentication")
-		}
-		secretData["REGISTRY_URL"] = []byte(creds.RegistryURL)
-		secretData["REGISTRY_TOKEN"] = []byte(creds.Token)
-	case authTypeDockerConfig:
-		if creds.DockerConfig == "" {
-			return "", fmt.Errorf("docker config is required for docker-config authentication")
-		}
-		secretData["REGISTRY_AUTH_FILE_CONTENT"] = []byte(creds.DockerConfig)
-		secretData[".dockerconfigjson"] = []byte(creds.DockerConfig)
-	default:
-		return "", fmt.Errorf("unsupported authentication type: %s", creds.AuthType)
-	}
-
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretName,
-			Namespace: namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by":                  "build-api",
-				"app.kubernetes.io/part-of":                     "automotive-dev",
-				"app.kubernetes.io/created-by":                  "automotive-dev-build-api",
-				"automotive.sdv.cloud.redhat.com/resource-type": "registry-auth",
-				"automotive.sdv.cloud.redhat.com/build-name":    buildName,
-			},
-		},
-		Type: corev1.SecretTypeOpaque,
-		Data: secretData,
-	}
-
-	if err := k8sClient.Create(ctx, secret); err != nil {
-		return "", fmt.Errorf("failed to create registry secret: %w", err)
-	}
-
-	return secretName, nil
-}
-
-// createPushSecret creates a kubernetes.io/dockerconfigjson secret for pushing artifacts to a registry
-func createPushSecret(
-	ctx context.Context, k8sClient client.Client, namespace, buildName string, creds *RegistryCredentials,
-) (string, error) {
-	if creds == nil || !creds.Enabled {
-		return "", fmt.Errorf("registry credentials are required for push")
-	}
-
-	secretName := fmt.Sprintf("%s-push-auth", buildName)
-
-	var dockerConfigJSON []byte
-	var err error
-
-	switch creds.AuthType {
-	case authTypeUsernamePassword:
-		if creds.RegistryURL == "" || creds.Username == "" || creds.Password == "" {
-			return "", fmt.Errorf("registry URL, username, and password are required for push")
-		}
-		// Create dockerconfigjson format
-		auth := base64.StdEncoding.EncodeToString([]byte(creds.Username + ":" + creds.Password))
-		dockerConfigJSON, err = json.Marshal(map[string]interface{}{
-			"auths": map[string]interface{}{
-				creds.RegistryURL: map[string]string{
-					"auth": auth,
-				},
-			},
-		})
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal docker config: %w", err)
-		}
-	case authTypeToken:
-		if creds.RegistryURL == "" || creds.Token == "" {
-			return "", fmt.Errorf("registry URL and token are required for push with token auth")
-		}
-		// For token auth, use the token as password with empty username
-		auth := base64.StdEncoding.EncodeToString([]byte(":" + creds.Token))
-		dockerConfigJSON, err = json.Marshal(map[string]interface{}{
-			"auths": map[string]interface{}{
-				creds.RegistryURL: map[string]string{
-					"auth": auth,
-				},
-			},
-		})
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal docker config: %w", err)
-		}
-	case authTypeDockerConfig:
-		if creds.DockerConfig == "" {
-			return "", fmt.Errorf("docker config is required for push with docker-config auth")
-		}
-		dockerConfigJSON = []byte(creds.DockerConfig)
-	default:
-		return "", fmt.Errorf("unsupported authentication type for push: %s", creds.AuthType)
-	}
-
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretName,
-			Namespace: namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by":                  "build-api",
-				"app.kubernetes.io/part-of":                     "automotive-dev",
-				"app.kubernetes.io/created-by":                  "automotive-dev-build-api",
-				"automotive.sdv.cloud.redhat.com/resource-type": "push-auth",
-				"automotive.sdv.cloud.redhat.com/build-name":    buildName,
-				"automotive.sdv.cloud.redhat.com/transient":     "true",
-			},
-		},
-		Type: corev1.SecretTypeDockerConfigJson,
-		Data: map[string][]byte{
-			".dockerconfigjson": dockerConfigJSON,
-		},
-	}
-
-	if err := k8sClient.Create(ctx, secret); err != nil {
-		return "", fmt.Errorf("failed to create push secret: %w", err)
-	}
-
-	return secretName, nil
 }
 
 // validateBuildRequest validates the build request, sanitizes the name, and applies defaults
@@ -1260,32 +869,6 @@ func applyBuildDefaults(req *BuildRequest) error {
 	return nil
 }
 
-// setupBuildSecrets creates necessary secrets for the build
-func setupBuildSecrets(
-	ctx context.Context, k8sClient client.Client,
-	namespace string, req *BuildRequest,
-) (envSecretRef, pushSecretName string, err error) {
-	if req.RegistryCredentials != nil && req.RegistryCredentials.Enabled {
-		envSecretRef, err = createRegistrySecret(ctx, k8sClient, namespace, req.Name, req.RegistryCredentials)
-		if err != nil {
-			return "", "", fmt.Errorf("error creating registry secret: %w", err)
-		}
-	}
-
-	// Create push secret if pushing to registry (PushRepository for bootc, ExportOCI for disk images)
-	if req.PushRepository != "" || req.ExportOCI != "" {
-		if req.RegistryCredentials == nil || !req.RegistryCredentials.Enabled {
-			return "", "", errRegistryCredentialsRequiredForPush
-		}
-		pushSecretName, err = createPushSecret(ctx, k8sClient, namespace, req.Name, req.RegistryCredentials)
-		if err != nil {
-			return "", "", fmt.Errorf("error creating push secret: %w", err)
-		}
-	}
-
-	return envSecretRef, pushSecretName, nil
-}
-
 // resolveRegistryForBuild handles registry setup for both internal and external registry builds.
 // It returns envSecretRef, pushSecretName, and an error (non-nil means the response was already written).
 func (a *APIServer) resolveRegistryForBuild(
@@ -1401,7 +984,8 @@ func (a *APIServer) setupInternalRegistryBuild(
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error getting REST config: %v", err)})
 		return "", "", err
 	}
-	secretName, err := createInternalRegistrySecret(ctx, restCfg, namespace, req.Name)
+	tokenLifetime := resolveTokenLifetime(ctx, k8sClient, namespace)
+	secretName, err := createInternalRegistrySecret(ctx, restCfg, namespace, req.Name, tokenLifetime)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return "", "", err
@@ -1565,8 +1149,8 @@ func (a *APIServer) resolveWorkspaceForBuild(ctx context.Context, k8sClient clie
 
 	// Find existing build-cache PVC via labels, or create a new one
 	buildCacheLabels := map[string]string{
-		"automotive.sdv.cloud.redhat.com/workspace": wsName,
-		"app.kubernetes.io/component":               "build-cache",
+		labels.Workspace: wsName,
+		labels.Component: "build-cache",
 	}
 	pvcList := &corev1.PersistentVolumeClaimList{}
 	if err := k8sClient.List(ctx, pvcList,
@@ -1757,13 +1341,13 @@ func (a *APIServer) createBuild(c *gin.Context) {
 		return
 	}
 
-	labels := map[string]string{
-		"app.kubernetes.io/managed-by":                 "build-api",
-		"app.kubernetes.io/part-of":                    "automotive-dev",
-		"app.kubernetes.io/created-by":                 "automotive-dev-build-api",
-		"automotive.sdv.cloud.redhat.com/distro":       string(req.Distro),
-		"automotive.sdv.cloud.redhat.com/target":       string(req.Target),
-		"automotive.sdv.cloud.redhat.com/architecture": string(req.Architecture),
+	buildLabels := map[string]string{
+		labels.ManagedBy:    labels.ValueBuildAPI,
+		labels.PartOf:       labels.ValueAutomotiveDev,
+		labels.CreatedBy:    labels.ValueBuildAPICreator,
+		labels.Distro:       string(req.Distro),
+		labels.Target:       string(req.Target),
+		labels.Architecture: string(req.Architecture),
 	}
 
 	envSecretRef, pushSecretName, apiErr := a.resolveRegistryForBuild(ctx, c, k8sClient, namespace, &req)
@@ -1796,9 +1380,9 @@ func (a *APIServer) createBuild(c *gin.Context) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      req.Name,
 			Namespace: namespace,
-			Labels:    labels,
+			Labels:    buildLabels,
 			Annotations: map[string]string{
-				"automotive.sdv.cloud.redhat.com/requested-by": requestedBy,
+				labels.RequestedBy: requestedBy,
 			},
 		},
 		Spec: automotivev1alpha1.ImageBuildSpec{
@@ -1913,7 +1497,7 @@ func listBuilds(c *gin.Context) {
 			Name:           b.Name,
 			Phase:          b.Status.Phase,
 			Message:        b.Status.Message,
-			RequestedBy:    b.Annotations["automotive.sdv.cloud.redhat.com/requested-by"],
+			RequestedBy:    b.Annotations[labels.RequestedBy],
 			CreatedAt:      b.CreationTimestamp.Format(time.RFC3339),
 			StartTime:      startStr,
 			CompletionTime: compStr,
@@ -2003,12 +1587,13 @@ func (a *APIServer) getBuild(c *gin.Context, name string) {
 	// that belong to the requesting user
 	var registryToken string
 	requester := a.resolveRequester(c)
-	buildOwner := build.Annotations["automotive.sdv.cloud.redhat.com/requested-by"]
+	buildOwner := build.Annotations[labels.RequestedBy]
 	if requester == buildOwner &&
 		build.Spec.GetUseServiceAccountAuth() &&
 		isTerminalPhase(build.Status.Phase) {
 		var tokenErr error
-		registryToken, _, tokenErr = a.mintRegistryToken(ctx, c, namespace)
+		tokenLifetime := resolveTokenLifetime(ctx, k8sClient, namespace)
+		registryToken, _, tokenErr = a.mintRegistryToken(ctx, c, namespace, tokenLifetime)
 		if tokenErr != nil {
 			a.log.Error(tokenErr, "failed to mint registry token", "build", name)
 			tokenWarning := fmt.Sprintf("failed to mint registry token: %v", tokenErr)
@@ -2024,7 +1609,7 @@ func (a *APIServer) getBuild(c *gin.Context, name string) {
 		Name:        build.Name,
 		Phase:       build.Status.Phase,
 		Message:     build.Status.Message,
-		RequestedBy: build.Annotations["automotive.sdv.cloud.redhat.com/requested-by"],
+		RequestedBy: build.Annotations[labels.RequestedBy],
 		StartTime: func() string {
 			if build.Status.StartTime != nil {
 				return build.Status.StartTime.Format(time.RFC3339)
@@ -2261,8 +1846,8 @@ func findRunningUploadPod(ctx context.Context, k8sClient client.Client, namespac
 	if err := k8sClient.List(ctx, podList,
 		client.InNamespace(namespace),
 		client.MatchingLabels{
-			"automotive.sdv.cloud.redhat.com/imagebuild-name": buildName,
-			"app.kubernetes.io/name":                          "upload-pod",
+			labels.ImageBuildName: buildName,
+			labels.Name:           "upload-pod",
 		},
 	); err != nil {
 		return nil, fmt.Errorf("error listing upload pods: %w", err)
@@ -2379,7 +1964,7 @@ func (a *APIServer) uploadFiles(c *gin.Context, name string) {
 	if patched.Annotations == nil {
 		patched.Annotations = map[string]string{}
 	}
-	patched.Annotations["automotive.sdv.cloud.redhat.com/uploads-complete"] = "true"
+	patched.Annotations[labels.UploadsComplete] = labels.ValueTrue
 	if err := k8sClient.Patch(c.Request.Context(), patched, client.MergeFrom(original)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("mark complete failed: %v", err)})
 		return
@@ -2415,53 +2000,6 @@ func copyFileToPod(ctx context.Context, config *rest.Config, namespace, podName,
 		return err
 	}
 	return nil
-}
-
-func setSecretOwnerRef(
-	ctx context.Context,
-	c client.Client,
-	namespace, secretName string,
-	owner *automotivev1alpha1.ImageBuild,
-) error {
-	secret := &corev1.Secret{}
-	if err := c.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, secret); err != nil {
-		return err
-	}
-	secret.OwnerReferences = []metav1.OwnerReference{
-		*metav1.NewControllerRef(owner, automotivev1alpha1.GroupVersion.WithKind("ImageBuild")),
-	}
-	return c.Update(ctx, secret)
-}
-
-// createFlashClientSecret creates a secret containing the Jumpstarter client config
-func createFlashClientSecret(
-	ctx context.Context,
-	c client.Client,
-	namespace, secretName, base64Config string,
-) error {
-	// Decode base64 client config
-	configBytes, err := base64.StdEncoding.DecodeString(base64Config)
-	if err != nil {
-		return fmt.Errorf("failed to decode client config: %w", err)
-	}
-
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretName,
-			Namespace: namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "build-api",
-				"app.kubernetes.io/part-of":    "automotive-dev",
-				"app.kubernetes.io/component":  "jumpstarter-client",
-			},
-		},
-		Type: corev1.SecretTypeOpaque,
-		Data: map[string][]byte{
-			"client.yaml": configBytes,
-		},
-	}
-
-	return c.Create(ctx, secret)
 }
 
 // refreshAuthConfigIfNeeded periodically checks and refreshes authentication configuration from OperatorConfig
@@ -3040,8 +2578,8 @@ func createSealedSecrets(ctx context.Context, clientset kubernetes.Interface, na
 				Name:      secretName,
 				Namespace: namespace,
 				Labels: map[string]string{
-					"automotive.sdv.cloud.redhat.com/imagereseal": req.Name,
-					"automotive.sdv.cloud.redhat.com/transient":   "true",
+					labels.ImageReseal: req.Name,
+					labels.Transient:   labels.ValueTrue,
 				},
 			},
 			Type: corev1.SecretTypeOpaque,
@@ -3060,8 +2598,8 @@ func createSealedSecrets(ctx context.Context, clientset kubernetes.Interface, na
 				Name:      keySecretName,
 				Namespace: namespace,
 				Labels: map[string]string{
-					"automotive.sdv.cloud.redhat.com/imagereseal": req.Name,
-					"automotive.sdv.cloud.redhat.com/transient":   "true",
+					labels.ImageReseal: req.Name,
+					labels.Transient:   labels.ValueTrue,
 				},
 			},
 			Type: corev1.SecretTypeOpaque,
@@ -3082,8 +2620,8 @@ func createSealedSecrets(ctx context.Context, clientset kubernetes.Interface, na
 					Name:      keyPwSecretName,
 					Namespace: namespace,
 					Labels: map[string]string{
-						"automotive.sdv.cloud.redhat.com/imagereseal": req.Name,
-						"automotive.sdv.cloud.redhat.com/transient":   "true",
+						labels.ImageReseal: req.Name,
+						labels.Transient:   labels.ValueTrue,
 					},
 				},
 				Type: corev1.SecretTypeOpaque,
@@ -3173,11 +2711,11 @@ func (a *APIServer) createSealed(c *gin.Context, pathOp SealedOperation) {
 			Name:      req.Name,
 			Namespace: namespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "build-api",
-				"app.kubernetes.io/part-of":    "automotive-dev",
+				labels.ManagedBy: labels.ValueBuildAPI,
+				labels.PartOf:    labels.ValueAutomotiveDev,
 			},
 			Annotations: map[string]string{
-				"automotive.sdv.cloud.redhat.com/requested-by": requestedBy,
+				labels.RequestedBy: requestedBy,
 			},
 		},
 		Spec: automotivev1alpha1.ImageResealSpec{
@@ -3261,7 +2799,7 @@ func (a *APIServer) listSealed(c *gin.Context) {
 			Name:           s.Name,
 			Phase:          s.Status.Phase,
 			Message:        s.Status.Message,
-			RequestedBy:    s.Annotations["automotive.sdv.cloud.redhat.com/requested-by"],
+			RequestedBy:    s.Annotations[labels.RequestedBy],
 			CreatedAt:      s.CreationTimestamp.Format(time.RFC3339),
 			CompletionTime: compStr,
 		})
@@ -3297,7 +2835,7 @@ func (a *APIServer) getSealed(c *gin.Context, name string) {
 		Name:            sealed.Name,
 		Phase:           sealed.Status.Phase,
 		Message:         sealed.Status.Message,
-		RequestedBy:     sealed.Annotations["automotive.sdv.cloud.redhat.com/requested-by"],
+		RequestedBy:     sealed.Annotations[labels.RequestedBy],
 		StartTime:       startStr,
 		CompletionTime:  compStr,
 		TaskRunName:     sealed.Status.TaskRunName,

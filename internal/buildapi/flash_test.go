@@ -17,6 +17,7 @@ import (
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/labels"
 	"github.com/gin-gonic/gin"
 	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Dot import is standard for Ginkgo
@@ -49,10 +50,10 @@ var _ = Describe("Flash", func() {
 				Name:      name,
 				Namespace: "test-ns",
 				Labels: map[string]string{
-					flashTaskRunLabel: name,
+					labels.FlashTaskRun: name,
 				},
 				Annotations: map[string]string{
-					"automotive.sdv.cloud.redhat.com/requested-by": requestedBy,
+					labels.RequestedBy: requestedBy,
 				},
 				CreationTimestamp: metav1.NewTime(time.Now()),
 			},

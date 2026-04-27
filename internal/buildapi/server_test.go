@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/labels"
 	"github.com/gin-gonic/gin"
 	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Dot import is standard for Ginkgo
@@ -136,7 +137,7 @@ var _ = Describe("APIServer", func() {
 			build.Name = name
 			build.Namespace = "test-ns"
 			build.Annotations = map[string]string{
-				"automotive.sdv.cloud.redhat.com/requested-by": owner,
+				labels.RequestedBy: owner,
 			}
 			if useServiceAccountAuth || containerPush != "" || exportOCI != "" {
 				build.Spec.Export = &automotivev1alpha1.ExportSpec{
@@ -323,7 +324,7 @@ var _ = Describe("APIServer", func() {
 			build.Name = "my-build"
 			build.Namespace = testNamespace
 			build.Annotations = map[string]string{
-				"automotive.sdv.cloud.redhat.com/requested-by": "alice",
+				labels.RequestedBy: "alice",
 			}
 			build.Status.Phase = phase
 			build.Status.PipelineRunName = pipelineRunName
