@@ -14,11 +14,11 @@ var (
 )
 
 // OperatorNamespace returns the namespace where the operator is deployed.
-// Resolution order: OPERATOR_NAMESPACE env var, pod serviceaccount namespace file,
-// hardcoded fallback.
+// Resolution order: WATCH_NAMESPACE env var (set by the manager deployment),
+// pod serviceaccount namespace file, hardcoded fallback.
 func OperatorNamespace() string {
 	resolveOnce.Do(func() {
-		if ns := strings.TrimSpace(os.Getenv("OPERATOR_NAMESPACE")); ns != "" {
+		if ns := strings.TrimSpace(os.Getenv("WATCH_NAMESPACE")); ns != "" {
 			resolvedNS = ns
 			return
 		}

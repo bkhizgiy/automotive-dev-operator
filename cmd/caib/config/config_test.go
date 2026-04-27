@@ -34,6 +34,8 @@ var _ = Describe("DeriveServerFromJumpstarter", func() {
 	var tempDir string
 	var origHome, origXDG string
 
+	var origBuildNS string
+
 	BeforeEach(func() {
 		var err error
 		tempDir, err = os.MkdirTemp("", "caib-derive-test-*")
@@ -41,8 +43,10 @@ var _ = Describe("DeriveServerFromJumpstarter", func() {
 
 		origHome = os.Getenv("HOME")
 		origXDG = os.Getenv("XDG_CONFIG_HOME")
+		origBuildNS = os.Getenv("CAIB_BUILD_API_NAMESPACE")
 		Expect(os.Setenv("HOME", tempDir)).To(Succeed())
 		Expect(os.Unsetenv("XDG_CONFIG_HOME")).To(Succeed())
+		Expect(os.Unsetenv("CAIB_BUILD_API_NAMESPACE")).To(Succeed())
 	})
 
 	AfterEach(func() {
@@ -52,6 +56,11 @@ var _ = Describe("DeriveServerFromJumpstarter", func() {
 			_ = os.Setenv("XDG_CONFIG_HOME", origXDG)
 		} else {
 			_ = os.Unsetenv("XDG_CONFIG_HOME")
+		}
+		if origBuildNS != "" {
+			_ = os.Setenv("CAIB_BUILD_API_NAMESPACE", origBuildNS)
+		} else {
+			_ = os.Unsetenv("CAIB_BUILD_API_NAMESPACE")
 		}
 		_ = os.RemoveAll(tempDir)
 	})
@@ -71,7 +80,7 @@ var _ = Describe("DeriveServerFromJumpstarter", func() {
 		}
 
 		result := DeriveServerFromJumpstarter()
-		expected := "https://ado-build-api-automotive-dev-operator-system.apps.example.com"
+		expected := "https://ado-build-api-auto-builder.apps.example.com"
 
 		Expect(result).To(Equal(expected))
 		Expect(requestedURL).To(Equal(expected + "/v1/healthz"))
@@ -98,7 +107,7 @@ var _ = Describe("DeriveServerFromJumpstarter", func() {
 		}
 
 		result := DeriveServerFromJumpstarter()
-		expected := "https://ado-build-api-automotive-dev-operator-system.cluster.local"
+		expected := "https://ado-build-api-auto-builder.cluster.local"
 
 		Expect(result).To(Equal(expected))
 		Expect(requestedURL).To(Equal(expected + "/v1/healthz"))
@@ -168,7 +177,7 @@ var _ = Describe("DeriveServerFromJumpstarter", func() {
 
 var _ = Describe("DefaultServerWithDerive", func() {
 	var tempDir string
-	var origHome, origXDG, origCAIBServer string
+	var origHome, origXDG, origCAIBServer, origBuildNS string
 
 	BeforeEach(func() {
 		var err error
@@ -178,9 +187,11 @@ var _ = Describe("DefaultServerWithDerive", func() {
 		origHome = os.Getenv("HOME")
 		origXDG = os.Getenv("XDG_CONFIG_HOME")
 		origCAIBServer = os.Getenv("CAIB_SERVER")
+		origBuildNS = os.Getenv("CAIB_BUILD_API_NAMESPACE")
 		Expect(os.Setenv("HOME", tempDir)).To(Succeed())
 		Expect(os.Unsetenv("XDG_CONFIG_HOME")).To(Succeed())
 		Expect(os.Unsetenv("CAIB_SERVER")).To(Succeed())
+		Expect(os.Unsetenv("CAIB_BUILD_API_NAMESPACE")).To(Succeed())
 	})
 
 	AfterEach(func() {
@@ -190,6 +201,11 @@ var _ = Describe("DefaultServerWithDerive", func() {
 			_ = os.Setenv("XDG_CONFIG_HOME", origXDG)
 		} else {
 			_ = os.Unsetenv("XDG_CONFIG_HOME")
+		}
+		if origBuildNS != "" {
+			_ = os.Setenv("CAIB_BUILD_API_NAMESPACE", origBuildNS)
+		} else {
+			_ = os.Unsetenv("CAIB_BUILD_API_NAMESPACE")
 		}
 		if origCAIBServer != "" {
 			_ = os.Setenv("CAIB_SERVER", origCAIBServer)
@@ -250,7 +266,7 @@ var _ = Describe("DefaultServerWithDerive", func() {
 			}),
 		}
 
-		expected := "https://ado-build-api-automotive-dev-operator-system.apps.example.com"
+		expected := "https://ado-build-api-auto-builder.apps.example.com"
 		Expect(DefaultServerWithDerive()).To(Equal(expected))
 	})
 
