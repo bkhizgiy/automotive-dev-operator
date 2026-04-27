@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"strconv"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -460,6 +462,58 @@ func (c *MonitoringConfig) GetInterval() string {
 	return "30s"
 }
 
+// TracingConfig defines configuration for OpenTelemetry distributed tracing
+type TracingConfig struct {
+	// Enabled determines if the operator should export trace spans
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled"`
+
+	// Endpoint is the OTLP gRPC collector endpoint (e.g. "otel-collector.namespace.svc:4317").
+	// Falls back to OTEL_EXPORTER_OTLP_ENDPOINT env var when empty.
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// Insecure disables TLS for the OTLP gRPC connection.
+	// Default: true (plaintext, appropriate for in-cluster collectors).
+	// Set to false when connecting to external/managed tracing backends that require TLS.
+	// +optional
+	// +kubebuilder:default=true
+	Insecure *bool `json:"insecure,omitempty"`
+
+	// SamplingRatio controls the fraction of traces sampled, as a string representation
+	// of a decimal between "0" and "1" (e.g. "0.1" for 10%, "1" for 100%).
+	// Default: "1" (sample everything).
+	// +optional
+	// +kubebuilder:validation:Pattern=`^(0(\.\d+)?|1(\.0+)?)$`
+	SamplingRatio string `json:"samplingRatio,omitempty"`
+}
+
+// IsInsecure returns whether the OTLP connection should use plaintext (default: true)
+func (c *TracingConfig) IsInsecure() bool {
+	if c != nil && c.Insecure != nil {
+		return *c.Insecure
+	}
+	return true
+}
+
+// GetSamplingRatio returns the sampling ratio as a float64, defaulting to 1.0
+func (c *TracingConfig) GetSamplingRatio() float64 {
+	if c != nil && c.SamplingRatio != "" {
+		if v, err := strconv.ParseFloat(c.SamplingRatio, 64); err == nil {
+			return v
+		}
+	}
+	return 1.0
+}
+
+// GetEndpoint returns the configured endpoint or empty string
+func (c *TracingConfig) GetEndpoint() string {
+	if c != nil && c.Endpoint != "" {
+		return c.Endpoint
+	}
+	return ""
+}
+
 // OperatorConfigSpec defines the desired state of OperatorConfig
 type OperatorConfigSpec struct {
 	// OSBuilds defines the configuration for OS build operations
@@ -489,6 +543,10 @@ type OperatorConfigSpec struct {
 	// Monitoring defines configuration for Prometheus metrics collection
 	// +optional
 	Monitoring *MonitoringConfig `json:"monitoring,omitempty"`
+
+	// Tracing defines configuration for OpenTelemetry distributed tracing
+	// +optional
+	Tracing *TracingConfig `json:"tracing,omitempty"`
 }
 
 // OSBuildsConfig defines configuration for OS build operations
@@ -708,6 +766,9 @@ type OperatorConfigStatus struct {
 	// +patchStrategy=merge
 	// +patchMergeKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// TracingEnabled indicates if tracing is configured and active
+	TracingEnabled bool `json:"tracingEnabled,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -252,6 +252,7 @@ type BuildResponse struct {
 	ContainerImage string           `json:"containerImage,omitempty"`
 	DiskImage      string           `json:"diskImage,omitempty"`
 	RegistryToken  string           `json:"registryToken,omitempty"`
+	TraceID        string           `json:"traceId,omitempty"`
 	Warning        string           `json:"warning,omitempty"`
 	ExpiresAt      string           `json:"expiresAt,omitempty"`
 	Jumpstarter    *JumpstarterInfo `json:"jumpstarter,omitempty"`

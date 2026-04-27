@@ -6,5 +6,5 @@ configurations:
 - kustomizeconfig.yaml
 images:
 - name: controller
-  newName: quay.io/rh-sdv-cloud/automotive-dev-operator
-  newTag: v0.1.0
+  newName: example.com/automotive-dev-operator
+  newTag: v0.0.1
