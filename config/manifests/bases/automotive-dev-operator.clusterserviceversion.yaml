@@ -93,7 +93,7 @@ metadata:
       ]
     capabilities: Basic Install
     categories: Developer Tools
-    com.redhat.openshift.versions: v4.18-v4.20
+    com.redhat.openshift.versions: v4.18-v4.21
     containerImage: quay.io/rh-sdv-cloud/automotive-dev-operator:VERSION
     description: The CentOS Automotive Suite Operator enables building automotive
       OS images on OpenShift clusters.
