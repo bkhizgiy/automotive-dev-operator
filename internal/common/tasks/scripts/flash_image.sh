@@ -21,7 +21,10 @@ if ! jmp login --client-config "${JMP_CLIENT_CONFIG}" 2>&1; then
     echo "WARNING: jmp login failed, continuing with existing credentials"
 fi
 
-FLASH_CMD="${FLASH_CMD:-j storage flash oci://{image_uri}}"
+FLASH_CMD="${FLASH_CMD:-}"
+if [[ -z "${FLASH_CMD}" ]]; then
+    FLASH_CMD='j storage flash oci://{image_uri}'
+fi
 FLASH_CMD=$(echo "${FLASH_CMD}" | sed "s|{image_uri}|${IMAGE_REF}|g")
 
 
