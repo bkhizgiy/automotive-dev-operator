@@ -71,10 +71,11 @@ func TestSafeDerivedName(t *testing.T) {
 	})
 }
 
-// newTestContainerBuild creates a ContainerBuild in the operator namespace for testing.
+const testNamespace = "test-operator-ns"
+
 func newTestContainerBuild(name string, spec automotivev1alpha1.ContainerBuildSpec) *automotivev1alpha1.ContainerBuild {
 	return &automotivev1alpha1.ContainerBuild{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: OperatorNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
 		Spec:       spec,
 	}
 }
@@ -109,8 +110,8 @@ func TestBuildRunBasic(t *testing.T) {
 	if br.Name != "test-build-br" {
 		t.Errorf("BuildRun name = %q, want %q", br.Name, "test-build-br")
 	}
-	if br.Namespace != OperatorNamespace {
-		t.Errorf("namespace = %q, want %q", br.Namespace, OperatorNamespace)
+	if br.Namespace != testNamespace {
+		t.Errorf("namespace = %q, want %q", br.Namespace, testNamespace)
 	}
 
 	spec := br.Spec.Build.Spec

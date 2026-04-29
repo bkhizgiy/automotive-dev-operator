@@ -20,7 +20,6 @@ const (
 	configFile = "cli.json"
 
 	buildAPIRoutePrefix = "ado-build-api"
-	buildAPINamespace   = "automotive-dev-operator-system" // todo: add dynamic namespace discovery
 )
 
 // healthHTTPClient is the HTTP client used for the health check in DeriveServerFromJumpstarter.
@@ -102,6 +101,17 @@ func JumpstarterEndpoint() string {
 	return strings.TrimSpace(clientCfg.Endpoint)
 }
 
+// buildAPINamespaceCandidates returns the namespace candidates to probe when
+// auto-deriving the Build API URL from Jumpstarter config.
+// CAIB_BUILD_API_NAMESPACE env var takes priority; otherwise we fall back to
+// the default operator namespace.
+func buildAPINamespaceCandidates() []string {
+	if ns := strings.TrimSpace(os.Getenv("CAIB_BUILD_API_NAMESPACE")); ns != "" {
+		return []string{ns}
+	}
+	return []string{"automotive-dev-operator-system"}
+}
+
 // DeriveServerFromJumpstarter derives the Build API URL from the default Jumpstarter client config,
 // checks reachability via /v1/healthz, and if successful saves the URL to ~/.config/caib/cli.json.
 // Returns the derived URL, or "" if the Jumpstarter config is absent, derivation fails, or the server is unreachable.
@@ -125,44 +135,44 @@ func DeriveServerFromJumpstarter() string {
 	if idx := strings.Index(host, ".apps."); idx != -1 {
 		baseDomain = host[idx+1:]
 	} else {
-		// fallback: strip first two labels: jumpstarter service name and namespace
 		parts := strings.SplitN(host, ".", 3)
 		if len(parts) < 3 {
 			return ""
 		}
 		baseDomain = parts[2]
 	}
-	apiURL := fmt.Sprintf("https://%s-%s.%s", buildAPIRoutePrefix, buildAPINamespace, baseDomain)
 
-	// Check reachability via the health endpoint.
-	// TLS verification is skipped here intentionally: this is a connectivity probe only,
-	// matching the behavior of caib login <url> which also saves the URL without any TLS check.
-	client := healthHTTPClient
-	if client == nil {
-		client = &http.Client{ //nolint:gosec
+	httpClient := healthHTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{ //nolint:gosec
 			Timeout: 5 * time.Second,
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}, //nolint:gosec
 			},
 		}
 	}
-	resp, err := client.Get(apiURL + "/v1/healthz")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Jumpstarter config found, but could not reach derived Build API server %s.\n", apiURL)
-		return ""
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "Warning: Jumpstarter config found, but derived Build API server %s returned HTTP %d.\n", apiURL, resp.StatusCode)
-		return ""
+
+	// Probe each candidate namespace until we find a reachable build API
+	for _, ns := range buildAPINamespaceCandidates() {
+		apiURL := fmt.Sprintf("https://%s-%s.%s", buildAPIRoutePrefix, ns, baseDomain)
+		resp, err := httpClient.Get(apiURL + "/v1/healthz")
+		if err != nil {
+			continue
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			continue
+		}
+
+		fmt.Fprintf(os.Stderr, "Using Build API server derived from Jumpstarter config: %s\n", apiURL)
+		if err := SaveServerURL(apiURL); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not save derived server URL to config: %v\n", err)
+		}
+		return apiURL
 	}
 
-	// Reachable — persist to config so future invocations skip derivation
-	fmt.Fprintf(os.Stderr, "Using Build API server derived from Jumpstarter config: %s\n", apiURL)
-	if err := SaveServerURL(apiURL); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not save derived server URL to config: %v\n", err)
-	}
-	return apiURL
+	fmt.Fprintf(os.Stderr, "Warning: Jumpstarter config found, but could not reach Build API server on %s.\n", baseDomain)
+	return ""
 }
 
 // Read reads the CLI config from XDG config (typically ~/.config/caib).
