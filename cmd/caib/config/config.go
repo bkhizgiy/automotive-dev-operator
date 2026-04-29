@@ -103,13 +103,13 @@ func JumpstarterEndpoint() string {
 
 // buildAPINamespaceCandidates returns the namespace candidates to probe when
 // auto-deriving the Build API URL from Jumpstarter config.
-// CAIB_BUILD_API_NAMESPACE env var takes priority; otherwise we try the two
-// known deployment conventions.
+// CAIB_BUILD_API_NAMESPACE env var takes priority; otherwise we fall back to
+// the default operator namespace.
 func buildAPINamespaceCandidates() []string {
 	if ns := strings.TrimSpace(os.Getenv("CAIB_BUILD_API_NAMESPACE")); ns != "" {
 		return []string{ns}
 	}
-	return []string{"auto-builder", "automotive-dev-operator-system"}
+	return []string{"automotive-dev-operator-system"}
 }
 
 // DeriveServerFromJumpstarter derives the Build API URL from the default Jumpstarter client config,

@@ -9,8 +9,8 @@ import (
 const fallbackNamespace = "automotive-dev-operator-system"
 
 var (
-	resolvedNS   string
-	resolveOnce  sync.Once
+	resolvedNS  string
+	resolveOnce sync.Once
 )
 
 // OperatorNamespace returns the namespace where the operator is deployed.

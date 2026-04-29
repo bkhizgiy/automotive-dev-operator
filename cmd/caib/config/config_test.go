@@ -80,7 +80,7 @@ var _ = Describe("DeriveServerFromJumpstarter", func() {
 		}
 
 		result := DeriveServerFromJumpstarter()
-		expected := "https://ado-build-api-auto-builder.apps.example.com"
+		expected := "https://ado-build-api-automotive-dev-operator-system.apps.example.com"
 
 		Expect(result).To(Equal(expected))
 		Expect(requestedURL).To(Equal(expected + "/v1/healthz"))
@@ -90,6 +90,28 @@ var _ = Describe("DeriveServerFromJumpstarter", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cfg).NotTo(BeNil())
 		Expect(cfg.ServerURL).To(Equal(expected))
+	})
+
+	It("uses CAIB_BUILD_API_NAMESPACE when set", func() {
+		writeJumpstarterConfig(tempDir, "grpc.lab.apps.example.com:443")
+		Expect(os.Setenv("CAIB_BUILD_API_NAMESPACE", "custom-ns")).To(Succeed())
+
+		var requestedURL string
+		healthHTTPClient = &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				requestedURL = req.URL.String()
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader("")),
+				}, nil
+			}),
+		}
+
+		result := DeriveServerFromJumpstarter()
+		expected := "https://ado-build-api-custom-ns.apps.example.com"
+
+		Expect(result).To(Equal(expected))
+		Expect(requestedURL).To(Equal(expected + "/v1/healthz"))
 	})
 
 	It("derives correct URL using fallback (non-.apps. domain)", func() {
@@ -107,7 +129,7 @@ var _ = Describe("DeriveServerFromJumpstarter", func() {
 		}
 
 		result := DeriveServerFromJumpstarter()
-		expected := "https://ado-build-api-auto-builder.cluster.local"
+		expected := "https://ado-build-api-automotive-dev-operator-system.cluster.local"
 
 		Expect(result).To(Equal(expected))
 		Expect(requestedURL).To(Equal(expected + "/v1/healthz"))
@@ -266,7 +288,7 @@ var _ = Describe("DefaultServerWithDerive", func() {
 			}),
 		}
 
-		expected := "https://ado-build-api-auto-builder.apps.example.com"
+		expected := "https://ado-build-api-automotive-dev-operator-system.apps.example.com"
 		Expect(DefaultServerWithDerive()).To(Equal(expected))
 	})
 
