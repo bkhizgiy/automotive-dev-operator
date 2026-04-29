@@ -3,6 +3,7 @@ package buildapi
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/labels"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // sealedPathToOperation maps the API path prefix to the AIB sealed operation.
@@ -98,7 +100,7 @@ func validateSealedRequest(req *SealedRequest) ([]string, string) {
 func (a *APIServer) registerSealedRoutes(v1 *gin.RouterGroup) {
 	for _, opPath := range []string{"/prepare-reseals", "/reseals", "/extract-for-signings", "/inject-signeds"} {
 		grp := v1.Group(opPath)
-		grp.Use(a.authMiddleware())
+		grp.Use(sealedMetricsMiddleware(), a.authMiddleware())
 		{
 			grp.POST("", a.handleCreateSealed)
 			grp.GET("", a.handleListSealed)
@@ -132,8 +134,14 @@ func (a *APIServer) handleSealedLogs(c *gin.Context) {
 }
 
 func (a *APIServer) createSealed(c *gin.Context, pathOp SealedOperation) {
+	ctx, span := apiTracer.Start(c.Request.Context(), "createSealed")
+	defer span.End()
+	opLabel := sealedOperationLabel(pathOp, nil)
+
 	var req SealedRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		spanError(span, err)
+		SealedCreateRequestsTotal.WithLabelValues(opLabel, "bad_request").Inc()
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON request"})
 		return
 	}
@@ -145,36 +153,51 @@ func (a *APIServer) createSealed(c *gin.Context, pathOp SealedOperation) {
 
 	stages, errMsg := validateSealedRequest(&req)
 	if errMsg != "" {
+		spanError(span, errors.New(errMsg))
+		SealedCreateRequestsTotal.WithLabelValues(opLabel, "bad_request").Inc()
 		c.JSON(http.StatusBadRequest, gin.H{"error": errMsg})
 		return
 	}
+	opLabel = sealedOperationLabel(req.Operation, stages)
+	span.SetAttributes(
+		attribute.String("sealed.name", req.Name),
+		attribute.String("sealed.operation", opLabel),
+	)
 
 	k8sClient, err := getClientFromRequestFn(c)
 	if err != nil {
+		spanError(span, err)
+		SealedCreateRequestsTotal.WithLabelValues(opLabel, "error").Inc()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	restCfg, err := getRESTConfigFromRequestFn(c)
 	if err != nil {
+		spanError(span, err)
+		SealedCreateRequestsTotal.WithLabelValues(opLabel, "error").Inc()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	clientset, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
+		spanError(span, err)
+		SealedCreateRequestsTotal.WithLabelValues(opLabel, "error").Inc()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
-	ctx := c.Request.Context()
 	namespace := resolveNamespace()
 	requestedBy := a.resolveRequester(c)
 
 	refs, err := createSealedSecrets(ctx, clientset, namespace, &req)
 	if err != nil {
 		if k8serrors.IsAlreadyExists(err) {
+			spanError(span, err)
+			SealedCreateRequestsTotal.WithLabelValues(opLabel, "conflict").Inc()
 			c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("job %s already exists", req.Name)})
 			return
 		}
+		spanError(span, err)
+		SealedCreateRequestsTotal.WithLabelValues(opLabel, "error").Inc()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -216,9 +239,13 @@ func (a *APIServer) createSealed(c *gin.Context, pathOp SealedOperation) {
 	if err := k8sClient.Create(ctx, imageSealed); err != nil {
 		cleanupSealedSecrets(ctx, clientset, namespace, &req, refs)
 		if k8serrors.IsAlreadyExists(err) {
+			spanError(span, err)
+			SealedCreateRequestsTotal.WithLabelValues(opLabel, "conflict").Inc()
 			c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("job %s already exists", req.Name)})
 			return
 		}
+		spanError(span, err)
+		SealedCreateRequestsTotal.WithLabelValues(opLabel, "error").Inc()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to create ImageReseal: %v", err)})
 		return
 	}
@@ -228,6 +255,7 @@ func (a *APIServer) createSealed(c *gin.Context, pathOp SealedOperation) {
 			a.log.Error(err, "failed to set owner reference on sealed secret", "secret", secretName, "job", imageSealed.Name)
 		}
 	}
+	SealedCreateRequestsTotal.WithLabelValues(opLabel, "accepted").Inc()
 
 	writeJSON(c, http.StatusAccepted, SealedResponse{
 		Name:        req.Name,
@@ -239,17 +267,21 @@ func (a *APIServer) createSealed(c *gin.Context, pathOp SealedOperation) {
 }
 
 func (a *APIServer) listSealed(c *gin.Context) {
+	ctx, span := apiTracer.Start(c.Request.Context(), "listSealed")
+	defer span.End()
+
 	namespace := resolveNamespace()
 	limit, offset := parsePagination(c)
 
 	k8sClient, err := getClientFromRequestFn(c)
 	if err != nil {
+		spanError(span, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	ctx := c.Request.Context()
 	list := &automotivev1alpha1.ImageResealList{}
 	if err := k8sClient.List(ctx, list, client.InNamespace(namespace)); err != nil {
+		spanError(span, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to list ImageReseal: %v", err)})
 		return
 	}
@@ -279,19 +311,24 @@ func (a *APIServer) listSealed(c *gin.Context) {
 }
 
 func (a *APIServer) getSealed(c *gin.Context, name string) {
+	ctx, span := apiTracer.Start(c.Request.Context(), "getSealed")
+	defer span.End()
+	span.SetAttributes(attribute.String("sealed.name", name))
+
 	namespace := resolveNamespace()
 	k8sClient, err := getClientFromRequestFn(c)
 	if err != nil {
+		spanError(span, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	ctx := c.Request.Context()
 	sealed := &automotivev1alpha1.ImageReseal{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, sealed); err != nil {
 		if k8serrors.IsNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
 			return
 		}
+		spanError(span, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -316,29 +353,36 @@ func (a *APIServer) getSealed(c *gin.Context, name string) {
 }
 
 func (a *APIServer) streamSealedLogs(c *gin.Context, name string) {
+	ctx, span := apiTracer.Start(c.Request.Context(), "streamSealedLogs")
+	defer span.End()
+	span.SetAttributes(attribute.String("sealed.name", name))
+
 	namespace := resolveNamespace()
 	k8sClient, err := getClientFromRequestFn(c)
 	if err != nil {
+		spanError(span, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	restCfg, err := getRESTConfigFromRequestFn(c)
 	if err != nil {
+		spanError(span, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	clientset, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
+		spanError(span, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	ctx := c.Request.Context()
 	sealed := &automotivev1alpha1.ImageReseal{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, sealed); err != nil {
 		if k8serrors.IsNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
 			return
 		}
+		spanError(span, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -350,6 +394,7 @@ func (a *APIServer) streamSealedLogs(c *gin.Context, name string) {
 				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "TaskRun not found yet"})
 				return
 			}
+			spanError(span, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -357,6 +402,7 @@ func (a *APIServer) streamSealedLogs(c *gin.Context, name string) {
 	} else if sealed.Status.PipelineRunName != "" {
 		trList := &tektonv1.TaskRunList{}
 		if err := k8sClient.List(ctx, trList, client.InNamespace(namespace), client.MatchingLabels{"tekton.dev/pipelineRun": sealed.Status.PipelineRunName}); err != nil {
+			spanError(span, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
