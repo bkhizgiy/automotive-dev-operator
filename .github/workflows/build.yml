@@ -223,11 +223,19 @@ jobs:
                   TAG_NAME: ${{ github.ref_name }}
                   COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
                   COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+                  TEKTON_BUNDLE_REF: ${{ env.TEKTON_BUNDLE_IMAGE }}
               run: |
-                  crane tag "${{ env.TEKTON_BUNDLE_IMAGE }}:${{ env.VERSION }}" "${TAG_NAME}"
-                  cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${{ env.TEKTON_BUNDLE_IMAGE }}:${TAG_NAME}"
-                  BUNDLE_DIGEST=$(crane digest "${{ env.TEKTON_BUNDLE_IMAGE }}:${TAG_NAME}")
+                  crane tag "${TEKTON_BUNDLE_REF}:${{ env.VERSION }}" "${TAG_NAME}"
+                  BUNDLE_DIGEST=$(crane digest "${TEKTON_BUNDLE_REF}:${TAG_NAME}")
+                  cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${TEKTON_BUNDLE_REF}@${BUNDLE_DIGEST}"
                   echo "digest=${BUNDLE_DIGEST}" >> "$GITHUB_OUTPUT"
+
+            - name: Verify Tekton Bundle signature
+              env:
+                  TEKTON_BUNDLE_REF: ${{ env.TEKTON_BUNDLE_IMAGE }}
+                  BUNDLE_DIGEST: ${{ steps.retag-bundle.outputs.digest }}
+              run: |
+                  cosign verify --key hack/cosign.pub "${TEKTON_BUNDLE_REF}@${BUNDLE_DIGEST}"
 
     build-bundle:
         runs-on: ubuntu-latest

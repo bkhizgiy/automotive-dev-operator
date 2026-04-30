@@ -389,6 +389,12 @@ export-tasks: ## Export Tekton task definitions as YAML
 bundle-tasks: export-tasks ## Build and push a Tekton Bundle OCI image from exported tasks
 	tkn bundle push $(TEKTON_BUNDLE_IMG) $(addprefix -f ,$(wildcard $(TEKTON_TASKS_DIR)/*.yaml))
 
+COSIGN_PUB_KEY ?= hack/cosign.pub
+
+.PHONY: verify-bundle
+verify-bundle: ## Verify cosign signature on the Tekton Bundle image
+	cosign verify --key $(COSIGN_PUB_KEY) $(TEKTON_BUNDLE_IMG)
+
 ##@ Release
 
 .PHONY: prepare-release
