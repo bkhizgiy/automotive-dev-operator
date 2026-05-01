@@ -49,6 +49,7 @@ func newTestDiskOpts() Options {
 		buildTTL             string
 		insecureSkipTLS      bool
 	)
+	var defineFiles []string
 	return Options{
 		ServerURL:                 &serverURL,
 		Manifest:                  &manifest,
@@ -64,6 +65,7 @@ func newTestDiskOpts() Options {
 		Timeout:                   &timeout,
 		WaitForBuild:              &waitForBuild,
 		CustomDefs:                &customDefs,
+		DefineFiles:               &defineFiles,
 		AIBExtraArgs:              &aibExtraArgs,
 		FollowLogs:                &followLogs,
 		CompressionAlgo:           &compressionAlgo,

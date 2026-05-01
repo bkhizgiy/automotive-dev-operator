@@ -44,6 +44,7 @@ type Options struct {
 	Timeout                *int
 	WaitForBuild           *bool
 	CustomDefs             *[]string
+	DefineFiles            *[]string
 	AIBExtraArgs           *[]string
 	ExtraRepos             *[]string
 	Workspace              *string
@@ -145,6 +146,7 @@ func NewImageCmd(opts Options) *cobra.Command {
 	buildCmd.Flags().BoolVar(opts.RebuildBuilder, "rebuild-builder", false, "force rebuild of the bootc builder image")
 	buildCmd.Flags().StringVar(opts.StorageClass, "storage-class", "", "Kubernetes storage class for build workspace")
 	buildCmd.Flags().StringArrayVarP(opts.CustomDefs, "define", "D", []string{}, "custom definition KEY=VALUE")
+	buildCmd.Flags().StringArrayVar(opts.DefineFiles, "define-file", []string{}, "load defines from YAML dictionary file (can be repeated)")
 	buildCmd.Flags().StringArrayVar(opts.AIBExtraArgs, "extra-args", []string{}, "extra arguments to pass to AIB (can be repeated)")
 	buildCmd.Flags().StringArrayVar(opts.ExtraRepos, "extra-repo", []string{}, "serve RPMs from workspace as extra repo (workspace:path, can be repeated)")
 	buildCmd.Flags().StringVar(opts.Workspace, "workspace", "", "workspace name for build caching and lease forwarding")
@@ -249,6 +251,7 @@ func NewImageCmd(opts Options) *cobra.Command {
 	)
 	buildDevCmd.Flags().StringVar(opts.StorageClass, "storage-class", "", "Kubernetes storage class")
 	buildDevCmd.Flags().StringArrayVarP(opts.CustomDefs, "define", "D", []string{}, "custom definition KEY=VALUE")
+	buildDevCmd.Flags().StringArrayVar(opts.DefineFiles, "define-file", []string{}, "load defines from YAML dictionary file (can be repeated)")
 	buildDevCmd.Flags().StringArrayVar(opts.AIBExtraArgs, "extra-args", []string{}, "extra arguments to pass to AIB (can be repeated)")
 	buildDevCmd.Flags().StringArrayVar(opts.ExtraRepos, "extra-repo", []string{}, "serve RPMs from workspace as extra repo (workspace:path, can be repeated)")
 	buildDevCmd.Flags().StringVar(opts.Workspace, "workspace", "", "workspace name for build caching and lease forwarding")

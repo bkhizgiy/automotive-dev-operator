@@ -27,6 +27,7 @@ var (
 	timeout                int
 	waitForBuild           bool
 	customDefs             []string
+	defineFiles            []string
 	aibExtraArgs           []string
 	extraRepos             []string
 	workspaceName          string
