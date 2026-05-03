@@ -17,7 +17,6 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
@@ -25,28 +24,6 @@ import (
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/tasks"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 )
-
-func (a *APIServer) handleCreateFlash(c *gin.Context) {
-	a.log.Info("create flash", "reqID", c.GetString("reqID"))
-	a.createFlash(c)
-}
-
-func (a *APIServer) handleListFlash(c *gin.Context) {
-	a.log.Info("list flash jobs", "reqID", c.GetString("reqID"))
-	a.listFlash(c)
-}
-
-func (a *APIServer) handleGetFlash(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("get flash", "flash", name, "reqID", c.GetString("reqID"))
-	a.getFlash(c, name)
-}
-
-func (a *APIServer) handleFlashLogs(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("flash logs requested", "flash", name, "reqID", c.GetString("reqID"))
-	a.streamFlashLogs(c, name)
-}
 
 func (a *APIServer) createFlash(c *gin.Context) {
 	var req FlashRequest
@@ -83,20 +60,12 @@ func (a *APIServer) createFlash(c *gin.Context) {
 		return
 	}
 
-	k8sClient, err := getClientFromRequestFn(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
 		return
 	}
-
-	restCfg, err := getRESTConfigFromRequestFn(c)
+	clientset, err := getClientsetOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	clientset, err := kubernetes.NewForConfig(restCfg)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -258,9 +227,8 @@ func (a *APIServer) listFlash(c *gin.Context) {
 	namespace := resolveNamespace()
 	limit, offset := parsePagination(c)
 
-	k8sClient, err := getClientFromRequestFn(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
 		return
 	}
 
@@ -302,20 +270,14 @@ func (a *APIServer) listFlash(c *gin.Context) {
 func (a *APIServer) getFlash(c *gin.Context, name string) {
 	namespace := resolveNamespace()
 
-	k8sClient, err := getClientFromRequestFn(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
 		return
 	}
 
 	ctx := c.Request.Context()
 	taskRun := &tektonv1.TaskRun{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, taskRun); err != nil {
-		if k8serrors.IsNotFound(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "flash TaskRun not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to get flash TaskRun: %v", err)})
+	if err := getResourceOrFail(ctx, c, k8sClient, name, namespace, taskRun, "flash TaskRun"); err != nil {
 		return
 	}
 
@@ -371,20 +333,12 @@ func getTaskRunStatus(tr *tektonv1.TaskRun) (phase, message string) {
 func (a *APIServer) streamFlashLogs(c *gin.Context, name string) {
 	namespace := resolveNamespace()
 
-	k8sClient, err := getClientFromRequestFn(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
 		return
 	}
-
-	restCfg, err := getRESTConfigFromRequestFn(c)
+	clientset, err := getClientsetOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	clientset, err := kubernetes.NewForConfig(restCfg)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -392,12 +346,7 @@ func (a *APIServer) streamFlashLogs(c *gin.Context, name string) {
 
 	// Verify the TaskRun exists and is a flash TaskRun
 	taskRun := &tektonv1.TaskRun{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, taskRun); err != nil {
-		if k8serrors.IsNotFound(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "flash TaskRun not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to get flash TaskRun: %v", err)})
+	if err := getResourceOrFail(ctx, c, k8sClient, name, namespace, taskRun, "flash TaskRun"); err != nil {
 		return
 	}
 	if taskRun.Labels[labels.FlashTaskRun] == "" {

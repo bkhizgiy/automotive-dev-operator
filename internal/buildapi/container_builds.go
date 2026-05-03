@@ -26,44 +26,11 @@ import (
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/labels"
 )
 
-// --- Container Build Handlers ---
-
-func (a *APIServer) handleStreamContainerBuildLogs(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("container build logs requested", "build", name, "reqID", c.GetString("reqID"))
-	a.streamContainerBuildLogs(c, name)
-}
-
-func (a *APIServer) handleCreateContainerBuild(c *gin.Context) {
-	a.log.Info("create container build", "reqID", c.GetString("reqID"))
-	a.createContainerBuild(c)
-}
-
-func (a *APIServer) handleListContainerBuilds(c *gin.Context) {
-	a.log.Info("list container builds", "reqID", c.GetString("reqID"))
-	listContainerBuilds(c)
-}
-
-func (a *APIServer) handleGetContainerBuild(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("get container build", "build", name, "reqID", c.GetString("reqID"))
-	a.getContainerBuild(c, name)
-}
-
-func (a *APIServer) handleContainerBuildUpload(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("container build upload", "build", name, "reqID", c.GetString("reqID"))
-	a.uploadContainerBuildContext(c, name)
-}
-
-// --- Container Build Implementation ---
-
 func (a *APIServer) streamContainerBuildLogs(c *gin.Context, name string) {
 	namespace := resolveNamespace()
 
-	k8sClient, err := getClientFromRequest(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -73,12 +40,7 @@ func (a *APIServer) streamContainerBuildLogs(c *gin.Context, name string) {
 	defer cancel()
 
 	cb := &automotivev1alpha1.ContainerBuild{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, cb); err != nil {
-		if k8serrors.IsNotFound(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	if err := getResourceOrFail(ctx, c, k8sClient, name, namespace, cb, "container build"); err != nil {
 		return
 	}
 
@@ -88,14 +50,8 @@ func (a *APIServer) streamContainerBuildLogs(c *gin.Context, name string) {
 		return
 	}
 
-	restCfg, err := getRESTConfigFromRequest(c)
+	cs, err := getClientsetOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	cs, err := kubernetes.NewForConfig(restCfg)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -222,9 +178,8 @@ func (a *APIServer) createContainerBuild(c *gin.Context) {
 		req.Name = fmt.Sprintf("cb-%s", uuid.New().String()[:8])
 	}
 
-	k8sClient, err := getClientFromRequestFn(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
 		return
 	}
 
@@ -369,9 +324,8 @@ func listContainerBuilds(c *gin.Context) {
 	namespace := resolveNamespace()
 	limit, offset := parsePagination(c)
 
-	k8sClient, err := getClientFromRequest(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
 		return
 	}
 
@@ -413,20 +367,14 @@ func listContainerBuilds(c *gin.Context) {
 func (a *APIServer) getContainerBuild(c *gin.Context, name string) {
 	namespace := resolveNamespace()
 
-	k8sClient, err := getClientFromRequest(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
 		return
 	}
 
 	ctx := c.Request.Context()
 	cb := &automotivev1alpha1.ContainerBuild{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, cb); err != nil {
-		if k8serrors.IsNotFound(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error fetching container build: %v", err)})
+	if err := getResourceOrFail(ctx, c, k8sClient, name, namespace, cb, "container build"); err != nil {
 		return
 	}
 
@@ -540,20 +488,14 @@ func findWaiterContainer(pod *corev1.Pod) string {
 func (a *APIServer) uploadContainerBuildContext(c *gin.Context, name string) {
 	namespace := resolveNamespace()
 
-	k8sClient, err := getClientFromRequestFn(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
 		return
 	}
 
 	ctx := c.Request.Context()
 	cb := &automotivev1alpha1.ContainerBuild{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, cb); err != nil {
-		if k8serrors.IsNotFound(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error fetching container build: %v", err)})
+	if err := getResourceOrFail(ctx, c, k8sClient, name, namespace, cb, "container build"); err != nil {
 		return
 	}
 

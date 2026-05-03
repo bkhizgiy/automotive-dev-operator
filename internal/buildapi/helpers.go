@@ -1,6 +1,7 @@
 package buildapi
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -10,8 +11,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -19,6 +23,56 @@ import (
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 )
+
+func (a *APIServer) wrapHandler(op string, fn gin.HandlerFunc) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		a.log.Info(op, "reqID", c.GetString("reqID"))
+		fn(c)
+	}
+}
+
+func (a *APIServer) wrapNamedHandler(op string, fn func(*gin.Context, string)) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		name := c.Param("name")
+		a.log.Info(op, "name", name, "reqID", c.GetString("reqID"))
+		fn(c, name)
+	}
+}
+
+func getK8sClientOrFail(c *gin.Context) (client.Client, error) {
+	k8sClient, err := getClientFromRequestFn(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
+		return nil, err
+	}
+	return k8sClient, nil
+}
+
+func getClientsetOrFail(c *gin.Context) (*kubernetes.Clientset, error) {
+	restCfg, err := getRESTConfigFromRequestFn(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("REST config error: %v", err)})
+		return nil, err
+	}
+	clientset, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("clientset error: %v", err)})
+		return nil, err
+	}
+	return clientset, nil
+}
+
+func getResourceOrFail(ctx context.Context, c *gin.Context, k8sClient client.Client, name, namespace string, obj client.Object, kind string) error {
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, obj); err != nil {
+		if k8serrors.IsNotFound(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("%s not found", kind)})
+			return err
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error fetching %s: %v", kind, err)})
+		return err
+	}
+	return nil
+}
 
 func writeJSON(c *gin.Context, status int, v any) {
 	c.Header("Cache-Control", "no-store")

@@ -18,7 +18,6 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
@@ -103,9 +102,9 @@ func (a *APIServer) registerSealedRoutes(v1 *gin.RouterGroup) {
 		grp.Use(sealedMetricsMiddleware(), a.authMiddleware())
 		{
 			grp.POST("", a.handleCreateSealed)
-			grp.GET("", a.handleListSealed)
-			grp.GET("/:name", a.handleGetSealed)
-			grp.GET("/:name/logs", a.handleSealedLogs)
+			grp.GET("", a.wrapHandler("list reseal jobs", a.listSealed))
+			grp.GET("/:name", a.wrapNamedHandler("get reseal", a.getSealed))
+			grp.GET("/:name/logs", a.wrapNamedHandler("reseal logs requested", a.streamSealedLogs))
 		}
 	}
 }
@@ -114,23 +113,6 @@ func (a *APIServer) handleCreateSealed(c *gin.Context) {
 	op := resolveSealedOperation(c)
 	a.log.Info("create reseal", "operation", op, "reqID", c.GetString("reqID"))
 	a.createSealed(c, op)
-}
-
-func (a *APIServer) handleListSealed(c *gin.Context) {
-	a.log.Info("list reseal jobs", "reqID", c.GetString("reqID"))
-	a.listSealed(c)
-}
-
-func (a *APIServer) handleGetSealed(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("get reseal", "name", name, "reqID", c.GetString("reqID"))
-	a.getSealed(c, name)
-}
-
-func (a *APIServer) handleSealedLogs(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("reseal logs requested", "name", name, "reqID", c.GetString("reqID"))
-	a.streamSealedLogs(c, name)
 }
 
 func (a *APIServer) createSealed(c *gin.Context, pathOp SealedOperation) {
@@ -164,25 +146,16 @@ func (a *APIServer) createSealed(c *gin.Context, pathOp SealedOperation) {
 		attribute.String("sealed.operation", opLabel),
 	)
 
-	k8sClient, err := getClientFromRequestFn(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
 		spanError(span, err)
 		SealedCreateRequestsTotal.WithLabelValues(opLabel, "error").Inc()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	restCfg, err := getRESTConfigFromRequestFn(c)
+	clientset, err := getClientsetOrFail(c)
 	if err != nil {
 		spanError(span, err)
 		SealedCreateRequestsTotal.WithLabelValues(opLabel, "error").Inc()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	clientset, err := kubernetes.NewForConfig(restCfg)
-	if err != nil {
-		spanError(span, err)
-		SealedCreateRequestsTotal.WithLabelValues(opLabel, "error").Inc()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	namespace := resolveNamespace()
@@ -273,10 +246,9 @@ func (a *APIServer) listSealed(c *gin.Context) {
 	namespace := resolveNamespace()
 	limit, offset := parsePagination(c)
 
-	k8sClient, err := getClientFromRequestFn(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
 		spanError(span, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	list := &automotivev1alpha1.ImageResealList{}
@@ -316,20 +288,14 @@ func (a *APIServer) getSealed(c *gin.Context, name string) {
 	span.SetAttributes(attribute.String("sealed.name", name))
 
 	namespace := resolveNamespace()
-	k8sClient, err := getClientFromRequestFn(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
 		spanError(span, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	sealed := &automotivev1alpha1.ImageReseal{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, sealed); err != nil {
-		if k8serrors.IsNotFound(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
-			return
-		}
+	if err := getResourceOrFail(ctx, c, k8sClient, name, namespace, sealed, "job"); err != nil {
 		spanError(span, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	var startStr, compStr string
@@ -358,32 +324,19 @@ func (a *APIServer) streamSealedLogs(c *gin.Context, name string) {
 	span.SetAttributes(attribute.String("sealed.name", name))
 
 	namespace := resolveNamespace()
-	k8sClient, err := getClientFromRequestFn(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
 		spanError(span, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	restCfg, err := getRESTConfigFromRequestFn(c)
+	clientset, err := getClientsetOrFail(c)
 	if err != nil {
 		spanError(span, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	clientset, err := kubernetes.NewForConfig(restCfg)
-	if err != nil {
-		spanError(span, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	sealed := &automotivev1alpha1.ImageReseal{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, sealed); err != nil {
-		if k8serrors.IsNotFound(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
-			return
-		}
+	if err := getResourceOrFail(ctx, c, k8sClient, name, namespace, sealed, "job"); err != nil {
 		spanError(span, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	var taskRun *tektonv1.TaskRun
