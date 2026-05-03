@@ -116,3 +116,4 @@ var _ = Describe("setCondition", func() {
 		Expect(types).To(HaveKeyWithValue("Degraded", metav1.ConditionFalse))
 	})
 })
+

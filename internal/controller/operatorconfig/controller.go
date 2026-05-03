@@ -1135,6 +1135,7 @@ func (r *OperatorConfigReconciler) cleanupServiceMonitor(ctx context.Context, co
 	if err := r.Delete(ctx, clusterBinding); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to delete metrics reader cluster role binding: %w", err)
 	}
+
 	return nil
 }
 
