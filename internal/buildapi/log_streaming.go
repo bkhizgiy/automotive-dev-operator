@@ -13,7 +13,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	corev1 "k8s.io/api/core/v1"
-	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -221,9 +220,8 @@ func processPodLogs(
 func (a *APIServer) streamLogs(c *gin.Context, name string) {
 	namespace := resolveNamespace()
 
-	k8sClient, err := getClientFromRequest(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -233,12 +231,7 @@ func (a *APIServer) streamLogs(c *gin.Context, name string) {
 	defer cancel()
 
 	ib := &automotivev1alpha1.ImageBuild{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, ib); err != nil {
-		if k8serrors.IsNotFound(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	if err := getResourceOrFail(ctx, c, k8sClient, name, namespace, ib, "build"); err != nil {
 		return
 	}
 
@@ -248,14 +241,8 @@ func (a *APIServer) streamLogs(c *gin.Context, name string) {
 		return
 	}
 
-	restCfg, err := getRESTConfigFromRequest(c)
+	cs, err := getClientsetOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	cs, err := kubernetes.NewForConfig(restCfg)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 

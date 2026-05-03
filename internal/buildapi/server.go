@@ -30,7 +30,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	apiserverv1beta1 "k8s.io/apiserver/pkg/apis/apiserver/v1beta1"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/client-go/kubernetes"
 	kscheme "k8s.io/client-go/kubernetes/scheme"
@@ -48,7 +47,6 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
-	authnv1 "k8s.io/api/authentication/v1"
 )
 
 var apiTracer = otel.Tracer("build-api")
@@ -389,25 +387,25 @@ func (a *APIServer) createRouter() *gin.Engine {
 		buildsGroup := v1.Group("/builds")
 		buildsGroup.Use(a.authMiddleware())
 		{
-			buildsGroup.POST("", a.handleCreateBuild)
-			buildsGroup.GET("", a.handleListBuilds)
-			buildsGroup.GET("/:name", a.handleGetBuild)
-			buildsGroup.GET("/:name/logs", a.handleStreamLogs)
+			buildsGroup.POST("", a.wrapHandler("create build", a.createBuild))
+			buildsGroup.GET("", a.wrapHandler("list builds", listBuilds))
+			buildsGroup.GET("/:name", a.wrapNamedHandler("get build", a.getBuild))
+			buildsGroup.GET("/:name/logs", a.wrapNamedHandler("logs requested", a.streamLogs))
 			buildsGroup.GET("/:name/progress", a.handleGetProgress)
-			buildsGroup.GET("/:name/template", a.handleGetBuildTemplate)
-			buildsGroup.POST("/:name/uploads", a.handleUploadFiles)
+			buildsGroup.GET("/:name/template", a.wrapNamedHandler("template requested", getBuildTemplate))
+			buildsGroup.POST("/:name/uploads", a.wrapNamedHandler("uploads", a.uploadFiles))
 			buildsGroup.POST("/:name/token", a.handleCreateBuildToken)
-			buildsGroup.POST("/:name/cancel", a.handleCancelBuild)
-			buildsGroup.DELETE("/:name", a.handleDeleteBuild)
+			buildsGroup.POST("/:name/cancel", a.wrapNamedHandler("cancel build", a.cancelBuild))
+			buildsGroup.DELETE("/:name", a.wrapNamedHandler("delete build", a.deleteBuild))
 		}
 
 		flashGroup := v1.Group("/flash")
 		flashGroup.Use(flashMetricsMiddleware(), a.authMiddleware())
 		{
-			flashGroup.POST("", a.handleCreateFlash)
-			flashGroup.GET("", a.handleListFlash)
-			flashGroup.GET("/:name", a.handleGetFlash)
-			flashGroup.GET("/:name/logs", a.handleFlashLogs)
+			flashGroup.POST("", a.wrapHandler("create flash", a.createFlash))
+			flashGroup.GET("", a.wrapHandler("list flash jobs", a.listFlash))
+			flashGroup.GET("/:name", a.wrapNamedHandler("get flash", a.getFlash))
+			flashGroup.GET("/:name/logs", a.wrapNamedHandler("flash logs requested", a.streamFlashLogs))
 		}
 
 		configGroup := v1.Group("/config")
@@ -419,11 +417,11 @@ func (a *APIServer) createRouter() *gin.Engine {
 		containerBuildsGroup := v1.Group("/container-builds")
 		containerBuildsGroup.Use(a.authMiddleware())
 		{
-			containerBuildsGroup.POST("", a.handleCreateContainerBuild)
-			containerBuildsGroup.GET("", a.handleListContainerBuilds)
-			containerBuildsGroup.GET("/:name", a.handleGetContainerBuild)
-			containerBuildsGroup.POST("/:name/upload", a.handleContainerBuildUpload)
-			containerBuildsGroup.GET("/:name/logs", a.handleStreamContainerBuildLogs)
+			containerBuildsGroup.POST("", a.wrapHandler("create container build", a.createContainerBuild))
+			containerBuildsGroup.GET("", a.wrapHandler("list container builds", listContainerBuilds))
+			containerBuildsGroup.GET("/:name", a.wrapNamedHandler("get container build", a.getContainerBuild))
+			containerBuildsGroup.POST("/:name/upload", a.wrapNamedHandler("container build upload", a.uploadContainerBuildContext))
+			containerBuildsGroup.GET("/:name/logs", a.wrapNamedHandler("container build logs", a.streamContainerBuildLogs))
 		}
 
 		a.registerSealedRoutes(v1)
@@ -489,62 +487,19 @@ type authError struct {
 	Details string `json:"details,omitempty"`
 }
 
-// authMiddleware provides authentication middleware for Gin
-func (a *APIServer) authMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		username, authType, authErr := a.authenticateRequest(c)
-		if authErr != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"error":   "unauthorized",
-				"reason":  authErr.Reason,
-				"details": authErr.Details,
-			})
-			c.Abort()
-			return
-		}
-		if username != "" {
-			c.Set("requester", username)
-			c.Set("authType", authType)
-		}
-		c.Next()
-	}
-}
-
-func (a *APIServer) handleCreateBuild(c *gin.Context) {
-	a.log.Info("create build", "reqID", c.GetString("reqID"))
-	a.createBuild(c)
-}
-
-func (a *APIServer) handleListBuilds(c *gin.Context) {
-	a.log.Info("list builds", "reqID", c.GetString("reqID"))
-	listBuilds(c)
-}
-
-func (a *APIServer) handleGetBuild(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("get build", "build", name, "reqID", c.GetString("reqID"))
-	a.getBuild(c, name)
-}
-
 func (a *APIServer) handleCreateBuildToken(c *gin.Context) {
 	name := c.Param("name")
 	a.log.Info("token requested", "build", name, "reqID", c.GetString("reqID"))
 
 	namespace := resolveNamespace()
-	k8sClient, err := getClientFromRequest(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
 		return
 	}
 
 	ctx := c.Request.Context()
 	build := &automotivev1alpha1.ImageBuild{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, build); err != nil {
-		if k8serrors.IsNotFound(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "build not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error fetching build: %v", err)})
+	if err := getResourceOrFail(ctx, c, k8sClient, name, namespace, build, "build"); err != nil {
 		return
 	}
 
@@ -602,16 +557,9 @@ func (a *APIServer) handleCreateBuildToken(c *gin.Context) {
 	})
 }
 
-func (a *APIServer) handleDeleteBuild(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("delete build", "name", name, "reqID", c.GetString("reqID"))
-	a.deleteBuild(c, name)
-}
-
 func (a *APIServer) deleteBuild(c *gin.Context, name string) {
-	k8sClient, err := getClientFromRequestFn(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create kubernetes client"})
 		return
 	}
 
@@ -619,12 +567,7 @@ func (a *APIServer) deleteBuild(c *gin.Context, name string) {
 	ctx := c.Request.Context()
 
 	build := &automotivev1alpha1.ImageBuild{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, build); err != nil {
-		if k8serrors.IsNotFound(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "build not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error fetching build: %v", err)})
+	if err := getResourceOrFail(ctx, c, k8sClient, name, namespace, build, "build"); err != nil {
 		return
 	}
 
@@ -674,16 +617,9 @@ func (a *APIServer) deleteBuild(c *gin.Context, name string) {
 	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("build %q deleted", name)})
 }
 
-func (a *APIServer) handleCancelBuild(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("cancel build", "name", name, "reqID", c.GetString("reqID"))
-	a.cancelBuild(c, name)
-}
-
 func (a *APIServer) cancelBuild(c *gin.Context, name string) {
-	k8sClient, err := getClientFromRequestFn(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create kubernetes client"})
 		return
 	}
 
@@ -691,12 +627,7 @@ func (a *APIServer) cancelBuild(c *gin.Context, name string) {
 	ctx := c.Request.Context()
 
 	build := &automotivev1alpha1.ImageBuild{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, build); err != nil {
-		if k8serrors.IsNotFound(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "build not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error fetching build: %v", err)})
+	if err := getResourceOrFail(ctx, c, k8sClient, name, namespace, build, "build"); err != nil {
 		return
 	}
 
@@ -756,24 +687,6 @@ func (a *APIServer) cancelBuild(c *gin.Context, name string) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("build %q cancelled", name)})
-}
-
-func (a *APIServer) handleStreamLogs(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("logs requested", "build", name, "reqID", c.GetString("reqID"))
-	a.streamLogs(c, name)
-}
-
-func (a *APIServer) handleGetBuildTemplate(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("template requested", "build", name, "reqID", c.GetString("reqID"))
-	getBuildTemplate(c, name)
-}
-
-func (a *APIServer) handleUploadFiles(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("uploads", "build", name, "reqID", c.GetString("reqID"))
-	a.uploadFiles(c, name)
 }
 
 // validateBuildRequest validates the build request, sanitizes the name, and applies defaults
@@ -1300,10 +1213,9 @@ func (a *APIServer) createBuild(c *gin.Context) {
 		return
 	}
 
-	k8sClient, err := getClientFromRequest(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
 		spanError(span, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
 		return
 	}
 
@@ -1498,9 +1410,8 @@ func listBuilds(c *gin.Context) {
 	namespace := resolveNamespace()
 	limit, offset := parsePagination(c)
 
-	k8sClient, err := getClientFromRequest(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
 		return
 	}
 
@@ -1560,20 +1471,14 @@ func listBuilds(c *gin.Context) {
 
 func (a *APIServer) getBuild(c *gin.Context, name string) {
 	namespace := resolveNamespace()
-	k8sClient, err := getClientFromRequest(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
 		return
 	}
 
 	ctx := c.Request.Context()
 	build := &automotivev1alpha1.ImageBuild{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, build); err != nil {
-		if k8serrors.IsNotFound(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error fetching build: %v", err)})
+	if err := getResourceOrFail(ctx, c, k8sClient, name, namespace, build, "build"); err != nil {
 		return
 	}
 
@@ -1707,20 +1612,14 @@ func (a *APIServer) getBuild(c *gin.Context, name string) {
 // getBuildTemplate returns a BuildRequest-like struct representing the inputs that produced a given build
 func getBuildTemplate(c *gin.Context, name string) {
 	namespace := resolveNamespace()
-	k8sClient, err := getClientFromRequest(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
 		return
 	}
 
 	ctx := c.Request.Context()
 	build := &automotivev1alpha1.ImageBuild{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, build); err != nil {
-		if k8serrors.IsNotFound(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error fetching build: %v", err)})
+	if err := getResourceOrFail(ctx, c, k8sClient, name, namespace, build, "build"); err != nil {
 		return
 	}
 
@@ -1915,22 +1814,14 @@ func findRunningUploadPod(ctx context.Context, k8sClient client.Client, namespac
 func (a *APIServer) uploadFiles(c *gin.Context, name string) {
 	namespace := resolveNamespace()
 
-	k8sClient, err := getClientFromRequest(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("k8s client error: %v", err)})
 		return
 	}
 	build := &automotivev1alpha1.ImageBuild{}
-	buildKey := types.NamespacedName{Name: name, Namespace: namespace}
-	if err := k8sClient.Get(c.Request.Context(), buildKey, build); err != nil {
-		if k8serrors.IsNotFound(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error fetching build: %v", err)})
+	if err := getResourceOrFail(c.Request.Context(), c, k8sClient, name, namespace, build, "build"); err != nil {
 		return
 	}
-
 	uploadPod, err := findRunningUploadPod(c.Request.Context(), k8sClient, namespace, name)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -2052,373 +1943,6 @@ func copyFileToPod(ctx context.Context, config *rest.Config, namespace, podName,
 	}
 	return nil
 }
-
-// refreshAuthConfigIfNeeded periodically checks and refreshes authentication configuration from OperatorConfig
-// IMPORTANT: This function only recreates the OIDC authenticator if the config actually changed.
-func (a *APIServer) refreshAuthConfigIfNeeded() {
-	a.authConfigMu.Lock()
-	defer a.authConfigMu.Unlock()
-
-	// Check if it's time to refresh (every 60 seconds)
-	if time.Since(a.lastAuthConfigCheck) < 60*time.Second {
-		return
-	}
-	a.lastAuthConfigCheck = time.Now()
-
-	namespace := resolveNamespace()
-	k8sClient, err := getKubernetesClient()
-	if err != nil {
-		a.log.Error(err, "failed to get k8s client for auth config refresh", "namespace", namespace)
-		return
-	}
-
-	// Get the OperatorConfig to check if it changed
-	operatorConfig := &automotivev1alpha1.OperatorConfig{}
-	key := types.NamespacedName{Name: "config", Namespace: namespace}
-	if err := k8sClient.Get(context.Background(), key, operatorConfig); err != nil {
-		a.log.Error(err, "failed to get OperatorConfig during refresh", "namespace", namespace)
-		return
-	}
-
-	// Build new config from OperatorConfig (without creating authenticator yet)
-	var newConfig *AuthenticationConfiguration
-	if operatorConfig.Spec.BuildAPI != nil && operatorConfig.Spec.BuildAPI.Authentication != nil {
-		auth := operatorConfig.Spec.BuildAPI.Authentication
-		// Deep copy JWT config with Prefix handling
-		jwtCopy := make([]apiserverv1beta1.JWTAuthenticator, len(auth.JWT))
-		for i, jwt := range auth.JWT {
-			jwtCopy[i] = jwt
-			if jwt.ClaimMappings.Username.Claim != "" && jwt.ClaimMappings.Username.Prefix == nil {
-				emptyPrefix := ""
-				jwtCopy[i].ClaimMappings.Username.Prefix = &emptyPrefix
-			}
-			if jwt.ClaimMappings.Groups.Claim != "" && jwt.ClaimMappings.Groups.Prefix == nil {
-				emptyPrefix := ""
-				jwtCopy[i].ClaimMappings.Groups.Prefix = &emptyPrefix
-			}
-		}
-		newConfig = &AuthenticationConfiguration{
-			ClientID: auth.ClientID,
-			Internal: InternalAuthConfig{Prefix: "internal:"},
-			JWT:      jwtCopy,
-		}
-		if auth.Internal != nil && auth.Internal.Prefix != "" {
-			newConfig.Internal.Prefix = auth.Internal.Prefix
-		}
-	}
-
-	// Compare with existing config, only recreate authenticator if config changed
-	if authConfigsEqual(a.authConfig, newConfig) {
-		// Config unchanged, keep existing authenticator (which is already initialized)
-		return
-	}
-
-	// Config changed - need to recreate authenticator
-	a.log.Info("auth config changed, recreating OIDC authenticator")
-
-	if newConfig == nil {
-		// No auth config, clear everything
-		a.authConfig = nil
-		a.externalJWT = nil
-		a.internalPrefix = ""
-		return
-	}
-
-	// Create new authenticator
-	authn, err := newJWTAuthenticator(context.Background(), *newConfig)
-	if err != nil {
-		a.log.Error(err, "failed to create JWT authenticator during refresh, keeping existing config")
-		return
-	}
-
-	// Update config fields
-	a.authConfig = newConfig
-	a.internalPrefix = newConfig.Internal.Prefix
-	if newConfig.ClientID != "" {
-		a.oidcClientID = newConfig.ClientID
-	}
-
-	// Update authenticator
-	if authn != nil {
-		a.externalJWT = authn
-	} else {
-		if len(newConfig.JWT) == 0 {
-			a.externalJWT = nil
-		} else {
-			a.externalJWT = nil
-		}
-	}
-}
-
-func (a *APIServer) authenticateRequest(c *gin.Context) (string, string, *authError) {
-	// Refresh auth config if needed (checks OperatorConfig periodically)
-	a.refreshAuthConfigIfNeeded()
-
-	token := extractBearerToken(c)
-	if token == "" {
-		return "", "", &authError{
-			Reason:  "missing_token",
-			Details: "No bearer token provided. Set Authorization header with 'Bearer <token>' or use CAIB_TOKEN environment variable.",
-		}
-	}
-
-	// Track which auth methods were tried for error reporting
-	var authAttempts []string
-	var oidcError error
-
-	// Try internal JWT first
-	a.authConfigMu.RLock()
-	internalJWT := a.internalJWT
-	internalPrefix := a.internalPrefix
-	a.authConfigMu.RUnlock()
-
-	if internalJWT != nil {
-		authAttempts = append(authAttempts, "internal_jwt")
-		if subject, ok := validateInternalJWT(token, internalJWT); ok {
-			username := subject
-			if internalPrefix != "" {
-				username = internalPrefix + username
-			}
-			return username, "internal", nil
-		}
-	}
-
-	// Try external JWT (OIDC)
-	a.authConfigMu.RLock()
-	externalJWT := a.externalJWT
-	a.authConfigMu.RUnlock()
-
-	if externalJWT != nil {
-		authAttempts = append(authAttempts, "oidc")
-		result := a.authenticateExternalJWT(c, token, externalJWT)
-		if result.ok {
-			// Store OIDC token in secret after successful authentication
-			if a.internalJWT != nil {
-				if err := a.ensureClientTokenSecret(c, result.username, token); err != nil {
-					a.log.Error(err, "failed to ensure client token secret", "username", result.username)
-				}
-			}
-			return result.username, "external", nil
-		}
-		oidcError = result.err
-	}
-
-	// Fallback to kubeconfig TokenReview authentication
-	authAttempts = append(authAttempts, "k8s_token_review")
-
-	cfg, err := getRESTConfigFromRequest(c)
-	if err != nil {
-		a.log.Error(err, "Failed to get REST config for TokenReview fallback")
-		return "", "", &authError{
-			Reason:  "server_error",
-			Details: "Failed to initialize Kubernetes client for token validation. Check build-api logs.",
-		}
-	}
-
-	clientset, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		a.log.Error(err, "Failed to create Kubernetes client for TokenReview")
-		return "", "", &authError{
-			Reason:  "server_error",
-			Details: "Failed to create Kubernetes client for token validation. Check build-api logs.",
-		}
-	}
-
-	tr := &authnv1.TokenReview{Spec: authnv1.TokenReviewSpec{Token: token}}
-	res, err := clientset.AuthenticationV1().TokenReviews().Create(c.Request.Context(), tr, metav1.CreateOptions{})
-	if err != nil {
-		a.log.Error(err, "TokenReview API call failed")
-		return "", "", &authError{
-			Reason:  "token_review_failed",
-			Details: "Failed to validate token with Kubernetes API. The token may be malformed or the server may have connectivity issues.",
-		}
-	}
-	if res.Status.Authenticated {
-		username := res.Status.User.Username
-		if username == "" {
-			return "", "", &authError{
-				Reason:  "invalid_token",
-				Details: "Token was authenticated but no username was returned.",
-			}
-		}
-		return username, "k8s", nil
-	}
-
-	// Build detailed error message for token validation failure
-	return "", "", a.buildAuthFailureError(authAttempts, oidcError, res.Status.Error)
-}
-
-// buildAuthFailureError constructs a sanitized error message explaining authentication failure.
-// Raw error details are logged server-side and not exposed to the client.
-func (a *APIServer) buildAuthFailureError(authAttempts []string, oidcError error, tokenReviewError string) *authError {
-	// Check if OIDC was attempted
-	oidcAttempted := false
-	for _, method := range authAttempts {
-		if method == "oidc" {
-			oidcAttempted = true
-			break
-		}
-	}
-
-	// Log full error details server-side for debugging
-	if tokenReviewError != "" {
-		a.log.Info("TokenReview authentication failed", "error", tokenReviewError)
-	}
-	if oidcError != nil {
-		a.log.Info("OIDC authentication failed", "error", oidcError.Error())
-	}
-
-	// only TokenReview was tried (no OIDC configured)
-	if !oidcAttempted {
-		return &authError{
-			Reason:  "invalid_token",
-			Details: "Token validation failed. The token may be expired or invalid. Try 'oc login' to refresh your session, then use 'oc whoami -t' for a fresh token.",
-		}
-	}
-
-	// OIDC was configured and attempted
-	var details strings.Builder
-	details.WriteString("Authentication failed. OIDC is configured on this cluster. ")
-
-	if oidcError != nil {
-		details.WriteString("OIDC: token validation failed. ")
-	} else {
-		details.WriteString("OIDC: token not valid for configured issuer. ")
-	}
-
-	if tokenReviewError != "" {
-		details.WriteString("Kubernetes fallback: token rejected. ")
-	} else {
-		details.WriteString("Kubernetes fallback: token rejected (may be expired or invalid). ")
-	}
-
-	details.WriteString("If using OIDC, ensure you have a valid OIDC token. Otherwise, try 'oc login' to refresh your session.")
-
-	return &authError{
-		Reason:  "invalid_token",
-		Details: details.String(),
-	}
-}
-
-// extractBearerToken extracts the bearer token from the request.
-func extractBearerToken(c *gin.Context) string {
-	authHeader := c.Request.Header.Get("Authorization")
-	token, _ := strings.CutPrefix(authHeader, "Bearer ")
-	if token != "" {
-		return strings.TrimSpace(token)
-	}
-	token = c.Request.Header.Get("X-Forwarded-Access-Token")
-	if token != "" {
-		return strings.TrimSpace(token)
-	}
-	return ""
-}
-
-// handleGetAuthConfig returns OIDC configuration for clients (no auth required)
-func (a *APIServer) handleGetAuthConfig(c *gin.Context) {
-	// Refresh auth config if needed
-	a.refreshAuthConfigIfNeeded()
-
-	type OIDCConfigResponse struct {
-		ClientID string `json:"clientId,omitempty"`
-		JWT      []struct {
-			Issuer struct {
-				URL       string   `json:"url"`
-				Audiences []string `json:"audiences,omitempty"`
-			} `json:"issuer"`
-			ClaimMappings struct {
-				Username struct {
-					Claim  string `json:"claim"`
-					Prefix string `json:"prefix,omitempty"`
-				} `json:"username"`
-			} `json:"claimMappings"`
-		} `json:"jwt"`
-	}
-
-	// Read auth config with mutex
-	a.authConfigMu.RLock()
-	clientID := a.oidcClientID
-	authConfig := a.authConfig
-	a.authConfigMu.RUnlock()
-
-	response := OIDCConfigResponse{
-		ClientID: clientID,
-	}
-
-	// Validate clientId matches at least one audience if both are set
-	if clientID != "" && authConfig != nil {
-		clientIDInAudience := false
-		for _, jwtConfig := range authConfig.JWT {
-			for _, audience := range jwtConfig.Issuer.Audiences {
-				if audience == clientID {
-					clientIDInAudience = true
-					break
-				}
-			}
-		}
-		if !clientIDInAudience && len(authConfig.JWT) > 0 {
-			a.log.Info("OIDC clientId does not match any JWT audience", "clientId", clientID)
-		}
-	}
-
-	// Only return OIDC config if externalJWT is actually working (not nil)
-	// If externalJWT is nil, OIDC isn't working and clients should use kubeconfig
-	a.authConfigMu.RLock()
-	externalJWTWorking := a.externalJWT != nil
-	a.authConfigMu.RUnlock()
-
-	// Try to get from parsed config first, but only if OIDC is actually working
-	if authConfig != nil && len(authConfig.JWT) > 0 && externalJWTWorking {
-		for _, jwtConfig := range authConfig.JWT {
-			prefix := ""
-			if jwtConfig.ClaimMappings.Username.Prefix != nil {
-				prefix = *jwtConfig.ClaimMappings.Username.Prefix
-			}
-			response.JWT = append(response.JWT, struct {
-				Issuer struct {
-					URL       string   `json:"url"`
-					Audiences []string `json:"audiences,omitempty"`
-				} `json:"issuer"`
-				ClaimMappings struct {
-					Username struct {
-						Claim  string `json:"claim"`
-						Prefix string `json:"prefix,omitempty"`
-					} `json:"username"`
-				} `json:"claimMappings"`
-			}{
-				Issuer: struct {
-					URL       string   `json:"url"`
-					Audiences []string `json:"audiences,omitempty"`
-				}{
-					URL:       jwtConfig.Issuer.URL,
-					Audiences: jwtConfig.Issuer.Audiences,
-				},
-				ClaimMappings: struct {
-					Username struct {
-						Claim  string `json:"claim"`
-						Prefix string `json:"prefix,omitempty"`
-					} `json:"username"`
-				}{
-					Username: struct {
-						Claim  string `json:"claim"`
-						Prefix string `json:"prefix,omitempty"`
-					}{
-						Claim:  jwtConfig.ClaimMappings.Username.Claim,
-						Prefix: prefix,
-					},
-				},
-			})
-		}
-	}
-
-	// OIDC not configured or not working, return 404 so clients use kubeconfig without trying OIDC
-	if len(response.JWT) == 0 {
-		c.AbortWithStatus(http.StatusNotFound)
-		return
-	}
-	c.JSON(http.StatusOK, response)
-}
-
 func (a *APIServer) handleGetOperatorConfig(c *gin.Context) {
 	ctx := c.Request.Context()
 	reqID, _ := c.Get("reqID")

@@ -97,83 +97,27 @@ func (a *APIServer) registerWorkspaceRoutes(v1 *gin.RouterGroup) {
 	workspaceGroup := v1.Group("/workspaces")
 	workspaceGroup.Use(a.authMiddleware())
 	{
-		workspaceGroup.POST("", a.handleCreateWorkspace)
-		workspaceGroup.GET("", a.handleListWorkspaces)
-		workspaceGroup.GET("/:name", a.handleGetWorkspace)
-		workspaceGroup.DELETE("/:name", a.handleDeleteWorkspace)
-		workspaceGroup.POST("/:name/start", a.handleStartWorkspace)
-		workspaceGroup.POST("/:name/stop", a.handleStopWorkspace)
-		workspaceGroup.POST("/:name/sync", a.handleSyncWorkspace)
-		workspaceGroup.POST("/:name/sync/plan", a.handleSyncPlanWorkspace)
-		workspaceGroup.POST("/:name/exec", a.handleExecWorkspace)
-		workspaceGroup.GET("/:name/shell", a.handleShellWorkspace)
-		workspaceGroup.POST("/:name/deploy", a.handleDeployWorkspace)
+		workspaceGroup.POST("", a.wrapHandler("create workspace", a.createWorkspace))
+		workspaceGroup.GET("", a.wrapHandler("list workspaces", a.listWorkspaces))
+		workspaceGroup.GET("/:name", a.wrapNamedHandler("get workspace", a.getWorkspace))
+		workspaceGroup.DELETE("/:name", a.wrapNamedHandler("delete workspace", a.deleteWorkspace))
+		workspaceGroup.POST("/:name/start", a.wrapNamedHandler("start workspace", a.startWorkspace))
+		workspaceGroup.POST("/:name/stop", a.wrapNamedHandler("stop workspace", a.stopWorkspace))
+		workspaceGroup.POST("/:name/sync", a.wrapNamedHandler("sync workspace", a.syncWorkspace))
+		workspaceGroup.POST("/:name/sync/plan", a.wrapNamedHandler("sync plan workspace", a.syncPlanWorkspace))
+		workspaceGroup.POST("/:name/exec", a.wrapNamedHandler("exec workspace", a.execWorkspace))
+		workspaceGroup.GET("/:name/shell", a.wrapNamedHandler("shell workspace", a.shellWorkspace))
+		workspaceGroup.POST("/:name/deploy", a.wrapNamedHandler("deploy workspace", a.deployWorkspace))
 		workspaceGroup.PUT("/:name/lease", a.handleSetWorkspaceLease)
 	}
 }
 
-func (a *APIServer) handleCreateWorkspace(c *gin.Context) {
-	a.log.Info("create workspace", "reqID", c.GetString("reqID"))
-	a.createWorkspace(c)
-}
-
-func (a *APIServer) handleListWorkspaces(c *gin.Context) {
-	a.log.Info("list workspaces", "reqID", c.GetString("reqID"))
-	a.listWorkspaces(c)
-}
-
-func (a *APIServer) handleGetWorkspace(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("get workspace", "name", name, "reqID", c.GetString("reqID"))
-	a.getWorkspace(c, name)
-}
-
-func (a *APIServer) handleDeleteWorkspace(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("delete workspace", "name", name, "reqID", c.GetString("reqID"))
-	a.deleteWorkspace(c, name)
-}
-
-func (a *APIServer) handleSyncWorkspace(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("sync workspace", "name", name, "reqID", c.GetString("reqID"))
-	a.syncWorkspace(c, name)
-}
-
-func (a *APIServer) handleSyncPlanWorkspace(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("sync plan workspace", "name", name, "reqID", c.GetString("reqID"))
-	a.syncPlanWorkspace(c, name)
-}
-
-func (a *APIServer) handleExecWorkspace(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("exec workspace", "name", name, "reqID", c.GetString("reqID"))
-	a.execWorkspace(c, name)
-}
-
-func (a *APIServer) handleShellWorkspace(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("shell workspace", "name", name, "reqID", c.GetString("reqID"))
-	a.shellWorkspace(c, name)
-}
-
-func (a *APIServer) handleStartWorkspace(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("start workspace", "name", name, "reqID", c.GetString("reqID"))
+func (a *APIServer) startWorkspace(c *gin.Context, name string) {
 	a.setWorkspaceStopped(c, name, false)
 }
 
-func (a *APIServer) handleStopWorkspace(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("stop workspace", "name", name, "reqID", c.GetString("reqID"))
+func (a *APIServer) stopWorkspace(c *gin.Context, name string) {
 	a.setWorkspaceStopped(c, name, true)
-}
-
-func (a *APIServer) handleDeployWorkspace(c *gin.Context) {
-	name := c.Param("name")
-	a.log.Info("deploy workspace", "name", name, "reqID", c.GetString("reqID"))
-	a.deployWorkspace(c, name)
 }
 
 func (a *APIServer) createWorkspace(c *gin.Context) {
@@ -188,9 +132,8 @@ func (a *APIServer) createWorkspace(c *gin.Context) {
 		return
 	}
 
-	k8sClient, err := getClientFromRequest(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create kubernetes client"})
 		return
 	}
 
@@ -311,9 +254,8 @@ func (a *APIServer) createWorkspace(c *gin.Context) {
 }
 
 func (a *APIServer) listWorkspaces(c *gin.Context) {
-	k8sClient, err := getClientFromRequest(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create kubernetes client"})
 		return
 	}
 
@@ -359,9 +301,8 @@ func (a *APIServer) deleteWorkspace(c *gin.Context, name string) {
 		return // response already sent
 	}
 
-	k8sClient, err := getClientFromRequest(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create kubernetes client"})
 		return
 	}
 
@@ -393,9 +334,8 @@ func (a *APIServer) setWorkspaceStopped(c *gin.Context, name string, stopped boo
 		return
 	}
 
-	k8sClient, err := getClientFromRequest(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create kubernetes client"})
 		return
 	}
 
@@ -429,9 +369,8 @@ func (a *APIServer) handleSetWorkspaceLease(c *gin.Context) {
 		return
 	}
 
-	k8sClient, err := getClientFromRequest(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create kubernetes client"})
 		return
 	}
 
@@ -446,10 +385,9 @@ func (a *APIServer) handleSetWorkspaceLease(c *gin.Context) {
 }
 
 func (a *APIServer) getOwnedWorkspace(c *gin.Context, name string) (*automotivev1alpha1.Workspace, error) {
-	k8sClient, err := getClientFromRequest(c)
+	k8sClient, err := getK8sClientOrFail(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create kubernetes client"})
-		return nil, err
+		return nil, fmt.Errorf("failed to create kubernetes client")
 	}
 
 	namespace := resolveNamespace()
@@ -480,9 +418,9 @@ func (a *APIServer) touchWorkspaceActivity(c *gin.Context, ws *automotivev1alpha
 	if ws.Spec.Stopped {
 		return
 	}
-	k8sClient, err := getClientFromRequest(c)
+	k8sClient, err := getClientFromRequestFn(c)
 	if err != nil {
-		return // best-effort, don't fail the operation
+		return
 	}
 
 	now := metav1.Now()
