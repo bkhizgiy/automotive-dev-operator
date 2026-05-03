@@ -8,8 +8,6 @@ Build from source (requires Go):
 
 ```bash
 make build-caib
-# or
-go build -o bin/caib ./cmd/caib
 ```
 
 ## Quick Start
@@ -20,12 +18,28 @@ Set the API endpoint (or pass `--server` on every command):
 export CAIB_SERVER=https://your-build-api.example
 ```
 
+Alternatively, use `caib login` to save the server URL and authenticate via OIDC:
+
+```bash
+# Explicit server URL
+caib login https://build-api.my-cluster.example.com
+
+# Auto-derive from Jumpstarter config (if available)
+caib login
+```
+
+Check server connectivity:
+
+```bash
+caib status
+```
+
 ### Build a Bootc Container Image
 
 Build a bootc container and push it to a registry:
 
 ```bash
-bin/caib image build manifest.aib.yml \
+caib image build manifest.aib.yml \
   --arch arm64 \
   --push quay.io/myorg/automotive-os:latest
 ```
@@ -41,7 +55,7 @@ bootc switch quay.io/myorg/automotive-os:latest
 Build a bootc container and also create a disk image from it:
 
 ```bash
-bin/caib image build manifest.aib.yml \
+caib image build manifest.aib.yml \
   --arch arm64 \
   --push quay.io/myorg/automotive-os:latest \
   --disk \
@@ -54,12 +68,30 @@ bin/caib image build manifest.aib.yml \
 Build an ostree-based or package-based disk image for development:
 
 ```bash
-bin/caib image build-dev manifest.aib.yml \
+caib image build-dev manifest.aib.yml \
   --arch arm64 \
   --mode image \
   --format qcow2 \
   -o ./output/disk.qcow2
 ```
+
+## Flag Inference
+
+Many flags are automatically inferred from context:
+
+| Flag | Inferred from |
+|------|---------------|
+| `--server` | `CAIB_SERVER` env → saved config (`caib login`) → Jumpstarter client config |
+| `--token` | `CAIB_TOKEN` env → kubeconfig (`oc login`) → `oc whoami -t` |
+| `--arch` | `--target` lookup in OperatorConfig target defaults → host architecture |
+| `--format` | `--target` lookup in OperatorConfig target defaults → `-o` filename extension |
+| `--disk` | Implied by `-o`, `--push-disk`, or `--flash` |
+| `--client` | Auto-detected from `~/.config/jumpstarter/` |
+| `--extra-args` | Prepended from OperatorConfig target defaults (user args appended) |
+| `--follow` | Defaults to `true` for build commands, `false` for flash |
+| `--wait` | Defaults to `false` for build commands, `true` for flash and workspace |
+
+For example, `--target ride4_sa8775p_sx_r3` automatically sets `--arch arm64`, `--format simg`, and adds `--separate-partitions` to extra-args. Explicitly setting a flag always overrides the inferred value.
 
 ## Commands
 
@@ -70,7 +102,7 @@ All image workflow commands live under `caib image`.
 Builds a bootc container image with optional disk image creation. This is the recommended approach for production.
 
 ```bash
-bin/caib image build <manifest.aib.yml> [flags]
+caib image build <manifest.aib.yml> [flags]
 ```
 
 **Required flags:**
@@ -102,17 +134,25 @@ bin/caib image build <manifest.aib.yml> [flags]
 | `--internal-registry` | `false` | Push to OpenShift internal registry (no credentials needed) |
 | `--image-name` | (build name) | Override image name in internal registry |
 | `--image-tag` | (build name) | Override tag in internal registry |
+| `--flash` | `false` | Flash image to device after build completes (via Jumpstarter) |
+| `--client` | (auto-detected) | Path to Jumpstarter client config file |
+| `--exporter` | | Direct exporter selector (alternative to `--target` lookup) |
+| `--flash-cmd` | | Override flash command (default: from OperatorConfig target mapping) |
+| `--lease-duration` | `03:00:00` | Device lease duration for flash (HH:MM:SS) |
+| `--lease` | | Existing Jumpstarter lease name (mutually exclusive with `--lease-duration`) |
+| `--secure` | `false` | Resolve tasks from signed Tekton Bundle |
+| `--ttl` | | Time-to-live for the build (e.g. `24h`, `72h`; empty=server default, `0`=no expiry) |
 
 **Examples:**
 
 ```bash
 # Build and push bootc container only
-bin/caib image build my-manifest.aib.yml \
+caib image build my-manifest.aib.yml \
   --arch arm64 \
   --push quay.io/myorg/automotive:v1.0
 
 # Build bootc container + qcow2 disk image, download locally
-bin/caib image build my-manifest.aib.yml \
+caib image build my-manifest.aib.yml \
   --arch arm64 \
   --push quay.io/myorg/automotive:v1.0 \
   --disk \
@@ -121,25 +161,25 @@ bin/caib image build my-manifest.aib.yml \
   -o ./my-image.qcow2
 
 # Push to OpenShift internal registry (no credentials required)
-bin/caib image build my-manifest.aib.yml \
+caib image build my-manifest.aib.yml \
   --arch arm64 \
   --internal-registry
 
 # Internal registry with custom image name and tag
-bin/caib image build my-manifest.aib.yml \
+caib image build my-manifest.aib.yml \
   --arch arm64 \
   --internal-registry \
   --image-name my-automotive-os \
   --image-tag v1.0
 
 # Internal registry with disk image
-bin/caib image build my-manifest.aib.yml \
+caib image build my-manifest.aib.yml \
   --arch arm64 \
   --internal-registry \
   --disk
 
 # Use custom builder image
-bin/caib image build my-manifest.aib.yml \
+caib image build my-manifest.aib.yml \
   --arch amd64 \
   --builder-image quay.io/myorg/my-aib-build:latest \
   --push quay.io/myorg/result:latest
@@ -150,7 +190,7 @@ bin/caib image build my-manifest.aib.yml \
 Creates a disk image from an existing bootc container in a registry.
 
 ```bash
-bin/caib image disk <container-ref> [flags]
+caib image disk <container-ref> [flags]
 ```
 
 **Optional flags:**
@@ -168,20 +208,32 @@ bin/caib image disk <container-ref> [flags]
 | `-a`, `--arch` | (current system) | Architecture (`amd64`, `arm64`) |
 | `--aib-image` | `quay.io/.../automotive-image-builder:1.3.0` | AIB container image |
 | `--storage-class` | | Kubernetes storage class |
+| `--extra-args` | | Extra arguments to pass to AIB (repeatable) |
 | `--timeout` | `60` | Timeout in minutes |
 | `-w`, `--wait` | `false` | Wait for build to complete |
 | `-f`, `--follow` | `true` | Follow build logs |
+| `--flash` | `false` | Flash image to device after build completes (via Jumpstarter) |
+| `--client` | (auto-detected) | Path to Jumpstarter client config file |
+| `--exporter` | | Direct exporter selector (alternative to `--target` lookup) |
+| `--flash-cmd` | | Override flash command (default: from OperatorConfig target mapping) |
+| `--lease-duration` | `03:00:00` | Device lease duration for flash (HH:MM:SS) |
+| `--lease` | | Existing Jumpstarter lease name (mutually exclusive with `--lease-duration`) |
+| `--secure` | `false` | Resolve tasks from signed Tekton Bundle |
+| `--ttl` | | Time-to-live for the build (e.g. `24h`, `72h`) |
+| `--internal-registry` | `false` | Push to OpenShift internal registry |
+| `--image-name` | (build name) | Override image name in internal registry |
+| `--image-tag` | `disk` | Override tag in internal registry |
 
 **Examples:**
 
 ```bash
 # Create disk image from container, download locally
-bin/caib image disk quay.io/myorg/my-os:v1 \
+caib image disk quay.io/myorg/my-os:v1 \
   -o ./disk.qcow2 \
   --format qcow2
 
 # Push disk as OCI artifact instead of downloading
-bin/caib image disk quay.io/myorg/my-os:v1 \
+caib image disk quay.io/myorg/my-os:v1 \
   --push quay.io/myorg/my-disk:v1
 ```
 
@@ -190,7 +242,7 @@ bin/caib image disk quay.io/myorg/my-os:v1 \
 Builds a disk image (ostree or package-based) for development workflows. Creates standalone disk images without bootc container integration.
 
 ```bash
-bin/caib image build-dev <manifest.aib.yml> [flags]
+caib image build-dev <manifest.aib.yml> [flags]
 ```
 
 **Required flags:**
@@ -214,22 +266,37 @@ bin/caib image build-dev <manifest.aib.yml> [flags]
 | `--aib-image` | `quay.io/.../automotive-image-builder:1.3.0` | AIB container image |
 | `--storage-class` | | Storage class for build workspace PVC |
 | `-D`, `--define` | | Custom definition `KEY=VALUE` (repeatable) |
+| `--define-file` | | Load defines from YAML dictionary file (repeatable) |
+| `--extra-args` | | Extra arguments to pass to AIB (repeatable) |
+| `--extra-repo` | | Serve RPMs from workspace as extra repo (`workspace:path`, repeatable) |
+| `--workspace` | | Workspace name for build caching and lease forwarding |
 | `--timeout` | `60` | Timeout in minutes |
 | `-w`, `--wait` | `false` | Wait for build to complete |
 | `-f`, `--follow` | `true` | Follow build logs |
+| `--flash` | `false` | Flash image to device after build completes (via Jumpstarter) |
+| `--client` | (auto-detected) | Path to Jumpstarter client config file |
+| `--exporter` | | Direct exporter selector (alternative to `--target` lookup) |
+| `--flash-cmd` | | Override flash command (default: from OperatorConfig target mapping) |
+| `--lease-duration` | `03:00:00` | Device lease duration for flash (HH:MM:SS) |
+| `--lease` | | Existing Jumpstarter lease name (mutually exclusive with `--lease-duration`) |
+| `--secure` | `false` | Resolve tasks from signed Tekton Bundle |
+| `--ttl` | | Time-to-live for the build (e.g. `24h`, `72h`) |
+| `--internal-registry` | `false` | Push to OpenShift internal registry |
+| `--image-name` | (build name) | Override image name in internal registry |
+| `--image-tag` | `disk` | Override tag in internal registry |
 
 **Examples:**
 
 ```bash
 # Build ostree-based image and download
-bin/caib image build-dev my-manifest.aib.yml \
+caib image build-dev my-manifest.aib.yml \
   --arch arm64 \
   --mode image \
   --format qcow2 \
   -o ./disk.qcow2
 
 # Build and push to OCI registry (requires REGISTRY_USERNAME/REGISTRY_PASSWORD env vars)
-bin/caib image build-dev my-manifest.aib.yml \
+caib image build-dev my-manifest.aib.yml \
   --arch arm64 \
   --mode image \
   --format qcow2 \
@@ -265,21 +332,21 @@ Sealed operations manage TPM-based image sealing for secure boot workflows. All 
 Reseal a bootc container image with a new TPM key. If no key is provided, an ephemeral key is generated.
 
 ```bash
-bin/caib image reseal <source-container> <output-container> [flags]
+caib image reseal <source-container> <output-container> [flags]
 ```
 
 **Examples:**
 
 ```bash
 # Reseal with ephemeral key
-bin/caib image reseal quay.io/myorg/my-os:v1 quay.io/myorg/my-os:resealed
+caib image reseal quay.io/myorg/my-os:v1 quay.io/myorg/my-os:resealed
 
 # Reseal with explicit key
-bin/caib image reseal quay.io/myorg/my-os:v1 quay.io/myorg/my-os:resealed \
+caib image reseal quay.io/myorg/my-os:v1 quay.io/myorg/my-os:resealed \
   --key ./seal-key.pem
 
 # Using --input/--output flags instead of positionals
-bin/caib image reseal --input quay.io/myorg/my-os:v1 --output quay.io/myorg/my-os:resealed
+caib image reseal --input quay.io/myorg/my-os:v1 --output quay.io/myorg/my-os:resealed
 ```
 
 #### prepare-reseal
@@ -287,7 +354,7 @@ bin/caib image reseal --input quay.io/myorg/my-os:v1 --output quay.io/myorg/my-o
 Prepare a bootc container image for resealing (first step in a two-step seal workflow).
 
 ```bash
-bin/caib image prepare-reseal <source-container> <output-container> [flags]
+caib image prepare-reseal <source-container> <output-container> [flags]
 ```
 
 #### extract-for-signing
@@ -295,7 +362,7 @@ bin/caib image prepare-reseal <source-container> <output-container> [flags]
 Extract components from a container image for external signing (e.g. secure boot).
 
 ```bash
-bin/caib image extract-for-signing <source-container> <output-artifact> [flags]
+caib image extract-for-signing <source-container> <output-artifact> [flags]
 ```
 
 #### inject-signed
@@ -303,7 +370,7 @@ bin/caib image extract-for-signing <source-container> <output-artifact> [flags]
 Inject externally signed components back into a container image.
 
 ```bash
-bin/caib image inject-signed <source-container> <signed-artifact> <output-container> [flags]
+caib image inject-signed <source-container> <signed-artifact> <output-container> [flags]
 ```
 
 Additional flag:
@@ -316,7 +383,7 @@ Additional flag:
 Downloads artifacts from a completed build.
 
 ```bash
-bin/caib image download <build-name> [flags]
+caib image download <build-name> [flags]
 ```
 
 | Flag | Default | Description |
@@ -330,7 +397,7 @@ bin/caib image download <build-name> [flags]
 Lists existing builds.
 
 ```bash
-bin/caib image list [flags]
+caib image list [flags]
 ```
 
 | Flag | Default | Description |
@@ -343,7 +410,7 @@ bin/caib image list [flags]
 Shows detailed information for a single build, including current status and resolved build parameters.
 
 ```bash
-bin/caib image show <build-name> [flags]
+caib image show <build-name> [flags]
 ```
 
 | Flag | Default | Description |
@@ -356,12 +423,100 @@ bin/caib image show <build-name> [flags]
 
 ```bash
 # Human-friendly detail view
-bin/caib image show my-build
+caib image show my-build
 
 # Machine-readable output
-bin/caib image show my-build -o json
-bin/caib image show my-build -o yaml
+caib image show my-build -o json
+caib image show my-build -o yaml
 ```
+
+### image flash
+
+Flash a disk image from an OCI registry to a hardware device using Jumpstarter.
+
+```bash
+caib image flash <oci-registry-reference> [flags]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--server` | `$CAIB_SERVER` | Build API server URL |
+| `--token` | `$CAIB_TOKEN` | Bearer token |
+| `-n`, `--name` | (auto-generated) | Name for the flash job |
+| `-t`, `--target` | | Target platform for exporter lookup |
+| `--client` | (auto-detected) | Path to Jumpstarter client config file |
+| `--exporter` | | Direct exporter selector (alternative to `--target`) |
+| `--flash-cmd` | | Override flash command (default: from OperatorConfig target mapping) |
+| `--lease-duration` | `03:00:00` | Device lease duration (HH:MM:SS) |
+| `--lease` | | Existing Jumpstarter lease name (mutually exclusive with `--lease-duration`) |
+| `--registry-auth-file` | | Path to Docker/Podman auth file for OCI image pull |
+| `-f`, `--follow` | `false` | Follow flash logs |
+| `-w`, `--wait` | `true` | Wait for flash to complete |
+
+**Examples:**
+
+```bash
+# Flash using auto-detected client config
+caib image flash quay.io/org/disk:v1 --target j784s4evm
+
+# Flash with explicit client config
+caib image flash quay.io/org/disk:v1 --client ~/.jumpstarter/client.yaml --target j784s4evm
+
+# Flash with explicit exporter selector
+caib image flash quay.io/org/disk:v1 --exporter "board-type=j784s4evm"
+```
+
+### image logs
+
+Follow the log output of an active or completed build. Useful when reconnecting after restarting your terminal.
+
+```bash
+caib image logs <build-name> [flags]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--server` | `$CAIB_SERVER` | Build API server URL |
+| `--token` | `$CAIB_TOKEN` | Bearer token |
+
+### image token
+
+Request a fresh, short-lived registry token (valid ~4 hours) for a completed build that used `--internal-registry`. Can be used with podman, skopeo, or any OCI-compatible tool.
+
+```bash
+caib image token <build-name> [flags]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--server` | `$CAIB_SERVER` | Build API server URL |
+| `--token` | `$CAIB_TOKEN` | Bearer token |
+
+### image delete
+
+Delete an ImageBuild and all its associated resources (PipelineRuns, TaskRuns, PVCs, Secrets). If the build used `--internal-registry`, ImageStream tags are removed. You can only delete builds that you created.
+
+```bash
+caib image delete <build-name> [flags]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--server` | `$CAIB_SERVER` | Build API server URL |
+| `--token` | `$CAIB_TOKEN` | Bearer token |
+
+### image cancel
+
+Cancel an in-progress build. Only builds in Pending, Uploading, or Building phase can be cancelled. You can only cancel builds that you created.
+
+```bash
+caib image cancel <build-name> [flags]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--server` | `$CAIB_SERVER` | Build API server URL |
+| `--token` | `$CAIB_TOKEN` | Bearer token |
 
 ## Bootc vs Dev Builds
 
@@ -445,9 +600,194 @@ Supported locations:
 ## Version
 
 ```bash
-bin/caib --version
+caib --version
 ```
 
-## License
+## Auth Commands
 
-Apache-2.0
+### auth status
+
+Display token status and expiry information.
+
+```bash
+caib auth status [--verbose]
+```
+
+With `--verbose`, shows additional details (issued-at, auth-time, refresh token presence).
+
+### auth refresh
+
+Refresh the access token using a stored refresh token.
+
+```bash
+caib auth refresh
+```
+
+## Workspace Commands
+
+Create and manage persistent developer workspaces with cross-compilation toolchains for building C/C++/Rust applications targeting automotive boards.
+
+### workspace create
+
+```bash
+caib workspace create <name> [flags]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--from-build` | | ImageBuild name to extract Jumpstarter lease from |
+| `--lease` | | Direct Jumpstarter lease ID |
+| `-a`, `--arch` | (from OperatorConfig) | Target architecture |
+| `--image` | (from OperatorConfig) | Toolchain container image |
+| `--client` | | Path to Jumpstarter client config file |
+| `--cpu` | | CPU request/limit (e.g. `1`, `500m`) |
+| `--memory` | | Memory request/limit (e.g. `2Gi`, `512Mi`) |
+| `--tmpfs` | `false` | Mount tmpfs at /tmp/build for faster compilation (uses RAM) |
+| `--auto-pause-timeout` | `-1` | Auto-pause timeout in minutes (`0`=disable, `-1`=global default) |
+| `-w`, `--wait` | `true` | Wait for workspace to be running |
+
+**Examples:**
+
+```bash
+# Basic workspace
+caib workspace create my-app
+
+# Workspace linked to a flashed board
+caib workspace create my-app --from-build my-os-build
+
+# Workspace with explicit lease
+caib workspace create my-app --lease lease-abc123 --arch arm64
+```
+
+### workspace list
+
+```bash
+caib workspace list
+```
+
+### workspace show
+
+```bash
+caib workspace show <name>
+```
+
+### workspace delete
+
+```bash
+caib workspace delete <name>
+```
+
+### workspace start
+
+Start a previously stopped workspace (persistent storage is preserved).
+
+```bash
+caib workspace start <name> [-w]
+```
+
+### workspace stop
+
+Stop a workspace without deleting its storage. Frees cluster resources.
+
+```bash
+caib workspace stop <name>
+```
+
+### workspace sync
+
+Upload a local directory to the workspace's `/workspace/src/` path. Only git-tracked files are synced, with delta support (only changed files are uploaded).
+
+```bash
+caib workspace sync <name> [directory]
+```
+
+If no directory is specified, the current directory is used.
+
+### workspace exec
+
+Execute a command in the workspace pod. Everything after `--` is the command.
+
+```bash
+caib workspace exec <name> -- <command...>
+```
+
+**Examples:**
+
+```bash
+caib workspace exec my-app -- make -j4
+caib workspace exec my-app -- cargo build --release
+```
+
+### workspace shell
+
+Open an interactive shell session in the workspace pod.
+
+```bash
+caib workspace shell <name>
+```
+
+### workspace deploy
+
+Deploy artifacts from the workspace to a board via the workspace's Jumpstarter lease. Uses rsync for delta transfer.
+
+```bash
+caib workspace deploy <name> --artifact <src:dest> [--artifact ...]
+```
+
+**Examples:**
+
+```bash
+# Single file
+caib workspace deploy my-app --artifact /workspace/src/build/app:/usr/local/bin/app
+
+# Multiple files
+caib workspace deploy my-app \
+  --artifact /workspace/src/engine-service:/usr/local/bin/engine-service \
+  --artifact /workspace/src/radio-service:/usr/local/bin/radio-service
+```
+
+## Container Commands
+
+Build container images on-cluster using Shipwright (OpenShift Builds).
+
+### container build
+
+```bash
+caib container build [context-dir] [flags]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--server` | `$CAIB_SERVER` | Build API server URL |
+| `--token` | `$CAIB_TOKEN` | Bearer token |
+| `-n`, `--name` | (auto-generated) | Build name |
+| `-f`, `--containerfile` | (required) | Path to Containerfile or Dockerfile |
+| `--push` | | Push destination registry URL (required unless `--internal-registry`) |
+| `--strategy` | `buildah` | Shipwright build strategy name |
+| `--build-arg` | | Build argument `KEY=VALUE` (repeatable) |
+| `-a`, `--arch` | (current system) | Target architecture (`amd64`, `arm64`) |
+| `--timeout` | `30` | Build timeout in minutes |
+| `--registry-auth-file` | | Path to Docker/Podman auth file |
+| `--internal-registry` | `false` | Push to OpenShift internal registry |
+
+**Examples:**
+
+```bash
+# Build from current directory
+caib container build -f Containerfile --push quay.io/myorg/myimage:latest
+
+# Build with build args
+caib container build -f Containerfile --push quay.io/myorg/myimage:latest \
+  --build-arg VERSION=1.0 --build-arg ENV=prod
+
+# Push to internal registry
+caib container build -f Containerfile --internal-registry
+```
+
+### container logs
+
+Follow logs of a container build.
+
+```bash
+caib container logs <build-name>
+```
