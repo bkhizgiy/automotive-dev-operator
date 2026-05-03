@@ -49,6 +49,7 @@ type Options struct {
 	Timeout                *int
 	WaitForBuild           *bool
 	CustomDefs             *[]string
+	DefineFiles            *[]string
 	AIBExtraArgs           *[]string
 	ExtraRepos             *[]string
 	Workspace              *string
@@ -383,6 +384,21 @@ func (h *Handler) displayBuildLogsCommand(buildName string) {
 	fmt.Printf("\n%s\n  %s\n\n", labelColor("View build logs:"), commandColor("caib image logs "+buildName))
 }
 
+func (h *Handler) resolveCustomDefs() ([]string, error) {
+	var defs []string
+	if len(*h.opts.DefineFiles) > 0 {
+		fileDefs, err := common.LoadDefineFiles(*h.opts.DefineFiles)
+		if err != nil {
+			return nil, err
+		}
+		defs = append(defs, fileDefs...)
+	}
+	if h.opts.CustomDefs != nil {
+		defs = append(defs, *h.opts.CustomDefs...)
+	}
+	return defs, nil
+}
+
 // RunBuild handles the main `caib image build` command.
 func (h *Handler) RunBuild(cmd *cobra.Command, args []string) {
 	h.applyWaitFollowDefaults(cmd, true, false)
@@ -430,6 +446,12 @@ func (h *Handler) RunBuild(cmd *cobra.Command, args []string) {
 
 	h.resolveTarget(cmd, common.ManifestTarget(manifestBytes))
 
+	customDefs, err := h.resolveCustomDefs()
+	if err != nil {
+		h.handleError(err)
+		return
+	}
+
 	req := buildapitypes.BuildRequest{
 		Name:                   *h.opts.BuildName,
 		Manifest:               string(manifestBytes),
@@ -441,7 +463,7 @@ func (h *Handler) RunBuild(cmd *cobra.Command, args []string) {
 		Mode:                   buildapitypes.ModeBootc,
 		AutomotiveImageBuilder: *h.opts.AutomotiveImageBuilder,
 		StorageClass:           *h.opts.StorageClass,
-		CustomDefs:             *h.opts.CustomDefs,
+		CustomDefs:             customDefs,
 		AIBExtraArgs:           *h.opts.AIBExtraArgs,
 		ExtraRepos:             *h.opts.ExtraRepos,
 		Workspace:              *h.opts.Workspace,
@@ -661,6 +683,12 @@ func (h *Handler) RunBuildDev(cmd *cobra.Command, args []string) {
 
 	h.resolveTarget(cmd, common.ManifestTarget(manifestBytes))
 
+	customDefs, err := h.resolveCustomDefs()
+	if err != nil {
+		h.handleError(err)
+		return
+	}
+
 	var parsedMode buildapitypes.Mode
 	switch *h.opts.Mode {
 	case "image":
@@ -688,7 +716,7 @@ func (h *Handler) RunBuildDev(cmd *cobra.Command, args []string) {
 		Mode:                   parsedMode,
 		AutomotiveImageBuilder: *h.opts.AutomotiveImageBuilder,
 		StorageClass:           *h.opts.StorageClass,
-		CustomDefs:             *h.opts.CustomDefs,
+		CustomDefs:             customDefs,
 		AIBExtraArgs:           *h.opts.AIBExtraArgs,
 		ExtraRepos:             *h.opts.ExtraRepos,
 		Workspace:              *h.opts.Workspace,

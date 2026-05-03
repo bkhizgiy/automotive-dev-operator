@@ -26,6 +26,7 @@ type runtimeState struct {
 	Timeout                *int
 	WaitForBuild           *bool
 	CustomDefs             *[]string
+	DefineFiles            *[]string
 	AIBExtraArgs           *[]string
 	ExtraRepos             *[]string
 	Workspace              *string
@@ -87,6 +88,7 @@ func newRuntimeState() runtimeState {
 		Timeout:                &timeout,
 		WaitForBuild:           &waitForBuild,
 		CustomDefs:             &customDefs,
+		DefineFiles:            &defineFiles,
 		AIBExtraArgs:           &aibExtraArgs,
 		ExtraRepos:             &extraRepos,
 		Workspace:              &workspaceName,
@@ -158,6 +160,7 @@ func (s runtimeState) newHandlers() handlerSet {
 			Timeout:                   s.Timeout,
 			WaitForBuild:              s.WaitForBuild,
 			CustomDefs:                s.CustomDefs,
+			DefineFiles:               s.DefineFiles,
 			AIBExtraArgs:              s.AIBExtraArgs,
 			ExtraRepos:                s.ExtraRepos,
 			Workspace:                 s.Workspace,
@@ -279,6 +282,7 @@ func (s runtimeState) imageOptions(h handlerSet) image.Options {
 		Timeout:                s.Timeout,
 		WaitForBuild:           s.WaitForBuild,
 		CustomDefs:             s.CustomDefs,
+		DefineFiles:            s.DefineFiles,
 		AIBExtraArgs:           s.AIBExtraArgs,
 		ExtraRepos:             s.ExtraRepos,
 		Workspace:              s.Workspace,
