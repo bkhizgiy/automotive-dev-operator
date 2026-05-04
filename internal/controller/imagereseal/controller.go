@@ -360,9 +360,10 @@ func (r *Reconciler) createSealedTaskRun(ctx context.Context, sealed *automotive
 	}
 
 	trSpec := tektonv1.TaskRunSpec{
-		TaskRef:    &tektonv1.TaskRef{Name: tasks.SealedTaskName(operation)},
-		Params:     params,
-		Workspaces: workspaces,
+		TaskRef:            &tektonv1.TaskRef{Name: tasks.SealedTaskName(operation)},
+		Params:             params,
+		Workspaces:         workspaces,
+		ServiceAccountName: automotivev1alpha1.BuildServiceAccountName,
 	}
 	if nodeArch := archToNodeArch(sealed.Spec.Architecture); nodeArch != "" {
 		trSpec.PodTemplate = &pod.Template{
