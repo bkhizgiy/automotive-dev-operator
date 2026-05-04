@@ -1128,7 +1128,7 @@ func (r *OperatorConfigReconciler) buildMetricsReaderClusterRoleBinding(namespac
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: rbacv1.GroupName,
 			Kind:     "ClusterRole",
-			Name:     "ado-metrics-reader",
+			Name:     "metrics-reader",
 		},
 		Subjects: []rbacv1.Subject{
 			{
@@ -1183,4 +1183,3 @@ func (r *OperatorConfigReconciler) buildServiceMonitor(namespace string, config 
 
 	return sm
 }
-

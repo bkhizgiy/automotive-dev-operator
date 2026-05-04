@@ -658,26 +658,20 @@ spec:
               height: 8
               content:
                 $ref: "#/spec/panels/buildsByMode"
-      - kind: "Grid"
-        spec:
-          items:
             - x: 0
-              y: 0
+              y: 8
               width: 12
               height: 8
               content:
                 $ref: "#/spec/panels/buildsByDistro"
             - x: 12
-              y: 0
+              y: 8
               width: 12
               height: 8
               content:
                 $ref: "#/spec/panels/buildsByArch"
-      - kind: "Grid"
-        spec:
-          items:
             - x: 0
-              y: 0
+              y: 16
               width: 24
               height: 8
               content:

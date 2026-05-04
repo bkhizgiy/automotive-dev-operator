@@ -238,9 +238,9 @@ var _ = Describe("OperatorConfig Resources", func() {
 	})
 
 	Describe("buildMetricsReaderClusterRoleBinding", func() {
-		It("should reference ado-metrics-reader ClusterRole and ado-operator SA", func() {
+		It("should reference metrics-reader ClusterRole and ado-operator SA", func() {
 			binding := r.buildMetricsReaderClusterRoleBinding("test-ns")
-			Expect(binding.RoleRef.Name).To(Equal("ado-metrics-reader"))
+			Expect(binding.RoleRef.Name).To(Equal("metrics-reader"))
 			Expect(binding.RoleRef.Kind).To(Equal("ClusterRole"))
 			Expect(binding.Subjects).To(HaveLen(1))
 			Expect(binding.Subjects[0].Name).To(Equal("ado-operator"))
@@ -257,7 +257,6 @@ var _ = Describe("OperatorConfig Resources", func() {
 			Expect(role.Rules[0].Verbs).To(Equal([]string{"get"}))
 		})
 	})
-
 
 	Describe("buildBuildControllerDeployment", func() {
 		It("should use ado-build-controller service account", func() {
