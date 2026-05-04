@@ -177,6 +177,11 @@ aib_version="$(params.aib-version)"
 aib_image="$(params.automotive-image-builder)"
 aib_command="$(params.aib-command)"
 SECURE_BUILD="$(params.secure-build)"
+REPRODUCIBLE="$(params.reproducible)"
+TASK_BUNDLE_REF="$(params.task-bundle-ref)"
+CUSTOM_DEFINES="$(params.custom-defines)"
+AIB_EXTRA_ARGS="$(params.aib-extra-args)"
+EXPORT_FORMAT="$(params.export-format)"
 
 config_file="/etc/target-defaults/target-defaults.yaml"
 default_partitions=""
@@ -312,9 +317,10 @@ if [ -d "${parts_dir}" ] && [ -n "$(ls -A "${parts_dir}" 2>/dev/null)" ]; then
 
   manifest_annotations_json=$(python3 - \
       "$distro" "$target" "$arch" "$file_list" \
-      "$default_partitions" "$builder_image_used" "$aib_version" "$aib_image" "$aib_command" <<'PYEOF'
+      "$default_partitions" "$builder_image_used" "$aib_version" "$aib_image" "$aib_command" "$TASK_BUNDLE_REF" \
+      "$CUSTOM_DEFINES" "$AIB_EXTRA_ARGS" "$EXPORT_FORMAT" <<'PYEOF'
 import json, sys
-distro, target, arch, parts, default_parts, builder, aib_ver, aib_img, aib_cmd = sys.argv[1:10]
+distro, target, arch, parts, default_parts, builder, aib_ver, aib_img, aib_cmd, task_bundle, custom_defs, extra_args, export_fmt = sys.argv[1:14]
 a = {
     "automotive.sdv.cloud.redhat.com/multi-layer": "true",
     "automotive.sdv.cloud.redhat.com/parts":       parts,
@@ -327,6 +333,10 @@ if builder:       a["automotive.sdv.cloud.redhat.com/builder-image"]            
 if aib_ver:       a["automotive.sdv.cloud.redhat.com/aib-version"]              = aib_ver
 if aib_img:       a["automotive.sdv.cloud.redhat.com/automotive-image-builder"] = aib_img
 if aib_cmd:       a["automotive.sdv.cloud.redhat.com/aib-command"]              = aib_cmd
+if task_bundle:   a["automotive.sdv.cloud.redhat.com/task-bundle-ref"]          = task_bundle
+if custom_defs:   a["automotive.sdv.cloud.redhat.com/custom-defines"]           = custom_defs
+if extra_args:    a["automotive.sdv.cloud.redhat.com/aib-extra-args"]           = extra_args
+if export_fmt:    a["automotive.sdv.cloud.redhat.com/export-format"]            = export_fmt
 print(json.dumps(a))
 PYEOF
 )
@@ -388,21 +398,26 @@ else
   trap 'rm -f "$single_annotations_file"' EXIT
   python3 - "$single_annotations_file" \
       "$distro" "$target" "$arch" \
-      "$parts_list" "$builder_image_used" "$aib_version" "$aib_image" "$aib_command" <<'PYEOF'
+      "$parts_list" "$builder_image_used" "$aib_version" "$aib_image" "$aib_command" "$TASK_BUNDLE_REF" \
+      "$CUSTOM_DEFINES" "$AIB_EXTRA_ARGS" "$EXPORT_FORMAT" <<'PYEOF'
 import json, sys
 from pathlib import Path
 
-out_file, distro, target, arch, parts, builder, aib_ver, aib_img, aib_cmd = sys.argv[1:10]
+out_file, distro, target, arch, parts, builder, aib_ver, aib_img, aib_cmd, task_bundle, custom_defs, extra_args, export_fmt = sys.argv[1:14]
 annotations = {
     "automotive.sdv.cloud.redhat.com/distro":  distro,
     "automotive.sdv.cloud.redhat.com/target":  target,
     "automotive.sdv.cloud.redhat.com/arch":    arch,
 }
-if parts:    annotations["automotive.sdv.cloud.redhat.com/parts"]                    = parts
-if builder:  annotations["automotive.sdv.cloud.redhat.com/builder-image"]            = builder
-if aib_ver:  annotations["automotive.sdv.cloud.redhat.com/aib-version"]              = aib_ver
-if aib_img:  annotations["automotive.sdv.cloud.redhat.com/automotive-image-builder"] = aib_img
-if aib_cmd:  annotations["automotive.sdv.cloud.redhat.com/aib-command"]              = aib_cmd
+if parts:         annotations["automotive.sdv.cloud.redhat.com/parts"]                    = parts
+if builder:       annotations["automotive.sdv.cloud.redhat.com/builder-image"]            = builder
+if aib_ver:       annotations["automotive.sdv.cloud.redhat.com/aib-version"]              = aib_ver
+if aib_img:       annotations["automotive.sdv.cloud.redhat.com/automotive-image-builder"] = aib_img
+if aib_cmd:       annotations["automotive.sdv.cloud.redhat.com/aib-command"]              = aib_cmd
+if task_bundle:   annotations["automotive.sdv.cloud.redhat.com/task-bundle-ref"]          = task_bundle
+if custom_defs:   annotations["automotive.sdv.cloud.redhat.com/custom-defines"]           = custom_defs
+if extra_args:    annotations["automotive.sdv.cloud.redhat.com/aib-extra-args"]           = extra_args
+if export_fmt:    annotations["automotive.sdv.cloud.redhat.com/export-format"]            = export_fmt
 Path(out_file).write_text(json.dumps({"$manifest": annotations}))
 PYEOF
 
@@ -503,4 +518,32 @@ PYEOF
   rm -f "$SANITIZED_MANIFEST"
 else
   echo "No osbuild manifest found or no digest available, skipping manifest attach"
+fi
+
+# attach_referrer FILE ARTIFACT_TYPE LABEL
+# Attaches a file as an OCI referrer. Fatal on failure in reproducible mode.
+attach_referrer() {
+  local file="$1" artifact_type="$2" label="$3"
+  if [ ! -f "$file" ]; then
+    echo "ERROR: $label not found at $file (required for reproducible build)"
+    exit 1
+  fi
+  echo "Attaching $label ($(du -sh "$file" | cut -f1)) to ${repo_url}@${DISK_DIGEST}"
+  if ! "$HOME/bin/oras" attach \
+    --artifact-type "$artifact_type" \
+    "${repo_url}@${DISK_DIGEST}" \
+    "${file}:${artifact_type}"; then
+    echo "ERROR: Failed to attach $label (fatal in reproducible mode)"
+    exit 1
+  fi
+}
+
+if [ "$REPRODUCIBLE" = "true" ] && [ -n "$DISK_DIGEST" ]; then
+  cd /workspace/shared || { echo "ERROR: cannot cd to /workspace/shared"; exit 1; }
+  echo "=== Attaching reproducibility artifacts ==="
+  attach_referrer "./aib-manifest.yml" \
+    "application/vnd.automotive.manifest.v1+yaml" "AIB input manifest"
+  attach_referrer "./build-sources.tar.gz" \
+    "application/vnd.automotive.sources.v1+tar+gzip" "osbuild sources archive"
+  echo "=== Reproducibility artifacts attached ==="
 fi

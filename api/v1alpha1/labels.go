@@ -10,6 +10,7 @@ const (
 	LabelWorkspaceName  = "automotive.sdv.cloud.redhat.com/workspace-name"
 	LabelOwner          = "automotive.sdv.cloud.redhat.com/owner"
 
-	AnnotationTraceID     = "automotive.sdv.cloud.redhat.com/trace-id"
-	AnnotationRequestedBy = "automotive.sdv.cloud.redhat.com/requested-by"
+	AnnotationTraceID       = "automotive.sdv.cloud.redhat.com/trace-id"
+	AnnotationRequestedBy   = "automotive.sdv.cloud.redhat.com/requested-by"
+	AnnotationTaskBundleRef = "automotive.sdv.cloud.redhat.com/task-bundle-ref"
 )

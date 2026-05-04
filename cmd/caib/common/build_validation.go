@@ -46,6 +46,15 @@ func ValidateBuildName(name string) error {
 	return nil
 }
 
+// ValidateReproducibleRequiresSecure returns an error when reproducible builds
+// are requested without secure build mode.
+func ValidateReproducibleRequiresSecure(reproducible, secureBuild bool) error {
+	if reproducible && !secureBuild {
+		return fmt.Errorf("--reproducible requires --secure for task bundle pinning")
+	}
+	return nil
+}
+
 // ValidateManifestSuffix validates the manifest file extension.
 func ValidateManifestSuffix(filename string) error {
 	for _, suffix := range validManifestSuffix {

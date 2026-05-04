@@ -27,6 +27,7 @@ type Options struct {
 	RunToken             func(*cobra.Command, []string)
 	RunDelete            func(*cobra.Command, []string)
 	RunCancel            func(*cobra.Command, []string)
+	RunInspect           func(*cobra.Command, []string)
 
 	GetDefaultArch func() string
 
@@ -70,8 +71,11 @@ type Options struct {
 	InternalRegistryImageName *string
 	InternalRegistryTag       *string
 
-	SecureBuild *bool
-	TTL         *string
+	SecureBuild       *bool
+	Reproducible      *bool
+	TaskBundleRef     *string
+	RestoreSourcesRef *string
+	TTL               *string
 
 	SealedBuilderImage      *string
 	SealedArchitecture      *string
@@ -164,6 +168,10 @@ func NewImageCmd(opts Options) *cobra.Command {
 	// Secure build
 	buildCmd.Flags().BoolVar(opts.SecureBuild, "secure", false, "resolve tasks from signed Tekton Bundle (requires OperatorConfig taskBundleRef)")
 	buildCmd.Flags().StringVar(opts.TTL, "ttl", "", "time-to-live for the build (e.g. 24h, 72h, 168h); empty=server default, 0=no expiry")
+	// Reproducible build
+	buildCmd.Flags().BoolVar(opts.Reproducible, "reproducible", false, "save RPMs, manifest, and task bundle for future reproduction (requires --secure)")
+	buildCmd.Flags().StringVar(opts.TaskBundleRef, "task-bundle-ref", "", "digest-pinned Tekton bundle ref for reproducible rebuild (e.g. quay.io/org/tasks@sha256:abc...)")
+	buildCmd.Flags().StringVar(opts.RestoreSourcesRef, "restore-sources", "", "OCI image ref from prior build — restores archived sources for exact reproducible rebuild")
 	// Internal registry options
 	buildCmd.Flags().BoolVar(opts.UseInternalRegistry, "internal-registry", false, "push to OpenShift internal registry")
 	buildCmd.Flags().StringVar(opts.InternalRegistryImageName, "image-name", "", "override image name for internal registry (default: build name)")
@@ -222,6 +230,7 @@ func NewImageCmd(opts Options) *cobra.Command {
 	// Secure build
 	diskCmd.Flags().BoolVar(opts.SecureBuild, "secure", false, "resolve tasks from signed Tekton Bundle (requires OperatorConfig taskBundleRef)")
 	diskCmd.Flags().StringVar(opts.TTL, "ttl", "", "time-to-live for the build (e.g. 24h, 72h, 168h); empty=server default, 0=no expiry")
+	diskCmd.Flags().StringVar(opts.TaskBundleRef, "task-bundle-ref", "", "digest-pinned Tekton bundle ref for reproducible rebuild (e.g. quay.io/org/tasks@sha256:abc...)")
 	// Internal registry options
 	diskCmd.Flags().BoolVar(opts.UseInternalRegistry, "internal-registry", false, "push to OpenShift internal registry")
 	diskCmd.Flags().StringVar(opts.InternalRegistryImageName, "image-name", "", "override image name for internal registry (default: build name)")
@@ -268,6 +277,10 @@ func NewImageCmd(opts Options) *cobra.Command {
 	// Secure build
 	buildDevCmd.Flags().BoolVar(opts.SecureBuild, "secure", false, "resolve tasks from signed Tekton Bundle (requires OperatorConfig taskBundleRef)")
 	buildDevCmd.Flags().StringVar(opts.TTL, "ttl", "", "time-to-live for the build (e.g. 24h, 72h, 168h); empty=server default, 0=no expiry")
+	// Reproducible build
+	buildDevCmd.Flags().BoolVar(opts.Reproducible, "reproducible", false, "save RPMs, manifest, and task bundle for future reproduction (requires --secure)")
+	buildDevCmd.Flags().StringVar(opts.TaskBundleRef, "task-bundle-ref", "", "digest-pinned Tekton bundle ref for reproducible rebuild (e.g. quay.io/org/tasks@sha256:abc...)")
+	buildDevCmd.Flags().StringVar(opts.RestoreSourcesRef, "restore-sources", "", "OCI image ref from prior build — restores archived sources for exact reproducible rebuild")
 	// Internal registry options
 	buildDevCmd.Flags().BoolVar(opts.UseInternalRegistry, "internal-registry", false, "push to OpenShift internal registry")
 	buildDevCmd.Flags().StringVar(opts.InternalRegistryImageName, "image-name", "", "override image name for internal registry (default: build name)")
@@ -313,6 +326,15 @@ func NewImageCmd(opts Options) *cobra.Command {
 	)
 	flashCmd.Flags().BoolVarP(opts.FollowLogs, "follow", "f", false, "follow flash logs (shows full log output instead of progress bar)")
 	flashCmd.Flags().BoolVarP(opts.WaitForBuild, "wait", "w", true, "wait for flash to complete")
+	inspectCmd := newInspectCmd(opts)
+	inspectCmd.Flags().StringVar(
+		opts.RegistryAuthFile,
+		"registry-auth-file",
+		"",
+		"path to Docker/Podman auth file for registry authentication",
+	)
+	inspectCmd.Flags().StringVarP(opts.OutputDir, "output-dir", "o", "", "download referrer artifacts (manifest, RPMs) to this directory")
+
 	// Sealed operation shared flags
 	addSealedFlags(prepareResealCmd, opts, defaultServer)
 	addSealedFlags(resealCmd, opts, defaultServer)
@@ -332,6 +354,7 @@ func NewImageCmd(opts Options) *cobra.Command {
 		deleteCmd,
 		cancelCmd,
 		flashCmd,
+		inspectCmd,
 		prepareResealCmd,
 		resealCmd,
 		extractForSigningCmd,
@@ -556,6 +579,28 @@ Examples:
   caib image cancel <build-name>`,
 		Args: cobra.ExactArgs(1),
 		Run:  opts.RunCancel,
+	}
+}
+
+func newInspectCmd(opts Options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "inspect <oci-registry-reference>",
+		Short: "Show build provenance and reproducibility info for an OCI artifact",
+		Long: `Inspect reads OCI manifest annotations and referrer artifacts to display
+build provenance information: distro, target, architecture, builder versions,
+and the exact command to reproduce the build.
+
+If --output-dir is given, referrer artifacts (AIB manifest, RPM archive,
+osbuild manifest) are downloaded to the specified directory.
+
+Examples:
+  # Show build provenance
+  caib image inspect quay.io/org/my-os:v1
+
+  # Show provenance and download artifacts for reproduction
+  caib image inspect quay.io/org/my-os:v1 -o ./rebuild/`,
+		Args: cobra.ExactArgs(1),
+		Run:  opts.RunInspect,
 	}
 }
 

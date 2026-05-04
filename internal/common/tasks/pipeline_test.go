@@ -3,6 +3,8 @@ package tasks
 import (
 	"strings"
 	"testing"
+
+	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 )
 
 func TestBuildTaskRef_ClusterResolver(t *testing.T) {
@@ -49,7 +51,7 @@ func TestBuildTaskRef_BundleResolver(t *testing.T) {
 		TaskBundleRef: bundleRef,
 	})
 
-	if ref.Resolver != tektonResolverBundles {
+	if ref.Resolver != TektonResolverBundles {
 		t.Fatalf("expected bundles resolver, got %q", ref.Resolver)
 	}
 
@@ -174,7 +176,7 @@ func TestGenerateTektonPipeline_BundleResolver(t *testing.T) {
 		if task.TaskRef == nil {
 			continue // skip tasks with inline TaskSpec
 		}
-		if task.TaskRef.Resolver != tektonResolverBundles {
+		if task.TaskRef.Resolver != TektonResolverBundles {
 			t.Errorf("task %q should use bundles resolver, got %q", task.Name, task.TaskRef.Resolver)
 		}
 	}
@@ -248,6 +250,192 @@ func TestCollectImagesScript_Format(t *testing.T) {
 		}
 	}
 	t.Fatal("pipeline should have collect-images-result task")
+}
+
+func hasParam(params []tektonv1.ParamSpec, name string) bool {
+	for _, p := range params {
+		if p.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func findPipelineTask(tasks []tektonv1.PipelineTask, name string) *tektonv1.PipelineTask {
+	for i := range tasks {
+		if tasks[i].Name == name {
+			return &tasks[i]
+		}
+	}
+	return nil
+}
+
+func taskParamBinding(task *tektonv1.PipelineTask, name string) (string, bool) {
+	for _, p := range task.Params {
+		if p.Name == name {
+			return p.Value.StringVal, true
+		}
+	}
+	return "", false
+}
+
+func TestReproducibleParams_PushTask(t *testing.T) {
+	task := GeneratePushArtifactRegistryTask("test-ns", nil)
+
+	required := []string{"reproducible", "task-bundle-ref", "custom-defines", "aib-extra-args"}
+	for _, name := range required {
+		if !hasParam(task.Spec.Params, name) {
+			t.Errorf("push-artifact-registry task missing param %q", name)
+		}
+	}
+}
+
+func TestReproducibleParams_Pipeline(t *testing.T) {
+	pipeline := GenerateTektonPipeline("test-pipeline", "test-ns", &BuildConfig{})
+
+	required := []string{"reproducible", "task-bundle-ref", "custom-defines", "aib-extra-args"}
+	for _, name := range required {
+		if !hasParam(pipeline.Spec.Params, name) {
+			t.Errorf("pipeline missing param %q", name)
+		}
+	}
+}
+
+func TestReproducibleParams_BuildImageBinding(t *testing.T) {
+	pipeline := GenerateTektonPipeline("test-pipeline", "test-ns", &BuildConfig{})
+
+	buildTask := findPipelineTask(pipeline.Spec.Tasks, "build-image")
+	if buildTask == nil {
+		t.Fatal("pipeline missing build-image task")
+	}
+
+	val, ok := taskParamBinding(buildTask, "reproducible")
+	if !ok {
+		t.Fatal("build-image task missing reproducible param binding")
+	}
+	if val != "$(params.reproducible)" {
+		t.Errorf("build-image reproducible binding = %q, want $(params.reproducible)", val)
+	}
+}
+
+func TestReproducibleParams_PushDiskArtifactBindings(t *testing.T) {
+	pipeline := GenerateTektonPipeline("test-pipeline", "test-ns", &BuildConfig{})
+
+	pushTask := findPipelineTask(pipeline.Spec.Tasks, "push-disk-artifact")
+	if pushTask == nil {
+		t.Fatal("pipeline missing push-disk-artifact task")
+	}
+
+	expectedBindings := map[string]string{
+		"reproducible":    "$(params.reproducible)",
+		"task-bundle-ref": "$(params.task-bundle-ref)",
+		"custom-defines":  "$(params.custom-defines)",
+		"aib-extra-args":  "$(params.aib-extra-args)",
+	}
+	for param, wantVal := range expectedBindings {
+		got, ok := taskParamBinding(pushTask, param)
+		if !ok {
+			t.Errorf("push-disk-artifact missing param binding %q", param)
+			continue
+		}
+		if got != wantVal {
+			t.Errorf("push-disk-artifact %s = %q, want %q", param, got, wantVal)
+		}
+	}
+}
+
+func TestReproducibleParams_BuildTask(t *testing.T) {
+	task := GenerateBuildAutomotiveImageTask("test-ns", nil, "")
+
+	if !hasParam(task.Spec.Params, "reproducible") {
+		t.Error("build-automotive-image task missing reproducible param")
+	}
+}
+
+func TestReproducibleParams_PushScript_References(t *testing.T) {
+	task := GeneratePushArtifactRegistryTask("test-ns", nil)
+
+	if len(task.Spec.Steps) == 0 {
+		t.Fatal("push task has no steps")
+	}
+
+	script := task.Spec.Steps[0].Script
+	refs := []string{
+		"$(params.reproducible)",
+		"$(params.task-bundle-ref)",
+		"$(params.custom-defines)",
+		"$(params.aib-extra-args)",
+	}
+	for _, ref := range refs {
+		if !strings.Contains(script, ref) {
+			t.Errorf("push script missing param reference %q", ref)
+		}
+	}
+}
+
+func TestReproducibleParams_BuildScript_References(t *testing.T) {
+	task := GenerateBuildAutomotiveImageTask("test-ns", nil, "")
+
+	var buildStep string
+	for _, s := range task.Spec.Steps {
+		if s.Name == "build-image" {
+			buildStep = s.Script
+			break
+		}
+	}
+	if buildStep == "" {
+		t.Fatal("build task has no 'build-image' step")
+	}
+
+	if !strings.Contains(buildStep, "$(params.reproducible)") {
+		t.Error("build script missing $(params.reproducible) reference")
+	}
+}
+
+func TestPipelineParamSpec_Defaults(t *testing.T) {
+	pipeline := GenerateTektonPipeline("test-pipeline", "test-ns", &BuildConfig{})
+
+	wantDefaults := map[string]string{
+		"reproducible":    "false",
+		"task-bundle-ref": "",
+		"custom-defines":  "",
+		"aib-extra-args":  "",
+		"secure-build":    "false",
+	}
+	for _, p := range pipeline.Spec.Params {
+		if expected, ok := wantDefaults[p.Name]; ok {
+			if p.Default == nil {
+				t.Errorf("pipeline param %q has nil default, want %q", p.Name, expected)
+				continue
+			}
+			if p.Default.StringVal != expected {
+				t.Errorf("pipeline param %q default = %q, want %q", p.Name, p.Default.StringVal, expected)
+			}
+		}
+	}
+}
+
+func TestPushTask_ParamSpec_Defaults(t *testing.T) {
+	task := GeneratePushArtifactRegistryTask("test-ns", nil)
+
+	wantDefaults := map[string]string{
+		"reproducible":    "false",
+		"task-bundle-ref": "",
+		"custom-defines":  "",
+		"aib-extra-args":  "",
+		"secure-build":    "false",
+	}
+	for _, p := range task.Spec.Params {
+		if expected, ok := wantDefaults[p.Name]; ok {
+			if p.Default == nil {
+				t.Errorf("push task param %q has nil default, want %q", p.Name, expected)
+				continue
+			}
+			if p.Default.StringVal != expected {
+				t.Errorf("push task param %q default = %q, want %q", p.Name, p.Default.StringVal, expected)
+			}
+		}
+	}
 }
 
 // TestImagesResultFormat verifies the image@digest format Chains expects

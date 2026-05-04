@@ -5,6 +5,7 @@ import (
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/downloadcmd"
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/flashcmd"
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/image"
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/inspectcmd"
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/querycmd"
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/sealedcmd"
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/tokencmd"
@@ -55,8 +56,11 @@ type runtimeState struct {
 	InternalRegistryImageName *string
 	InternalRegistryTag       *string
 
-	SecureBuild *bool
-	TTL         *string
+	SecureBuild       *bool
+	Reproducible      *bool
+	TaskBundleRef     *string
+	RestoreSourcesRef *string
+	TTL               *string
 
 	InsecureSkipTLS *bool
 
@@ -117,8 +121,11 @@ func newRuntimeState() runtimeState {
 		InternalRegistryImageName: &internalRegistryImageName,
 		InternalRegistryTag:       &internalRegistryTag,
 
-		SecureBuild: &secureBuild,
-		TTL:         &buildTTL,
+		SecureBuild:       &secureBuild,
+		Reproducible:      &reproducibleBuild,
+		TaskBundleRef:     &taskBundleRef,
+		RestoreSourcesRef: &restoreSourcesRef,
+		TTL:               &buildTTL,
 
 		InsecureSkipTLS: &insecureSkipTLS,
 
@@ -141,6 +148,7 @@ type handlerSet struct {
 	flash    *flashcmd.Handler
 	sealed   *sealedcmd.Handler
 	token    *tokencmd.Handler
+	inspect  *inspectcmd.Handler
 }
 
 func (s runtimeState) newHandlers() handlerSet {
@@ -185,6 +193,9 @@ func (s runtimeState) newHandlers() handlerSet {
 			InternalRegistryImageName: s.InternalRegistryImageName,
 			InternalRegistryTag:       s.InternalRegistryTag,
 			SecureBuild:               s.SecureBuild,
+			Reproducible:              s.Reproducible,
+			TaskBundleRef:             s.TaskBundleRef,
+			RestoreSourcesRef:         s.RestoreSourcesRef,
 			TTL:                       s.TTL,
 			InsecureSkipTLS:           s.InsecureSkipTLS,
 			HandleError:               handleError,
@@ -246,6 +257,13 @@ func (s runtimeState) newHandlers() handlerSet {
 			InsecureSkipTLS: s.InsecureSkipTLS,
 			HandleError:     handleError,
 		}),
+		inspect: inspectcmd.NewHandler(inspectcmd.Options{
+			RegistryAuthFile: s.RegistryAuthFile,
+			OutputDir:        s.OutputDir,
+			OutputFormat:     s.OutputFormat,
+			InsecureSkipTLS:  s.InsecureSkipTLS,
+			HandleError:      handleError,
+		}),
 	}
 }
 
@@ -266,6 +284,7 @@ func (s runtimeState) imageOptions(h handlerSet) image.Options {
 		RunToken:             h.token.RunToken,
 		RunDelete:            h.build.RunDelete,
 		RunCancel:            h.build.RunCancel,
+		RunInspect:           h.inspect.RunInspect,
 		GetDefaultArch:       getDefaultArch,
 
 		ServerURL:              s.ServerURL,
@@ -308,8 +327,11 @@ func (s runtimeState) imageOptions(h handlerSet) image.Options {
 		InternalRegistryImageName: s.InternalRegistryImageName,
 		InternalRegistryTag:       s.InternalRegistryTag,
 
-		SecureBuild: s.SecureBuild,
-		TTL:         s.TTL,
+		SecureBuild:       s.SecureBuild,
+		Reproducible:      s.Reproducible,
+		TaskBundleRef:     s.TaskBundleRef,
+		RestoreSourcesRef: s.RestoreSourcesRef,
+		TTL:               s.TTL,
 
 		SealedBuilderImage:      s.SealedBuilderImage,
 		SealedArchitecture:      s.SealedArchitecture,

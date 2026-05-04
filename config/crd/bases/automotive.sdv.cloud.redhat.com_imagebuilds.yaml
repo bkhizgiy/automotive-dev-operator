@@ -190,6 +190,18 @@ spec:
                   PushSecretRef is the name of the kubernetes.io/dockerconfigjson secret for pushing artifacts
                   This is separate from SecretRef because push operations require docker config format
                 type: string
+              reproducible:
+                description: |-
+                  Reproducible enables full build provenance: saves RPMs, AIB manifest,
+                  and task bundle ref as OCI referrers for future reproduction.
+                  Requires SecureBuild to be true for task bundle pinning.
+                type: boolean
+              restoreSourcesRef:
+                description: |-
+                  RestoreSourcesRef is the OCI image reference from a prior reproducible build.
+                  The build pod will pull the sources archive (OCI referrer) attached to this
+                  image and pre-populate the osbuild store, ensuring identical RPM inputs.
+                type: string
               runtimeClassName:
                 description: RuntimeClassName specifies the runtime class to use for
                   the build pod
@@ -231,6 +243,9 @@ spec:
                   on completion so subsequent builds can reuse it.
                 type: string
             type: object
+            x-kubernetes-validations:
+            - message: reproducible builds require secureBuild to be true
+              rule: '!has(self.reproducible) || !self.reproducible || self.secureBuild'
           status:
             description: ImageBuildStatus defines the observed state of ImageBuild
             properties:

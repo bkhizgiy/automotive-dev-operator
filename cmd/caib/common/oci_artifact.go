@@ -18,7 +18,7 @@ import (
 )
 
 // PullOCIArtifact pulls and extracts an OCI artifact to local destination.
-func PullOCIArtifact(ociRef, destPath, username, password string, insecureSkipTLS bool) error {
+func PullOCIArtifact(ociRef, destPath, username, password string, insecureSkipTLS bool, authFilePaths ...string) error {
 	fmt.Printf("Pulling OCI artifact %s to %s\n", ociRef, destPath)
 
 	destDir := filepath.Dir(destPath)
@@ -30,6 +30,9 @@ func PullOCIArtifact(ociRef, destPath, username, password string, insecureSkipTL
 
 	ctx := context.Background()
 	systemCtx := &types.SystemContext{}
+	if len(authFilePaths) > 0 && authFilePaths[0] != "" {
+		systemCtx.AuthFilePath = authFilePaths[0]
+	}
 	if username != "" && password != "" {
 		fmt.Printf("Using provided username/password credentials\n")
 		systemCtx.DockerAuthConfig = &types.DockerAuthConfig{

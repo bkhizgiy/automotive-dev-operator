@@ -75,8 +75,11 @@ type Options struct {
 	InternalRegistryImageName *string
 	InternalRegistryTag       *string
 
-	SecureBuild *bool
-	TTL         *string
+	SecureBuild       *bool
+	Reproducible      *bool
+	TaskBundleRef     *string
+	RestoreSourcesRef *string
+	TTL               *string
 
 	InsecureSkipTLS *bool
 
@@ -143,6 +146,10 @@ func (h *Handler) validateBootcBuildFlags() error {
 		}
 	}
 
+	if err := h.validateReproducibleFlags(); err != nil {
+		return err
+	}
+
 	if *h.opts.ContainerPush == "" && !*h.opts.BuildDiskImage && !*h.opts.UseInternalRegistry {
 		return fmt.Errorf(
 			"--push is required when not building a disk image " +
@@ -150,6 +157,16 @@ func (h *Handler) validateBootcBuildFlags() error {
 		)
 	}
 
+	return nil
+}
+
+func (h *Handler) validateReproducibleFlags() error {
+	if err := common.ValidateReproducibleRequiresSecure(*h.opts.Reproducible, *h.opts.SecureBuild); err != nil {
+		return err
+	}
+	if *h.opts.Reproducible && *h.opts.UseInternalRegistry {
+		return fmt.Errorf("--reproducible cannot be used with --internal-registry (internal registry does not support OCI referrers)")
+	}
 	return nil
 }
 
@@ -474,6 +491,9 @@ func (h *Handler) RunBuild(cmd *cobra.Command, args []string) {
 		BuilderImage:           *h.opts.BuilderImage,
 		RebuildBuilder:         *h.opts.RebuildBuilder,
 		SecureBuild:            *h.opts.SecureBuild,
+		Reproducible:           *h.opts.Reproducible,
+		TaskBundleRef:          *h.opts.TaskBundleRef,
+		RestoreSourcesRef:      *h.opts.RestoreSourcesRef,
 		TTL:                    *h.opts.TTL,
 	}
 
@@ -587,6 +607,8 @@ func (h *Handler) RunDisk(cmd *cobra.Command, args []string) {
 		Compression:            buildapitypes.Compression(*h.opts.CompressionAlgo),
 		ExportOCI:              *h.opts.ExportOCI,
 		SecureBuild:            *h.opts.SecureBuild,
+		TaskBundleRef:          *h.opts.TaskBundleRef,
+		RestoreSourcesRef:      *h.opts.RestoreSourcesRef,
 		TTL:                    *h.opts.TTL,
 	}
 
@@ -640,6 +662,11 @@ func (h *Handler) RunBuildDev(cmd *cobra.Command, args []string) {
 
 	if strings.TrimSpace(*h.opts.ServerURL) == "" {
 		h.handleError(fmt.Errorf("server URL required (use --server, CAIB_SERVER, run 'caib login <server-url>' or 'jmp login <endpoint>')"))
+		return
+	}
+
+	if err := h.validateReproducibleFlags(); err != nil {
+		h.handleError(err)
 		return
 	}
 
@@ -723,6 +750,9 @@ func (h *Handler) RunBuildDev(cmd *cobra.Command, args []string) {
 		Compression:            buildapitypes.Compression(*h.opts.CompressionAlgo),
 		ExportOCI:              *h.opts.ExportOCI,
 		SecureBuild:            *h.opts.SecureBuild,
+		Reproducible:           *h.opts.Reproducible,
+		TaskBundleRef:          *h.opts.TaskBundleRef,
+		RestoreSourcesRef:      *h.opts.RestoreSourcesRef,
 		TTL:                    *h.opts.TTL,
 	}
 
