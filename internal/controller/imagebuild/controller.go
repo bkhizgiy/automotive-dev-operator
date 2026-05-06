@@ -2704,7 +2704,7 @@ func setImageBuildConditions(imageBuild *automotivev1alpha1.ImageBuild, phase, m
 			Reason:  "BuildSucceeded",
 			Message: message,
 		})
-	case phaseFailed, phaseCancelled:
+	case phaseFailed, phaseCancelled, automotivev1alpha1.ImageBuildPhaseExpired:
 		meta.SetStatusCondition(&imageBuild.Status.Conditions, metav1.Condition{
 			Type:    automotivev1alpha1.ImageBuildConditionProgressing,
 			Status:  metav1.ConditionFalse,
