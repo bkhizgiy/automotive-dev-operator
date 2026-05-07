@@ -47,6 +47,7 @@ func IsTerminalBuildPhase(phase string) bool {
 
 // ImageBuildSpec defines the desired state of ImageBuild
 // +kubebuilder:printcolumn:name="StorageClass",type=string,JSONPath=`.spec.storageClass`
+// +kubebuilder:validation:XValidation:rule="!has(self.reproducible) || !self.reproducible || self.secureBuild",message="reproducible builds require secureBuild to be true"
 type ImageBuildSpec struct {
 	// ─── Common fields ───
 
@@ -101,6 +102,18 @@ type ImageBuildSpec struct {
 	// OperatorConfig at request time to prevent TOCTOU races.
 	// +optional
 	TaskBundleRef string `json:"taskBundleRef,omitempty"`
+
+	// Reproducible enables full build provenance: saves RPMs, AIB manifest,
+	// and task bundle ref as OCI referrers for future reproduction.
+	// Requires SecureBuild to be true for task bundle pinning.
+	// +optional
+	Reproducible bool `json:"reproducible,omitempty"`
+
+	// RestoreSourcesRef is the OCI image reference from a prior reproducible build.
+	// The build pod will pull the sources archive (OCI referrer) attached to this
+	// image and pre-populate the osbuild store, ensuring identical RPM inputs.
+	// +optional
+	RestoreSourcesRef string `json:"restoreSourcesRef,omitempty"`
 
 	// TTL is the time-to-live for this build. After this duration past its
 	// completion, the build transitions to the Expired phase and its resources

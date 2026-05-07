@@ -22,8 +22,8 @@ func ExtractRegistryCredentials(primaryRef, secondaryRef string) (string, string
 	}
 
 	if username == "" || password == "" {
-		fmt.Println("Warning: No registry credentials provided via environment variables.")
-		fmt.Println("Will attempt to use local auth.json files as fallback.")
+		fmt.Fprintln(os.Stderr, "Warning: No registry credentials provided via environment variables.")
+		fmt.Fprintln(os.Stderr, "Will attempt to use local auth.json files as fallback.")
 	}
 
 	parts := strings.SplitN(ref, "/", 2)

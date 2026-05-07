@@ -87,6 +87,70 @@ else
   chmod g-s "/_build" 2>/dev/null || true
 fi
 
+RESTORE_SOURCES_REF="$(params.restore-sources-ref)"
+if [ -n "$RESTORE_SOURCES_REF" ]; then
+  echo "=== Restoring sources from $RESTORE_SOURCES_REF ==="
+
+  ORAS_VERSION="1.2.0"
+  case "$(uname -m)" in
+    x86_64) ORAS_ARCH="amd64" ;;
+    aarch64|arm64) ORAS_ARCH="arm64" ;;
+    *) echo "ERROR: Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+  esac
+  ORAS_TARBALL="oras_${ORAS_VERSION}_linux_${ORAS_ARCH}.tar.gz"
+  ORAS_BASE_URL="https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}"
+  ORAS_CHECKSUMS="oras_${ORAS_VERSION}_checksums.txt"
+  curl -sLO "${ORAS_BASE_URL}/${ORAS_TARBALL}"
+  curl -sLO "${ORAS_BASE_URL}/${ORAS_CHECKSUMS}"
+  expected_checksum=$(grep "${ORAS_TARBALL}" "${ORAS_CHECKSUMS}" | cut -d' ' -f1)
+  if command -v sha256sum >/dev/null; then
+    actual_checksum=$(sha256sum "${ORAS_TARBALL}" | cut -d' ' -f1)
+  else
+    actual_checksum=$(shasum -a 256 "${ORAS_TARBALL}" | cut -d' ' -f1)
+  fi
+  if [ "$expected_checksum" != "$actual_checksum" ]; then
+    echo "ERROR: ORAS checksum verification failed" >&2; exit 1
+  fi
+  tar -zxf "$ORAS_TARBALL" oras
+  mkdir -p "$HOME/bin"
+  mv oras "$HOME/bin/"
+  rm -f "$ORAS_TARBALL" "$ORAS_CHECKSUMS"
+  export PATH="$HOME/bin:$PATH"
+
+  ORAS_AUTH_FLAGS=()
+  if [ -n "$REGISTRY_AUTH_FILE" ] && [ -f "$REGISTRY_AUTH_FILE" ]; then
+    ORAS_AUTH_FLAGS=(--registry-config "$REGISTRY_AUTH_FILE")
+  fi
+
+  SOURCES_TYPE="application/vnd.automotive.sources.v1+tar+gzip"
+  SOURCES_DIGEST=$(oras discover "${ORAS_AUTH_FLAGS[@]}" "$RESTORE_SOURCES_REF" \
+    --artifact-type "$SOURCES_TYPE" --format json \
+    | grep -o 'sha256:[a-f0-9]\{64\}' | head -1)
+
+  if [ -z "$SOURCES_DIGEST" ]; then
+    echo "ERROR: No sources referrer found for $RESTORE_SOURCES_REF" >&2
+    exit 1
+  fi
+
+  # Strip digest to get repo (ref is always digest-pinned: registry/repo@sha256:...)
+  SOURCES_REPO="${RESTORE_SOURCES_REF%%@*}"
+
+  RESTORE_TMPDIR=$(mktemp -d)
+  oras pull "${ORAS_AUTH_FLAGS[@]}" "${SOURCES_REPO}@${SOURCES_DIGEST}" -o "$RESTORE_TMPDIR"
+  SOURCES_ARCHIVE=$(find "$RESTORE_TMPDIR" -name '*.tar.gz' -print -quit)
+
+  if [ -z "$SOURCES_ARCHIVE" ]; then
+    echo "ERROR: No archive found after pulling sources referrer" >&2
+    exit 1
+  fi
+
+  mkdir -p "$BUILD_DIR/osbuild_store"
+  tar -xzf "$SOURCES_ARCHIVE" -C "$BUILD_DIR/osbuild_store"
+  rm -rf "$RESTORE_TMPDIR"
+  echo "Sources restored: $(find "$BUILD_DIR/osbuild_store/sources" -type f | wc -l) blobs"
+  echo "=== Sources restoration complete ==="
+fi
+
 install_custom_ca_certs
 setup_osbuild
 
@@ -334,6 +398,8 @@ declare -a COMMON_BUILD_ARGS=(
 if [ "$(params.use-persistent-cache)" = "true" ]; then
   COMMON_BUILD_ARGS+=(--define "reproducible_image=true")
   COMMON_BUILD_ARGS+=(--cache-max-size=unlimited)
+elif [ "$(params.reproducible)" = "true" ]; then
+  COMMON_BUILD_ARGS+=(--define "reproducible_image=true")
 fi
 
 AIB_INVOKE_TIME=$(date +%s)
@@ -829,6 +895,24 @@ if [ -n "${CONTAINER_PUSH:-}" ]; then
   mkdir -p "$WORKSPACE_PATH/.chains/container"
   echo -n "$CONTAINER_PUSH" > "$WORKSPACE_PATH/.chains/container/url"
   echo -n "$PUSHED_DIGEST" > "$WORKSPACE_PATH/.chains/container/digest"
+fi
+
+# Package osbuild sources and manifest for reproducible builds.
+# osbuild stores downloaded files (RPMs, etc.) as content-addressed blobs in
+# osbuild_store/sources/org.osbuild.files/ — we archive the entire sources dir
+# so a future rebuild can restore the exact same binaries.
+if [ "$(params.reproducible)" = "true" ]; then
+  echo "=== Reproducible build: packaging artifacts ==="
+  SOURCES_DIR="$BUILD_DIR/osbuild_store/sources"
+  SOURCES_ARCHIVE="$WORKSPACE_PATH/build-sources.tar.gz"
+  if [ -d "$SOURCES_DIR" ]; then
+    tar -czf "$SOURCES_ARCHIVE" -C "$BUILD_DIR/osbuild_store" sources
+    echo "Sources archive: $(du -sh "$SOURCES_ARCHIVE" | cut -f1)"
+  else
+    echo "WARNING: No osbuild sources found at $SOURCES_DIR"
+  fi
+  cp "$MANIFEST_FILE" "$WORKSPACE_PATH/aib-manifest.yml"
+  echo "AIB manifest saved to workspace"
 fi
 
 BUILD_END_TIME=$(date +%s)

@@ -38,8 +38,8 @@ const (
 	TaskResolverCluster = "cluster"
 	// TaskResolverBundle resolves tasks from a signed Tekton Bundle OCI image.
 	TaskResolverBundle = "bundle"
-	// tektonResolverBundles is the Tekton-internal resolver name for bundles (plural).
-	tektonResolverBundles = "bundles"
+	// TektonResolverBundles is the Tekton-internal resolver name for OCI bundles.
+	TektonResolverBundles = "bundles"
 )
 
 func traceIDParamSpec() tektonv1.ParamSpec {
@@ -71,13 +71,27 @@ func traceIDPipelineParam() tektonv1.Param {
 	}
 }
 
+func pipelinePassthroughParams(names ...string) []tektonv1.Param {
+	params := make([]tektonv1.Param, len(names))
+	for i, name := range names {
+		params[i] = tektonv1.Param{
+			Name: name,
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: "$(params." + name + ")",
+			},
+		}
+	}
+	return params
+}
+
 // buildTaskRef constructs a TaskRef that uses either the cluster resolver or the
 // bundles resolver, depending on BuildConfig.TaskResolver.
 func buildTaskRef(taskName, namespace string, buildConfig *BuildConfig) *tektonv1.TaskRef {
 	if buildConfig != nil && buildConfig.TaskResolver == TaskResolverBundle && buildConfig.TaskBundleRef != "" {
 		return &tektonv1.TaskRef{
 			ResolverRef: tektonv1.ResolverRef{
-				Resolver: tektonResolverBundles,
+				Resolver: TektonResolverBundles,
 				Params: []tektonv1.Param{
 					{
 						Name:  "bundle",
@@ -316,6 +330,42 @@ func GeneratePushArtifactRegistryTask(namespace string, buildConfig *BuildConfig
 					},
 				},
 				{
+					Name:        "reproducible",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Attach RPMs and AIB manifest as OCI referrers for reproducibility (true/false)",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "false",
+					},
+				},
+				{
+					Name:        "task-bundle-ref",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Digest-pinned Tekton Bundle reference used for this build",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "",
+					},
+				},
+				{
+					Name:        "custom-defines",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Newline-separated custom build definitions (key=value pairs)",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "",
+					},
+				},
+				{
+					Name:        "aib-extra-args",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Newline-separated extra arguments passed to AIB",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "",
+					},
+				},
+				{
 					Name:        "yq-helper-image",
 					Type:        tektonv1.ParamTypeString,
 					Description: "Container image for yq helper steps",
@@ -534,6 +584,24 @@ func GenerateBuildAutomotiveImageTask(namespace string, buildConfig *BuildConfig
 					Default: &tektonv1.ParamValue{
 						Type:      tektonv1.ParamTypeString,
 						StringVal: "false",
+					},
+				},
+				{
+					Name:        "reproducible",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Save RPMs and manifest as OCI referrers for reproducibility (true/false)",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "false",
+					},
+				},
+				{
+					Name:        "restore-sources-ref",
+					Type:        tektonv1.ParamTypeString,
+					Description: "OCI image ref whose sources archive referrer will be restored before build",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "",
 					},
 				},
 				{
@@ -1053,6 +1121,51 @@ func GenerateTektonPipeline(name, namespace string, buildConfig *BuildConfig) *t
 						StringVal: "false",
 					},
 				},
+				{
+					Name:        "reproducible",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Save build sources and manifest as OCI referrers for reproduction (true/false)",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "false",
+					},
+				},
+				{
+					Name:        "task-bundle-ref",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Digest-pinned OCI reference to the Tekton task bundle used for this build",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "",
+					},
+				},
+				{
+					Name:        "restore-sources-ref",
+					Type:        tektonv1.ParamTypeString,
+					Description: "OCI image ref whose sources archive referrer will be restored before build",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "",
+					},
+				},
+				{
+					Name:        "custom-defines",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Newline-separated custom build definitions (key=value pairs)",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "",
+					},
+				},
+				{
+					Name:        "aib-extra-args",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Newline-separated extra arguments passed to AIB",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "",
+					},
+				},
 				traceIDParamSpec(),
 			},
 			Workspaces: []tektonv1.PipelineWorkspaceDeclaration{
@@ -1113,124 +1226,24 @@ func GenerateTektonPipeline(name, namespace string, buildConfig *BuildConfig) *t
 				{
 					Name:    "build-image",
 					TaskRef: buildTaskRef("build-automotive-image", namespace, buildConfig),
-					Params: []tektonv1.Param{
-						{
-							Name: "target-architecture",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.arch)",
+					Params: append(
+						[]tektonv1.Param{
+							{
+								Name:  "target-architecture",
+								Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: "$(params.arch)"},
 							},
 						},
-						{
-							Name: "distro",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.distro)",
-							},
-						},
-						{
-							Name: "target",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.target)",
-							},
-						},
-						{
-							Name: "mode",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.mode)",
-							},
-						},
-						{
-							Name: "export-format",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.export-format)",
-							},
-						},
-						{
-							Name: "compression",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.compression)",
-							},
-						},
-						{
-							Name: "automotive-image-builder",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.automotive-image-builder)",
-							},
-						},
-						{
-							Name: "container-push",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.container-push)",
-							},
-						},
-						{
-							Name: "build-disk-image",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.build-disk-image)",
-							},
-						},
-						{
-							Name: "export-oci",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.export-oci)",
-							},
-						},
-						{
-							Name: "builder-image",
-							Value: tektonv1.ParamValue{
-								Type: tektonv1.ParamTypeString,
-								// Use pipeline param directly - controller sets this based on mode
-								// For bootc: points to cluster registry where build-image cached the builder
-								// For traditional: empty (not needed)
-								StringVal: "$(params.builder-image)",
-							},
-						},
-						{
-							Name: "cluster-registry-route",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.cluster-registry-route)",
-							},
-						},
-						{
-							Name: "container-ref",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.container-ref)",
-							},
-						},
-						{
-							Name: "rebuild-builder",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.rebuild-builder)",
-							},
-						},
-						{
-							Name: "use-persistent-cache",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.use-persistent-cache)",
-							},
-						},
-						{
-							Name: "yq-helper-image",
-							Value: tektonv1.ParamValue{
-								Type:      tektonv1.ParamTypeString,
-								StringVal: "$(params.yq-helper-image)",
-							},
-						},
-						traceIDPipelineParam(),
-					},
+						append(
+							pipelinePassthroughParams(
+								"distro", "target", "mode", "export-format", "compression",
+								"automotive-image-builder", "container-push", "build-disk-image",
+								"export-oci", "builder-image", "cluster-registry-route",
+								"container-ref", "rebuild-builder", "use-persistent-cache",
+								"yq-helper-image", "reproducible", "restore-sources-ref",
+							),
+							traceIDPipelineParam(),
+						)...,
+					),
 					Workspaces: []tektonv1.WorkspacePipelineTaskBinding{
 						{Name: workspaceNameShared, Workspace: workspaceNameShared},
 						{Name: "manifest-config-workspace", Workspace: "manifest-config-workspace"},
@@ -1331,6 +1344,34 @@ func GenerateTektonPipeline(name, namespace string, buildConfig *BuildConfig) *t
 							Value: tektonv1.ParamValue{
 								Type:      tektonv1.ParamTypeString,
 								StringVal: "$(params.secure-build)",
+							},
+						},
+						{
+							Name: "reproducible",
+							Value: tektonv1.ParamValue{
+								Type:      tektonv1.ParamTypeString,
+								StringVal: "$(params.reproducible)",
+							},
+						},
+						{
+							Name: "task-bundle-ref",
+							Value: tektonv1.ParamValue{
+								Type:      tektonv1.ParamTypeString,
+								StringVal: "$(params.task-bundle-ref)",
+							},
+						},
+						{
+							Name: "custom-defines",
+							Value: tektonv1.ParamValue{
+								Type:      tektonv1.ParamTypeString,
+								StringVal: "$(params.custom-defines)",
+							},
+						},
+						{
+							Name: "aib-extra-args",
+							Value: tektonv1.ParamValue{
+								Type:      tektonv1.ParamTypeString,
+								StringVal: "$(params.aib-extra-args)",
 							},
 						},
 						{

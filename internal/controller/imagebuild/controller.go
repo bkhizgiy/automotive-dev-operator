@@ -1075,6 +1075,41 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 			},
 		},
 		{
+			Name: "reproducible",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: fmt.Sprintf("%t", imageBuild.Spec.Reproducible),
+			},
+		},
+		{
+			Name: "task-bundle-ref",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: imageBuild.Spec.TaskBundleRef,
+			},
+		},
+		{
+			Name: "restore-sources-ref",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: imageBuild.Spec.RestoreSourcesRef,
+			},
+		},
+		{
+			Name: "custom-defines",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: strings.Join(imageBuild.Spec.GetCustomDefs(), "\n"),
+			},
+		},
+		{
+			Name: "aib-extra-args",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: strings.Join(imageBuild.Spec.GetAIBExtraArgs(), "\n"),
+			},
+		},
+		{
 			Name: "trace-id",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
@@ -1438,11 +1473,17 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 		},
 	}
 
-	// When using bundle resolver, embed the pipeline spec inline so task refs
-	// point to the signed bundle. Otherwise reference the cluster-installed pipeline.
 	if buildConfig != nil && buildConfig.TaskResolver == tasks.TaskResolverBundle {
-		pipeline := tasks.GenerateTektonPipeline("", imageBuild.Namespace, buildConfig)
-		pipelineRunSpec.PipelineSpec = &pipeline.Spec
+		pipelineRunSpec.PipelineRef = &tektonv1.PipelineRef{
+			ResolverRef: tektonv1.ResolverRef{
+				Resolver: tektonv1.ResolverName(tasks.TektonResolverBundles),
+				Params: tektonv1.Params{
+					{Name: "bundle", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: buildConfig.TaskBundleRef}},
+					{Name: "name", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: "automotive-build-pipeline"}},
+					{Name: "kind", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: "pipeline"}},
+				},
+			},
+		}
 	} else {
 		pipelineRunSpec.PipelineRef = &tektonv1.PipelineRef{
 			Name: "automotive-build-pipeline",
@@ -1638,6 +1679,41 @@ func (r *ImageBuildReconciler) createPushTaskRun(ctx context.Context, imageBuild
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
 				StringVal: artifactFilename,
+			},
+		},
+		{
+			Name: "secure-build",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: fmt.Sprintf("%t", imageBuild.Spec.SecureBuild),
+			},
+		},
+		{
+			Name: "reproducible",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: fmt.Sprintf("%t", imageBuild.Spec.Reproducible),
+			},
+		},
+		{
+			Name: "task-bundle-ref",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: imageBuild.Spec.TaskBundleRef,
+			},
+		},
+		{
+			Name: "custom-defines",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: strings.Join(imageBuild.Spec.GetCustomDefs(), "\n"),
+			},
+		},
+		{
+			Name: "aib-extra-args",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: strings.Join(imageBuild.Spec.GetAIBExtraArgs(), "\n"),
 			},
 		},
 		{

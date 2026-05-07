@@ -63,6 +63,11 @@ var (
 	// Secure build
 	secureBuild bool
 
+	// Reproducible build
+	reproducibleBuild bool
+	taskBundleRef     string
+	restoreSourcesRef string
+
 	// Build TTL
 	buildTTL string
 

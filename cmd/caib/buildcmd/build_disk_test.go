@@ -46,6 +46,9 @@ func newTestDiskOpts() Options {
 		internalRegImageName string
 		internalRegTag       string
 		secureBuild          bool
+		reproducible         bool
+		taskBundleRef        string
+		restoreSourcesRef    string
 		buildTTL             string
 		insecureSkipTLS      bool
 	)
@@ -86,6 +89,9 @@ func newTestDiskOpts() Options {
 		InternalRegistryImageName: &internalRegImageName,
 		InternalRegistryTag:       &internalRegTag,
 		SecureBuild:               &secureBuild,
+		Reproducible:              &reproducible,
+		TaskBundleRef:             &taskBundleRef,
+		RestoreSourcesRef:         &restoreSourcesRef,
 		TTL:                       &buildTTL,
 		InsecureSkipTLS:           &insecureSkipTLS,
 	}

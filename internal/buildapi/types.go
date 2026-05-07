@@ -163,6 +163,16 @@ type BuildRequest struct {
 	// Secure build: resolve tasks from signed Tekton Bundle
 	SecureBuild bool `json:"secureBuild,omitempty"`
 
+	// TaskBundleRef overrides OperatorConfig's taskBundleRef (for reproducible rebuilds)
+	TaskBundleRef string `json:"taskBundleRef,omitempty"`
+
+	// Reproducible saves RPMs, AIB manifest, and task bundle ref as OCI referrers
+	Reproducible bool `json:"reproducible,omitempty"`
+
+	// RestoreSourcesRef is an OCI image reference whose archived sources will be
+	// restored into the build's osbuild store before building.
+	RestoreSourcesRef string `json:"restoreSourcesRef,omitempty"`
+
 	// TTL is the time-to-live for the build. Empty uses server default, "0" disables expiry.
 	TTL string `json:"ttl,omitempty"`
 

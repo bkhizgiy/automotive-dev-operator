@@ -718,6 +718,10 @@ func validateBuildRequest(req *BuildRequest) error {
 		}
 	}
 
+	if req.Reproducible && !req.SecureBuild {
+		return fmt.Errorf("reproducible builds require secureBuild to be true")
+	}
+
 	return nil
 }
 
@@ -856,6 +860,10 @@ func (a *APIServer) setupInternalRegistryBuild(
 	// the bootc container is pushed to an external registry.
 	if req.ExportOCI != "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "useInternalRegistry cannot be used with exportOci"})
+		return "", "", fmt.Errorf("validation error")
+	}
+	if req.Reproducible {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "reproducible builds cannot use internal registry (OCI referrers not supported)"})
 		return "", "", fmt.Errorf("validation error")
 	}
 	// Resolve external route (validates registry is reachable)
@@ -1172,6 +1180,32 @@ var digestPinnedRef = regexp.MustCompile(`^.+@sha256:[a-fA-F0-9]{64}$`)
 
 // validateSecureBuild checks that the OperatorConfig has a valid digest-pinned taskBundleRef.
 // Returns the validated ref, an HTTP status code, and error.
+func resolveTaskBundleRef(ctx context.Context, k8sClient client.Client, namespace string, req *BuildRequest) (string, int, error) {
+	if !req.SecureBuild {
+		return "", 0, nil
+	}
+	if req.TaskBundleRef != "" {
+		ref := strings.TrimSpace(req.TaskBundleRef)
+		if !digestPinnedRef.MatchString(ref) {
+			return "", http.StatusBadRequest, fmt.Errorf("taskBundleRef must be digest-pinned (image@sha256:<64 hex>), got %q", ref)
+		}
+		return ref, 0, nil
+	}
+	return validateSecureBuild(ctx, k8sClient, namespace)
+}
+
+func validateRestoreSourcesRef(req *BuildRequest) error {
+	if req.RestoreSourcesRef == "" {
+		return nil
+	}
+	ref := strings.TrimSpace(req.RestoreSourcesRef)
+	if !digestPinnedRef.MatchString(ref) {
+		return fmt.Errorf("restoreSourcesRef must be digest-pinned (image@sha256:<64 hex>), got %q", ref)
+	}
+	req.RestoreSourcesRef = ref
+	return nil
+}
+
 func validateSecureBuild(ctx context.Context, k8sClient client.Client, namespace string) (string, int, error) {
 	operatorConfig := &automotivev1alpha1.OperatorConfig{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "config", Namespace: namespace}, operatorConfig); err != nil {
@@ -1249,18 +1283,16 @@ func (a *APIServer) createBuild(c *gin.Context) {
 
 	requestedBy := a.resolveRequester(c)
 
-	// Validate secureBuild requirements early, before creating any resources.
-	// Snapshot the validated ref to prevent TOCTOU races with OperatorConfig changes.
-	var taskBundleRef string
-	if req.SecureBuild {
-		var statusCode int
-		var err error
-		taskBundleRef, statusCode, err = validateSecureBuild(ctx, k8sClient, namespace)
-		if err != nil {
-			spanError(span, err)
-			c.JSON(statusCode, gin.H{"error": err.Error()})
-			return
-		}
+	taskBundleRef, bundleStatus, bundleErr := resolveTaskBundleRef(ctx, k8sClient, namespace, &req)
+	if bundleErr != nil {
+		spanError(span, bundleErr)
+		c.JSON(bundleStatus, gin.H{"error": bundleErr.Error()})
+		return
+	}
+
+	if err := validateRestoreSourcesRef(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 
 	// Resolve --workspace: create/find build-cache PVC, forward lease, start file server
@@ -1337,6 +1369,9 @@ func (a *APIServer) createBuild(c *gin.Context) {
 		automotivev1alpha1.AnnotationRequestedBy: requestedBy,
 		automotivev1alpha1.AnnotationTraceID:     traceID,
 	}
+	if req.Reproducible && taskBundleRef != "" {
+		annotations[automotivev1alpha1.AnnotationTaskBundleRef] = taskBundleRef
+	}
 
 	imageBuild := &automotivev1alpha1.ImageBuild{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1346,18 +1381,20 @@ func (a *APIServer) createBuild(c *gin.Context) {
 			Annotations: annotations,
 		},
 		Spec: automotivev1alpha1.ImageBuildSpec{
-			Architecture:  string(req.Architecture),
-			StorageClass:  req.StorageClass,
-			SecretRef:     envSecretRef,
-			PushSecretRef: pushSecretName,
-			AIB:           buildAIBSpec(&req, req.Manifest, req.ManifestFileName, needsUpload),
-			Export:        buildExportSpec(&req),
-			Flash:         flashSpec,
-			BuildCachePVC: buildCachePVCName,
-			Workspace:     req.Workspace,
-			SecureBuild:   req.SecureBuild,
-			TaskBundleRef: taskBundleRef,
-			TTL:           effectiveTTL,
+			Architecture:      string(req.Architecture),
+			StorageClass:      req.StorageClass,
+			SecretRef:         envSecretRef,
+			PushSecretRef:     pushSecretName,
+			AIB:               buildAIBSpec(&req, req.Manifest, req.ManifestFileName, needsUpload),
+			Export:            buildExportSpec(&req),
+			Flash:             flashSpec,
+			BuildCachePVC:     buildCachePVCName,
+			Workspace:         req.Workspace,
+			SecureBuild:       req.SecureBuild,
+			Reproducible:      req.Reproducible,
+			TaskBundleRef:     taskBundleRef,
+			RestoreSourcesRef: req.RestoreSourcesRef,
+			TTL:               effectiveTTL,
 		},
 	}
 	if err := k8sClient.Create(ctx, imageBuild); err != nil {
@@ -1646,6 +1683,9 @@ func getBuildTemplate(c *gin.Context, name string) {
 			AIBExtraArgs:           build.Spec.GetAIBExtraArgs(),
 			Compression:            Compression(build.Spec.GetCompression()),
 			SecureBuild:            build.Spec.SecureBuild,
+			Reproducible:           build.Spec.Reproducible,
+			TaskBundleRef:          build.Spec.TaskBundleRef,
+			RestoreSourcesRef:      build.Spec.RestoreSourcesRef,
 			TTL:                    build.Spec.GetTTL(),
 		},
 		SourceFiles: sourceFiles,

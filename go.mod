@@ -13,12 +13,15 @@ require (
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/onsi/ginkgo/v2 v2.28.1
 	github.com/onsi/gomega v1.39.0
+	github.com/opencontainers/go-digest v1.0.0
+	github.com/opencontainers/image-spec v1.1.1
 	github.com/shipwright-io/build v0.18.3
 	golang.org/x/term v0.40.0
 	k8s.io/apimachinery v0.33.11
 	k8s.io/apiserver v0.33.11
 	k8s.io/client-go v0.33.11
 	knative.dev/pkg v0.0.0-20250716115900-19d3cc2da0b9
+	oras.land/oras-go/v2 v2.6.0
 	sigs.k8s.io/controller-runtime v0.21.0
 )
 
@@ -74,8 +77,6 @@ require (
 	github.com/moby/sys/mountinfo v0.7.2 // indirect
 	github.com/moby/sys/user v0.4.0 // indirect
 	github.com/mxk/go-flowrate v0.0.0-20140419014527-cca7078d478f // indirect
-	github.com/opencontainers/go-digest v1.0.0 // indirect
-	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/opencontainers/runtime-spec v1.2.1 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/pquerna/cachecontrol v0.1.0 // indirect
