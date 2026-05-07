@@ -79,6 +79,29 @@ func TestCheckExpiry_ExpiredBuild_TransitionsToExpiredPhase(t *testing.T) {
 	if got.Status.Phase != automotivev1alpha1.ImageBuildPhaseExpired {
 		t.Errorf("expected phase %q, got %q", automotivev1alpha1.ImageBuildPhaseExpired, got.Status.Phase)
 	}
+
+	foundProgressing := false
+	foundReady := false
+	for _, c := range got.Status.Conditions {
+		switch c.Type {
+		case automotivev1alpha1.ImageBuildConditionProgressing:
+			foundProgressing = true
+			if c.Status != metav1.ConditionFalse {
+				t.Errorf("Progressing condition should be False for expired build, got %s", c.Status)
+			}
+		case automotivev1alpha1.ImageBuildConditionReady:
+			foundReady = true
+			if c.Status != metav1.ConditionFalse {
+				t.Errorf("Ready condition should be False for expired build, got %s", c.Status)
+			}
+		}
+	}
+	if !foundProgressing {
+		t.Error("expected Progressing condition to be present")
+	}
+	if !foundReady {
+		t.Error("expected Ready condition to be present")
+	}
 }
 
 func TestCheckExpiry_NotYetExpired(t *testing.T) {
