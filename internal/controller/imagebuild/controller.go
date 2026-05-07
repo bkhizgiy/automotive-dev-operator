@@ -40,7 +40,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
 
 var ibTracer = otel.Tracer("imagebuild-controller")
@@ -552,7 +551,8 @@ func (r *ImageBuildReconciler) checkExpiry(
 		return ctrl.Result{RequeueAfter: remaining}, false, nil
 	}
 
-	log.Info("Build expired, transitioning to Expired phase", "ttl", ttl, "anchor", anchor)
+	log.Info("Build expired, transitioning to Expired phase", "ttl", ttl, "anchor", anchor,
+		"previousPhase", imageBuild.Status.Phase)
 	r.emitEventf(imageBuild, corev1.EventTypeNormal, eventReasonBuildExpired,
 		"Build expired after %s, cleaning up resources", ttl)
 
@@ -2171,8 +2171,8 @@ func (r *ImageBuildReconciler) deleteSecret(
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ImageBuildReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if err := mgr.Add(r.seedActiveBuildsGauge(mgr)); err != nil {
-		return fmt.Errorf("failed to register ActiveBuilds seeder: %w", err)
+	if err := mgr.Add(r.seedMetricsFromCRs(mgr)); err != nil {
+		return fmt.Errorf("failed to register metrics seeder: %w", err)
 	}
 
 	builder := ctrl.NewControllerManagedBy(mgr).
@@ -2186,28 +2186,6 @@ func (r *ImageBuildReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Secret{})
 
 	return builder.Complete(r)
-}
-
-func (r *ImageBuildReconciler) seedActiveBuildsGauge(mgr ctrl.Manager) manager.RunnableFunc {
-	return func(ctx context.Context) error {
-		if !mgr.GetCache().WaitForCacheSync(ctx) {
-			return fmt.Errorf("cache sync failed")
-		}
-		var builds automotivev1alpha1.ImageBuildList
-		if err := mgr.GetClient().List(ctx, &builds); err != nil {
-			r.Log.Error(err, "Failed to seed ActiveBuilds gauge")
-			return err
-		}
-		var active float64
-		for i := range builds.Items {
-			if builds.Items[i].Status.Phase == phaseBuilding {
-				active++
-			}
-		}
-		ActiveBuilds.Set(active)
-		r.Log.Info("Seeded ActiveBuilds gauge", "active", active)
-		return nil
-	}
 }
 
 func isTaskRunCompleted(taskRun *tektonv1.TaskRun) bool {
@@ -2621,6 +2599,10 @@ func (r *ImageBuildReconciler) updateStatus(
 	patch := client.MergeFrom(fresh.DeepCopy())
 	oldPhase := fresh.Status.Phase
 	oldMessage := fresh.Status.Message
+
+	if phase == automotivev1alpha1.ImageBuildPhaseExpired {
+		fresh.Status.PreviousPhase = fresh.Status.Phase
+	}
 
 	fresh.Status.Phase = phase
 	fresh.Status.Message = message
