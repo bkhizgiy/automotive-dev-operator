@@ -360,6 +360,11 @@ spec:
                 description: PipelineRunName is the name of the active PipelineRun
                   for this build
                 type: string
+              previousPhase:
+                description: |-
+                  PreviousPhase is the phase the build was in before transitioning to Expired.
+                  Used to determine whether an expired build originally succeeded or failed.
+                type: string
               pushTaskRunName:
                 description: PushTaskRunName is the name of the TaskRun for pushing
                   artifacts to registry
