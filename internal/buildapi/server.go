@@ -38,8 +38,13 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
+	ociremote "github.com/sigstore/cosign/v2/pkg/oci/remote"
+
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi/catalog"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/bundleverify"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/labels"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -1178,20 +1183,42 @@ func buildAIBSpec(req *BuildRequest, manifest, manifestFileName string, inputFil
 // digestPinnedRef matches an OCI reference with a sha256 digest: image@sha256:<64 hex chars>
 var digestPinnedRef = regexp.MustCompile(`^.+@sha256:[a-fA-F0-9]{64}$`)
 
-// validateSecureBuild checks that the OperatorConfig has a valid digest-pinned taskBundleRef.
+// resolveTaskBundleRef resolves and optionally verifies the Tekton Bundle reference.
 // Returns the validated ref, an HTTP status code, and error.
 func resolveTaskBundleRef(ctx context.Context, k8sClient client.Client, namespace string, req *BuildRequest) (string, int, error) {
 	if !req.SecureBuild {
 		return "", 0, nil
 	}
+
+	operatorConfig, err := loadOperatorConfigFn(ctx, k8sClient, namespace)
+	if err != nil {
+		return "", http.StatusInternalServerError, fmt.Errorf("secureBuild requested but OperatorConfig could not be read: %w", err)
+	}
+	if operatorConfig == nil {
+		return "", http.StatusInternalServerError, fmt.Errorf("secureBuild requested but OperatorConfig is nil")
+	}
+
+	var ref string
 	if req.TaskBundleRef != "" {
-		ref := strings.TrimSpace(req.TaskBundleRef)
+		ref = strings.TrimSpace(req.TaskBundleRef)
 		if !digestPinnedRef.MatchString(ref) {
 			return "", http.StatusBadRequest, fmt.Errorf("taskBundleRef must be digest-pinned (image@sha256:<64 hex>), got %q", ref)
 		}
-		return ref, 0, nil
+	} else {
+		if operatorConfig.Spec.OSBuilds == nil || operatorConfig.Spec.OSBuilds.TaskBundleRef == "" {
+			return "", http.StatusBadRequest, fmt.Errorf("secureBuild requested but OperatorConfig.spec.osBuilds.taskBundleRef is not set")
+		}
+		ref = strings.TrimSpace(operatorConfig.Spec.OSBuilds.TaskBundleRef)
+		if !digestPinnedRef.MatchString(ref) {
+			return "", http.StatusBadRequest, fmt.Errorf("secureBuild requires a digest-pinned taskBundleRef (must match image@sha256:<64 hex>), got %q", ref)
+		}
 	}
-	return validateSecureBuild(ctx, k8sClient, namespace)
+
+	if status, err := verifyTaskBundle(ctx, k8sClient, namespace, operatorConfig, ref); err != nil {
+		return "", status, err
+	}
+
+	return ref, 0, nil
 }
 
 func validateRestoreSourcesRef(req *BuildRequest) error {
@@ -1206,19 +1233,35 @@ func validateRestoreSourcesRef(req *BuildRequest) error {
 	return nil
 }
 
-func validateSecureBuild(ctx context.Context, k8sClient client.Client, namespace string) (string, int, error) {
-	operatorConfig := &automotivev1alpha1.OperatorConfig{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "config", Namespace: namespace}, operatorConfig); err != nil {
-		return "", http.StatusInternalServerError, fmt.Errorf("secureBuild requested but OperatorConfig could not be read: %v", err)
+func verifyTaskBundle(ctx context.Context, k8sClient client.Client, namespace string, operatorConfig *automotivev1alpha1.OperatorConfig, bundleRef string) (int, error) {
+	if operatorConfig.Spec.OSBuilds == nil || !operatorConfig.Spec.OSBuilds.TaskBundleVerify {
+		return 0, nil
 	}
-	if operatorConfig.Spec.OSBuilds == nil || operatorConfig.Spec.OSBuilds.TaskBundleRef == "" {
-		return "", http.StatusBadRequest, fmt.Errorf("secureBuild requested but OperatorConfig.spec.osBuilds.taskBundleRef is not set")
+
+	cosignKeyRef := operatorConfig.Spec.OSBuilds.TaskBundleCosignKeyRef
+	if cosignKeyRef == nil || cosignKeyRef.Name == "" || cosignKeyRef.Key == "" {
+		return http.StatusBadRequest, fmt.Errorf("taskBundleVerify is enabled but taskBundleCosignKeyRef is not set in OperatorConfig")
 	}
-	ref := strings.TrimSpace(operatorConfig.Spec.OSBuilds.TaskBundleRef)
-	if !digestPinnedRef.MatchString(ref) {
-		return "", http.StatusBadRequest, fmt.Errorf("secureBuild requires a digest-pinned taskBundleRef (must match image@sha256:<64 hex>), got %q", ref)
+
+	cm := &corev1.ConfigMap{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: cosignKeyRef.Name, Namespace: namespace}, cm); err != nil {
+		if k8serrors.IsNotFound(err) {
+			return http.StatusBadRequest, fmt.Errorf("cosign key ConfigMap %q not found in namespace %q", cosignKeyRef.Name, namespace)
+		}
+		return http.StatusInternalServerError, fmt.Errorf("failed to read cosign key ConfigMap %q: %w", cosignKeyRef.Name, err)
 	}
-	return ref, 0, nil
+
+	pubKeyPEM, ok := cm.Data[cosignKeyRef.Key]
+	if !ok {
+		return http.StatusBadRequest, fmt.Errorf("ConfigMap %q does not contain key %q", cosignKeyRef.Name, cosignKeyRef.Key)
+	}
+
+	registryOpts := ociremote.WithRemoteOptions(remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	if err := bundleverify.VerifyBundle(ctx, bundleRef, []byte(pubKeyPEM), registryOpts); err != nil {
+		return http.StatusForbidden, fmt.Errorf("task bundle signature verification failed: %w", err)
+	}
+
+	return 0, nil
 }
 
 func (a *APIServer) createBuild(c *gin.Context) {

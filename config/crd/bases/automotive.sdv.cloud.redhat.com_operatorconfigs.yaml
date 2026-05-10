@@ -447,7 +447,7 @@ spec:
                               Claims lists the names of resources, defined in spec.resourceClaims,
                               that are used by this container.
 
-                              This is an alpha field and requires enabling the
+                              This field depends on the
                               DynamicResourceAllocation feature gate.
 
                               This field is immutable. It can only be set for containers.
@@ -507,7 +507,7 @@ spec:
                               Claims lists the names of resources, defined in spec.resourceClaims,
                               that are used by this container.
 
-                              This is an alpha field and requires enabling the
+                              This field depends on the
                               DynamicResourceAllocation feature gate.
 
                               This field is immutable. It can only be set for containers.
@@ -567,7 +567,7 @@ spec:
                               Claims lists the names of resources, defined in spec.resourceClaims,
                               that are used by this container.
 
-                              This is an alpha field and requires enabling the
+                              This field depends on the
                               DynamicResourceAllocation feature gate.
 
                               This field is immutable. It can only be set for containers.
@@ -812,6 +812,32 @@ spec:
                       StorageClass specifies the storage class for build PVCs
                       If empty, the cluster default storage class is used
                     type: string
+                  taskBundleCosignKeyRef:
+                    description: |-
+                      TaskBundleCosignKeyRef references a ConfigMap key containing the cosign public key (PEM-encoded)
+                      used to verify Tekton Bundle signatures.
+                      Required when TaskBundleVerify is true.
+                    properties:
+                      key:
+                        description: The key to select.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the ConfigMap or its key must
+                          be defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
                   taskBundleRef:
                     description: |-
                       TaskBundleRef is the OCI reference to a signed Tekton Bundle containing task definitions.
@@ -820,6 +846,12 @@ spec:
                       and contain the same tasks as the operator deploys.
                       Example: "quay.io/rh-sdv-cloud/automotive-dev-tekton-tasks:v0.1.0@sha256:abc123..."
                     type: string
+                  taskBundleVerify:
+                    description: |-
+                      TaskBundleVerify enables cosign signature verification for Tekton Bundles.
+                      When true, all bundle refs (from OperatorConfig or user-provided --task-bundle-ref)
+                      must be signed with the key in TaskBundleCosignKeyRef.
+                    type: boolean
                   tolerations:
                     description: |-
                       Tolerations specifies tolerations to be added to build pods
@@ -886,6 +918,11 @@ spec:
                 required:
                 - enabled
                 type: object
+                x-kubernetes-validations:
+                - message: taskBundleCosignKeyRef is required when taskBundleVerify
+                    is true
+                  rule: '!has(self.taskBundleVerify) || !self.taskBundleVerify ||
+                    has(self.taskBundleCosignKeyRef)'
               tracing:
                 description: Tracing defines configuration for OpenTelemetry distributed
                   tracing
@@ -946,7 +983,7 @@ spec:
                           Claims lists the names of resources, defined in spec.resourceClaims,
                           that are used by this container.
 
-                          This is an alpha field and requires enabling the
+                          This field depends on the
                           DynamicResourceAllocation feature gate.
 
                           This field is immutable. It can only be set for containers.
@@ -1016,7 +1053,7 @@ spec:
                           Claims lists the names of resources, defined in spec.resourceClaims,
                           that are used by this container.
 
-                          This is an alpha field and requires enabling the
+                          This field depends on the
                           DynamicResourceAllocation feature gate.
 
                           This field is immutable. It can only be set for containers.
