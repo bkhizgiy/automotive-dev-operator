@@ -140,7 +140,10 @@ caib image build <manifest.aib.yml> [flags]
 | `--flash-cmd` | | Override flash command (default: from OperatorConfig target mapping) |
 | `--lease-duration` | `03:00:00` | Device lease duration for flash (HH:MM:SS) |
 | `--lease` | | Existing Jumpstarter lease name (mutually exclusive with `--lease-duration`) |
-| `--secure` | `false` | Resolve tasks from signed Tekton Bundle |
+| `--secure` | `false` | Resolve tasks from signed Tekton Bundle (requires OperatorConfig `taskBundleRef`) |
+| `--reproducible` | `false` | Save RPMs, manifest, and task bundle as OCI referrers for future reproduction (requires `--secure`) |
+| `--task-bundle-ref` | | Digest-pinned Tekton bundle ref for reproducible rebuild (e.g. `quay.io/org/tasks@sha256:abc...`) |
+| `--restore-sources` | | OCI image ref from prior build — restores archived sources for exact reproducible rebuild |
 | `--ttl` | | Time-to-live for the build (e.g. `24h`, `72h`; empty=server default, `0`=no expiry) |
 
 **Examples:**
@@ -218,11 +221,14 @@ caib image disk <container-ref> [flags]
 | `--flash-cmd` | | Override flash command (default: from OperatorConfig target mapping) |
 | `--lease-duration` | `03:00:00` | Device lease duration for flash (HH:MM:SS) |
 | `--lease` | | Existing Jumpstarter lease name (mutually exclusive with `--lease-duration`) |
-| `--secure` | `false` | Resolve tasks from signed Tekton Bundle |
+| `--secure` | `false` | Resolve tasks from signed Tekton Bundle (requires OperatorConfig `taskBundleRef`) |
+| `--task-bundle-ref` | | Digest-pinned Tekton bundle ref for reproducible rebuild (e.g. `quay.io/org/tasks@sha256:abc...`) |
 | `--ttl` | | Time-to-live for the build (e.g. `24h`, `72h`) |
 | `--internal-registry` | `false` | Push to OpenShift internal registry |
 | `--image-name` | (build name) | Override image name in internal registry |
 | `--image-tag` | `disk` | Override tag in internal registry |
+
+> **Note:** `--reproducible` and `--restore-sources` are not supported by `image disk`. This command creates a disk image from an existing container rather than performing a full build, so source archival and reproducibility tracking do not apply. Use `image build` or `image build-dev` for reproducible builds.
 
 **Examples:**
 
@@ -279,7 +285,10 @@ caib image build-dev <manifest.aib.yml> [flags]
 | `--flash-cmd` | | Override flash command (default: from OperatorConfig target mapping) |
 | `--lease-duration` | `03:00:00` | Device lease duration for flash (HH:MM:SS) |
 | `--lease` | | Existing Jumpstarter lease name (mutually exclusive with `--lease-duration`) |
-| `--secure` | `false` | Resolve tasks from signed Tekton Bundle |
+| `--secure` | `false` | Resolve tasks from signed Tekton Bundle (requires OperatorConfig `taskBundleRef`) |
+| `--reproducible` | `false` | Save RPMs, manifest, and task bundle as OCI referrers for future reproduction (requires `--secure`) |
+| `--task-bundle-ref` | | Digest-pinned Tekton bundle ref for reproducible rebuild (e.g. `quay.io/org/tasks@sha256:abc...`) |
+| `--restore-sources` | | OCI image ref from prior build — restores archived sources for exact reproducible rebuild |
 | `--ttl` | | Time-to-live for the build (e.g. `24h`, `72h`) |
 | `--internal-registry` | `false` | Push to OpenShift internal registry |
 | `--image-name` | (build name) | Override image name in internal registry |
@@ -479,6 +488,40 @@ caib image logs <build-name> [flags]
 | `--server` | `$CAIB_SERVER` | Build API server URL |
 | `--token` | `$CAIB_TOKEN` | Bearer token |
 
+### image inspect
+
+Show build provenance and reproducibility info for an OCI artifact. Reads manifest annotations and OCI referrers to display the exact build parameters and a command to reproduce the build.
+
+```bash
+caib image inspect <oci-registry-reference> [flags]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--registry-auth-file` | | Path to Docker/Podman auth file for registry authentication |
+| `-o`, `--output-dir` | | Download referrer artifacts (manifest, RPMs, osbuild manifest) to this directory |
+
+Discovered referrer types:
+
+| Artifact Type | Description |
+|---------------|-------------|
+| `application/vnd.automotive.manifest.v1+yaml` | Original AIB manifest used for the build |
+| `application/vnd.automotive.sources.v1+tar+gzip` | Archived RPMs and build inputs |
+| `application/vnd.osbuild.manifest.v1+json` | Resolved osbuild manifest |
+
+**Examples:**
+
+```bash
+# Show build provenance
+caib image inspect quay.io/org/my-os:v1
+
+# Show provenance and download artifacts for reproduction
+caib image inspect quay.io/org/my-os:v1 -o ./rebuild/
+
+# Inspect with explicit auth file
+caib image inspect quay.io/org/my-os:v1 --registry-auth-file ~/.config/containers/auth.json
+```
+
 ### image token
 
 Request a fresh, short-lived registry token (valid ~4 hours) for a completed build that used `--internal-registry`. Can be used with podman, skopeo, or any OCI-compatible tool.
@@ -526,6 +569,71 @@ caib image cancel <build-name> [flags]
 | Update mechanism | `bootc switch/upgrade` | Requires re-imaging |
 | Use case | OTA-updatable systems | Development/standalone disk images |
 | Mode | Always `bootc` | `image` or `package` |
+
+## Secure & Reproducible Builds
+
+The `--secure` and `--reproducible` flags enable supply-chain security and build reproducibility.
+
+### Secure builds (`--secure`)
+
+When `--secure` is set, the build resolves Tekton tasks from a digest-pinned, cosign-signed bundle instead of using the operator's default tasks. This ensures the build pipeline itself is verified and tamper-proof.
+
+**Requirements:**
+- OperatorConfig must have `osBuilds.taskBundleRef` set to a digest-pinned bundle (e.g. `quay.io/org/tasks@sha256:...`)
+- If `osBuilds.taskBundleVerify` is `true`, a cosign public key must be configured via `osBuilds.taskBundleCosignKeyRef` (a ConfigMap key reference)
+
+**OperatorConfig setup:**
+
+```yaml
+apiVersion: automotive.sdv.cloud.redhat.com/v1alpha1
+kind: OperatorConfig
+metadata:
+  name: config
+spec:
+  osBuilds:
+    taskBundleRef: "quay.io/centos-automotive-suite/automotive-dev-operator-bundle@sha256:..."
+    taskBundleVerify: true
+    taskBundleCosignKeyRef:
+      name: cosign-public-key    # ConfigMap name
+      key: cosign.pub            # Key within the ConfigMap
+```
+
+Create the ConfigMap with your cosign public key:
+
+```bash
+kubectl create configmap cosign-public-key \
+  --from-file=cosign.pub=hack/cosign.pub
+```
+
+### Reproducible builds (`--reproducible`)
+
+When `--reproducible` is set (requires `--secure`), the build archives its inputs as OCI referrer artifacts alongside the output image:
+
+- **AIB manifest** — the exact manifest used
+- **Build sources** — RPMs and other inputs (tar.gz)
+- **osbuild manifest** — the resolved osbuild pipeline definition
+
+These artifacts enable exact rebuild reproduction. Use `caib image inspect` to view them and get a rebuild command.
+
+### Rebuilding from a previous build
+
+```bash
+# 1. Download the manifest and metadata for local inspection
+caib image inspect quay.io/org/my-os:v1 -o ./rebuild/
+
+# 2. Rebuild using the downloaded manifest; --restore-sources tells the build
+#    to fetch archived RPMs/inputs from the OCI registry at build time
+caib image build ./rebuild/manifest.aib.yml \
+  --secure \
+  --reproducible \
+  --task-bundle-ref quay.io/org/tasks@sha256:abc... \
+  --restore-sources quay.io/org/my-os:v1@sha256:def... \
+  --push quay.io/org/my-os:v2
+```
+
+Key flags for reproduction:
+- `--task-bundle-ref` pins the exact Tekton bundle used in the original build
+- `--restore-sources` tells the build to fetch archived RPMs and inputs from the original build's OCI referrers at build time (the build pod pulls from the registry, not from your local download)
 
 ## Authentication
 
