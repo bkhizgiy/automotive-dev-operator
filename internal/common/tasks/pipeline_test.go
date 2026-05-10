@@ -7,6 +7,13 @@ import (
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 )
 
+const (
+	insecureRegistryParam    = "insecure-registry"
+	falseString              = "false"
+	buildImageTaskName       = "build-automotive-image"
+	pushDiskArtifactTaskName = "push-disk-artifact"
+)
+
 func TestBuildTaskRef_ClusterResolver(t *testing.T) {
 	ref := buildTaskRef("build-automotive-image", "test-ns", nil)
 
@@ -250,6 +257,69 @@ func TestCollectImagesScript_Format(t *testing.T) {
 		}
 	}
 	t.Fatal("pipeline should have collect-images-result task")
+}
+
+func TestInsecureRegistryParam_Pipeline(t *testing.T) {
+	pipeline := GenerateTektonPipeline("test-pipeline", "test-ns", &BuildConfig{})
+
+	// Pipeline should declare insecure-registry param with default "false"
+	var found bool
+	for _, p := range pipeline.Spec.Params {
+		if p.Name == insecureRegistryParam {
+			found = true
+			if p.Default == nil || p.Default.StringVal != falseString {
+				t.Errorf("%s default = %v, want %s", insecureRegistryParam, p.Default, falseString)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("pipeline should declare %s param", insecureRegistryParam)
+	}
+
+	// insecure-registry should be forwarded to build-image and push-disk-artifact tasks
+	for _, task := range pipeline.Spec.Tasks {
+		if task.Name == buildImageTaskName || task.Name == pushDiskArtifactTaskName {
+			var paramForwarded bool
+			for _, p := range task.Params {
+				if p.Name == insecureRegistryParam && p.Value.StringVal == "$(params.insecure-registry)" {
+					paramForwarded = true
+					break
+				}
+			}
+			if !paramForwarded {
+				t.Errorf("task %q should forward %s pipeline param", task.Name, insecureRegistryParam)
+			}
+		}
+	}
+}
+
+func TestInsecureRegistryParam_PushTask(t *testing.T) {
+	task := GeneratePushArtifactRegistryTask("test-ns", nil)
+
+	for _, p := range task.Spec.Params {
+		if p.Name == insecureRegistryParam {
+			if p.Default == nil || p.Default.StringVal != "false" {
+				t.Errorf("%s default = %v, want \"false\"", insecureRegistryParam, p.Default)
+			}
+			return
+		}
+	}
+	t.Fatalf("push task should have %s param", insecureRegistryParam)
+}
+
+func TestInsecureRegistryParam_BuildTask(t *testing.T) {
+	task := GenerateBuildAutomotiveImageTask("test-ns", nil, "")
+
+	for _, p := range task.Spec.Params {
+		if p.Name == insecureRegistryParam {
+			if p.Default == nil || p.Default.StringVal != "false" {
+				t.Errorf("%s default = %v, want \"false\"", insecureRegistryParam, p.Default)
+			}
+			return
+		}
+	}
+	t.Fatalf("build task should have %s param", insecureRegistryParam)
 }
 
 func hasParam(params []tektonv1.ParamSpec, name string) bool {

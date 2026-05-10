@@ -243,10 +243,11 @@ var _ = Describe("controller", Ordered, func() {
 				_, err = utils.Run(cmd)
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
-				By("patching OperatorConfig registry route")
+				By("patching OperatorConfig for registry")
+				patch := fmt.Sprintf(`{"spec":{"osBuilds":{"clusterRegistryRoute":"%s:5000","insecureRegistry":true}}}`, registryHost)
 				cmd = exec.Command("kubectl", "patch", "operatorconfig", "config",
 					"-n", namespace, "--type=merge",
-					"-p", fmt.Sprintf(`{"spec":{"osBuilds":{"clusterRegistryRoute":"%s:5000"}}}`, registryHost))
+					"-p", patch)
 				_, err = utils.Run(cmd)
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
@@ -261,7 +262,7 @@ var _ = Describe("controller", Ordered, func() {
 
 				openShiftCluster = utils.IsOpenShiftCluster()
 				if openShiftCluster {
-					By("patching " + tektonTaskPushArtifactRegistry + " Task for OpenShift (insecure TLS)")
+					By("patching " + tektonTaskPushArtifactRegistry + " Task for OpenShift (OCI referrers compat)")
 					cmd = exec.Command("kubectl", "annotate", "task", tektonTaskPushArtifactRegistry,
 						"-n", namespace, "automotive.sdv.cloud.redhat.com/unmanaged=true", "--overwrite")
 					_, err = utils.Run(cmd)
@@ -269,9 +270,8 @@ var _ = Describe("controller", Ordered, func() {
 
 					err = utils.PatchTektonTaskStep(namespace, tektonTaskPushArtifactRegistry, 0,
 						map[string]string{
-							"push --disable-path-validation": "push --insecure --disable-path-validation",
-							"--image-spec v1.1":              "--image-spec v1.0",
-							`oras" attach`:                   `oras" attach --insecure --distribution-spec v1.1-referrers-tag`,
+							"--image-spec v1.1":                    "--image-spec v1.0",
+							`oras" attach "${ORAS_EXTRA_ARGS[@]}"`: `oras" attach --distribution-spec v1.1-referrers-tag "${ORAS_EXTRA_ARGS[@]}"`,
 						}, nil)
 					ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
@@ -309,22 +309,19 @@ var _ = Describe("controller", Ordered, func() {
 					EventuallyWithOffset(1, waitForBuildAPI, 2*time.Minute, 5*time.Second).Should(Succeed(),
 						"Build API route did not become ready")
 				} else {
-					// Kind-specific workaround: the local registry uses plain HTTP (no TLS),
-					// so oras push needs --plain-http. On OpenShift the internal registry has
-					// TLS and this flag is not required.
-					// runAsUser: 0 is needed because plain Kubernetes lacks OpenShift's SCC
-					// (Security Context Constraints) that would grant the push step access to
-					// root-owned build artifacts in the shared workspace.
-					By("patching " + tektonTaskPushArtifactRegistry + " Task for Kind (plain-http + runAsUser 0)")
+					// Kind-specific workaround: runAsUser: 0 is needed because plain
+					// Kubernetes lacks OpenShift's SCC (Security Context Constraints) that
+					// would grant the push step access to root-owned build artifacts in the
+					// shared workspace. The --insecure flag for insecure registries is now
+					// handled natively via OperatorConfig.spec.osBuilds.insecureRegistry.
+					By("patching " + tektonTaskPushArtifactRegistry + " Task for Kind (runAsUser 0)")
 					cmd = exec.Command("kubectl", "annotate", "task", tektonTaskPushArtifactRegistry,
 						"-n", namespace, "automotive.sdv.cloud.redhat.com/unmanaged=true", "--overwrite")
 					_, err = utils.Run(cmd)
 					ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
 					err = utils.PatchTektonTaskStep(namespace, tektonTaskPushArtifactRegistry, 0,
-						map[string]string{
-							"push --disable-path-validation": "push --plain-http --disable-path-validation",
-						},
+						nil,
 						map[string]any{"securityContext": map[string]any{"runAsUser": 0}})
 					ExpectWithOffset(1, err).NotTo(HaveOccurred())
 

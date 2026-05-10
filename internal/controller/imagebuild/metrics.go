@@ -1,7 +1,13 @@
 package imagebuild
 
 import (
+	"context"
+	"fmt"
+
+	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	"github.com/prometheus/client_golang/prometheus"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
@@ -98,9 +104,76 @@ func adjustActiveBuildsGauge(oldPhase, newPhase string) {
 	if oldPhase == newPhase {
 		return
 	}
-	if newPhase == "Building" {
+	if newPhase == phaseBuilding {
 		ActiveBuilds.Inc()
-	} else if oldPhase == "Building" {
+	} else if oldPhase == phaseBuilding {
 		ActiveBuilds.Dec()
+	}
+}
+
+func buildMetricStatus(b *automotivev1alpha1.ImageBuild) string {
+	phase := b.Status.Phase
+	if phase == automotivev1alpha1.ImageBuildPhaseExpired {
+		if b.Status.PreviousPhase != "" {
+			phase = b.Status.PreviousPhase
+		} else {
+			return buildStatusSuccess
+		}
+	}
+	if phase == automotivev1alpha1.ImageBuildPhaseCompleted {
+		return buildStatusSuccess
+	}
+	return buildStatusFailure
+}
+
+func seedMetrics(builds []automotivev1alpha1.ImageBuild) {
+	var active float64
+
+	for i := range builds {
+		b := &builds[i]
+
+		if b.Status.Phase == phaseBuilding {
+			active++
+		}
+
+		if !automotivev1alpha1.IsTerminalBuildPhase(b.Status.Phase) {
+			continue
+		}
+
+		status := buildMetricStatus(b)
+		mode := b.Spec.GetMode()
+		distro := b.Spec.GetDistro()
+		target := b.Spec.GetTarget()
+		format := b.Spec.GetExportFormat()
+		arch := b.Spec.Architecture
+
+		BuildTotal.WithLabelValues(mode, distro, target, format, arch, status).Add(1)
+
+		if b.Status.FlashTaskRunName != "" {
+			FlashTotal.WithLabelValues(target, status).Add(1)
+		}
+	}
+
+	ActiveBuilds.Set(active)
+}
+
+// seedMetricsFromCRs pre-loads counters from existing ImageBuild CRs so that
+// metrics survive operator pod restarts. Histograms are not seeded to avoid
+// inflating observation counts on each restart.
+func (r *ImageBuildReconciler) seedMetricsFromCRs(mgr ctrl.Manager) manager.RunnableFunc {
+	return func(ctx context.Context) error {
+		if !mgr.GetCache().WaitForCacheSync(ctx) {
+			return fmt.Errorf("cache sync failed")
+		}
+		var builds automotivev1alpha1.ImageBuildList
+		if err := mgr.GetClient().List(ctx, &builds); err != nil {
+			r.Log.Error(err, "Failed to seed metrics from CRs")
+			return err
+		}
+
+		seedMetrics(builds.Items)
+
+		r.Log.Info("Seeded metrics from CRs", "totalCRs", len(builds.Items))
+		return nil
 	}
 }

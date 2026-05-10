@@ -237,6 +237,14 @@ EXPORT_OCI="$(params.export-oci)"
 BUILDER_IMAGE="$(params.builder-image)"
 CLUSTER_REGISTRY_ROUTE="$(params.cluster-registry-route)"
 CONTAINER_REF="$(params.container-ref)"
+INSECURE_REGISTRY="$(params.insecure-registry)"
+
+SKOPEO_COPY_TLS_ARGS=()
+SKOPEO_INSPECT_TLS_ARGS=()
+if [ "$INSECURE_REGISTRY" = "true" ]; then
+  SKOPEO_COPY_TLS_ARGS=(--src-tls-verify=false --dest-tls-verify=false)
+  SKOPEO_INSPECT_TLS_ARGS=(--tls-verify=false)
+fi
 
 echo "=== Build Configuration ==="
 echo "BUILD_MODE: $BUILD_MODE"
@@ -313,7 +321,7 @@ with open(f, 'w') as fh: json.dump(d, fh)
     echo "Rebuild requested, skipping cache check"
   else
     echo "Checking if $TARGET_BUILDER_IMAGE exists in cluster registry..."
-    if skopeo inspect --authfile="$REGISTRY_AUTH_FILE" "docker://$TARGET_BUILDER_IMAGE" >/dev/null 2>&1; then
+    if skopeo inspect "${SKOPEO_INSPECT_TLS_ARGS[@]}" --authfile="$REGISTRY_AUTH_FILE" "docker://$TARGET_BUILDER_IMAGE" >/dev/null 2>&1; then
       echo "Builder image found in cluster registry: $TARGET_BUILDER_IMAGE"
       BUILDER_CACHED=true
     fi
@@ -326,7 +334,7 @@ with open(f, 'w') as fh: json.dump(d, fh)
 
     echo "Built local image: $LOCAL_BUILDER_IMAGE"
     echo "Pushing to cluster registry: $TARGET_BUILDER_IMAGE"
-    skopeo copy --authfile="$REGISTRY_AUTH_FILE" \
+    skopeo copy "${SKOPEO_COPY_TLS_ARGS[@]}" --authfile="$REGISTRY_AUTH_FILE" \
       "containers-storage:$LOCAL_BUILDER_IMAGE" \
       "docker://$TARGET_BUILDER_IMAGE"
     echo "Builder image pushed: $TARGET_BUILDER_IMAGE"
@@ -343,7 +351,7 @@ echo -n "${BUILDER_IMAGE:-}" > /tekton/results/builder-image
 AIB_IMAGE_REF="$(params.automotive-image-builder)"
 (
   aib --version 2>&1 | head -1 | tr -d '\r\n' | sed 's/^aib //' > /tmp/aib-version.txt 2>/dev/null || true
-  AIB_DIGEST=$(skopeo inspect --format '{{.Digest}}' "docker://${AIB_IMAGE_REF}" 2>/dev/null || echo "")
+  AIB_DIGEST=$(skopeo inspect "${SKOPEO_INSPECT_TLS_ARGS[@]}" --format '{{.Digest}}' "docker://${AIB_IMAGE_REF}" 2>/dev/null || echo "")
   if [ -n "$AIB_DIGEST" ]; then
     case "$AIB_IMAGE_REF" in
       *@*) echo -n "$AIB_IMAGE_REF" > /tmp/aib-pinned.txt ;;
@@ -366,11 +374,11 @@ if [ -n "$BUILDER_IMAGE" ] && { [ "$BUILD_MODE" = "bootc" ] || [ "$BUILD_MODE" =
   if [ -n "$TOKEN" ]; then
     REGISTRY_HOST=$(echo "$BUILDER_IMAGE" | cut -d'/' -f1)
     create_service_account_auth "$REGISTRY_HOST" /tmp/builder-auth.json
-    skopeo copy --authfile=/tmp/builder-auth.json \
+    skopeo copy "${SKOPEO_COPY_TLS_ARGS[@]}" --authfile=/tmp/builder-auth.json \
       "docker://$BUILDER_IMAGE" \
       "containers-storage:$LOCAL_BUILDER_IMAGE"
   else
-    skopeo copy \
+    skopeo copy "${SKOPEO_COPY_TLS_ARGS[@]}" \
       "docker://$BUILDER_IMAGE" \
       "containers-storage:$LOCAL_BUILDER_IMAGE"
   fi
@@ -538,7 +546,7 @@ PYEOF
           echo "⏱ Container annotate: $((ANNOTATE_DONE - COPY_DONE))s"
 
           echo "Pushing container to registry: $CONTAINER_PUSH"
-          skopeo copy --digestfile /tmp/container-push-digest.txt \
+          skopeo copy "${SKOPEO_COPY_TLS_ARGS[@]}" --digestfile /tmp/container-push-digest.txt \
             --authfile="$REGISTRY_AUTH_FILE" "oci:${OCI_DIR}:latest" "docker://$CONTAINER_PUSH"
           rm -rf "${OCI_DIR:-/tmp/nonexistent}" 2>/dev/null || true
           PUSH_DONE=$(date +%s)
@@ -600,9 +608,9 @@ PYEOF
       # Pull the container image first
       echo "Pulling container image..."
       # Try without auth first (for public images), fall back to auth file if needed
-      if ! skopeo copy "docker://$CONTAINER_REF" "containers-storage:$CONTAINER_REF" 2>/dev/null; then
+      if ! skopeo copy "${SKOPEO_COPY_TLS_ARGS[@]}" "docker://$CONTAINER_REF" "containers-storage:$CONTAINER_REF" 2>/dev/null; then
         echo "Public pull failed, trying with auth..."
-        skopeo copy --authfile="$REGISTRY_AUTH_FILE" \
+        skopeo copy "${SKOPEO_COPY_TLS_ARGS[@]}" --authfile="$REGISTRY_AUTH_FILE" \
           "docker://$CONTAINER_REF" \
           "containers-storage:$CONTAINER_REF"
       fi

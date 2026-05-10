@@ -26,7 +26,13 @@ func newTestScheme() *runtime.Scheme {
 
 func TestCreateSealedTaskRun_ServiceAccount(t *testing.T) {
 	scheme := newTestScheme()
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	operatorConfig := &automotivev1alpha1.OperatorConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "config",
+			Namespace: controllerutils.OperatorNamespace(),
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(operatorConfig).Build()
 	r := &Reconciler{Client: fakeClient, Scheme: scheme}
 
 	sealed := &automotivev1alpha1.ImageReseal{

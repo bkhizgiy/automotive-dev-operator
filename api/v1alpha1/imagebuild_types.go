@@ -293,6 +293,11 @@ type ImageBuildStatus struct {
 	// or workspace build).
 	// +optional
 	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
+
+	// PreviousPhase is the phase the build was in before transitioning to Expired.
+	// Used to determine whether an expired build originally succeeded or failed.
+	// +optional
+	PreviousPhase string `json:"previousPhase,omitempty"`
 }
 
 // +kubebuilder:object:root=true
