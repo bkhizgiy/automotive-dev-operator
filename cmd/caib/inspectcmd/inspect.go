@@ -238,12 +238,23 @@ func discoverReferrers(ociRef, digest string, sysCtx *types.SystemContext) ([]re
 			Username: sysCtx.DockerAuthConfig.Username,
 			Password: sysCtx.DockerAuthConfig.Password,
 		})
-	} else if sysCtx.AuthFilePath != "" {
-		store, err := credentials.NewFileStore(sysCtx.AuthFilePath)
-		if err != nil {
-			return nil, fmt.Errorf("load auth file %s: %w", sysCtx.AuthFilePath, err)
+	} else {
+		authFilePath := sysCtx.AuthFilePath
+		if authFilePath == "" {
+			for _, candidate := range registryauth.FileCandidates() {
+				if _, err := os.Stat(candidate); err == nil {
+					authFilePath = candidate
+					break
+				}
+			}
 		}
-		authClient.Credential = credentials.Credential(store)
+		if authFilePath != "" {
+			store, err := credentials.NewFileStore(authFilePath)
+			if err != nil {
+				return nil, fmt.Errorf("load auth file %s: %w", authFilePath, err)
+			}
+			authClient.Credential = credentials.Credential(store)
+		}
 	}
 	if sysCtx.DockerInsecureSkipTLSVerify == types.OptionalBoolTrue {
 		authClient.Client = &http.Client{
