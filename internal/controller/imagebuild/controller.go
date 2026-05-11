@@ -13,6 +13,7 @@ import (
 	"time"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/bundleverify"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/registryutil"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/tasks"
 	controllerutils "github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/controllerutils"
@@ -942,6 +943,25 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 			if !digestPinnedRef.MatchString(ref) {
 				return fmt.Errorf("secureBuild requires a digest-pinned taskBundleRef (must match image@sha256:<64 hex>), got %q", ref)
 			}
+
+			if operatorConfig.Spec.OSBuilds.TaskBundleVerify {
+				cosignKeyRef := operatorConfig.Spec.OSBuilds.TaskBundleCosignKeyRef
+				if cosignKeyRef == nil || cosignKeyRef.Name == "" || cosignKeyRef.Key == "" {
+					return fmt.Errorf("secureBuild: taskBundleVerify is enabled but taskBundleCosignKeyRef is not set")
+				}
+				cm := &corev1.ConfigMap{}
+				if err := r.Get(ctx, types.NamespacedName{Name: cosignKeyRef.Name, Namespace: controllerutils.OperatorNamespace()}, cm); err != nil {
+					return fmt.Errorf("secureBuild: failed to read cosign key ConfigMap %q: %w", cosignKeyRef.Name, err)
+				}
+				pubKeyPEM, ok := cm.Data[cosignKeyRef.Key]
+				if !ok {
+					return fmt.Errorf("secureBuild: ConfigMap %q does not contain key %q", cosignKeyRef.Name, cosignKeyRef.Key)
+				}
+				if err := bundleverify.VerifyBundle(ctx, ref, []byte(pubKeyPEM)); err != nil {
+					return fmt.Errorf("secureBuild: task bundle signature verification failed: %w", err)
+				}
+			}
+
 			buildConfig.TaskResolver = tasks.TaskResolverBundle
 			buildConfig.TaskBundleRef = ref
 
