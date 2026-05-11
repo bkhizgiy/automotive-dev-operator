@@ -596,6 +596,13 @@ type OSBuildsConfig struct {
 	// +optional
 	ClusterRegistryRoute string `json:"clusterRegistryRoute,omitempty"`
 
+	// InsecureRegistry skips TLS certificate verification for OCI registry operations
+	// such as artifact pushes via oras. Required when the target registry uses a
+	// self-signed certificate (e.g., CRC/OpenShift internal registry, local Kind
+	// registry with generated certs).
+	// +optional
+	InsecureRegistry bool `json:"insecureRegistry,omitempty"`
+
 	// UploadTimeoutMinutes is the maximum time in minutes to wait for file uploads before failing the build
 	// Default: 30
 	// +optional

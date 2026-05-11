@@ -330,6 +330,15 @@ func GeneratePushArtifactRegistryTask(namespace string, buildConfig *BuildConfig
 					},
 				},
 				{
+					Name:        "insecure-registry",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Use insecure (skip TLS verify) for registry operations (true/false)",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "false",
+					},
+				},
+				{
 					Name:        "reproducible",
 					Type:        tektonv1.ParamTypeString,
 					Description: "Attach RPMs and AIB manifest as OCI referrers for reproducibility (true/false)",
@@ -611,6 +620,15 @@ func GenerateBuildAutomotiveImageTask(namespace string, buildConfig *BuildConfig
 					Default: &tektonv1.ParamValue{
 						Type:      tektonv1.ParamTypeString,
 						StringVal: buildConfig.getYQHelperImage(),
+					},
+				},
+				{
+					Name:        "insecure-registry",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Use insecure (skip TLS verify) for registry operations (true/false)",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "false",
 					},
 				},
 				traceIDParamSpec(),
@@ -977,6 +995,15 @@ func GenerateTektonPipeline(name, namespace string, buildConfig *BuildConfig) *t
 					},
 				},
 				{
+					Name:        "insecure-registry",
+					Type:        tektonv1.ParamTypeString,
+					Description: "Use insecure (skip TLS verify) for registry operations (true/false)",
+					Default: &tektonv1.ParamValue{
+						Type:      tektonv1.ParamTypeString,
+						StringVal: "false",
+					},
+				},
+				{
 					Name:        "container-push",
 					Type:        tektonv1.ParamTypeString,
 					Description: "Registry URL to push bootc container to",
@@ -1239,7 +1266,7 @@ func GenerateTektonPipeline(name, namespace string, buildConfig *BuildConfig) *t
 								"automotive-image-builder", "container-push", "build-disk-image",
 								"export-oci", "builder-image", "cluster-registry-route",
 								"container-ref", "rebuild-builder", "use-persistent-cache",
-								"yq-helper-image", "reproducible", "restore-sources-ref",
+								"yq-helper-image", "reproducible", "restore-sources-ref", "insecure-registry",
 							),
 							traceIDPipelineParam(),
 						)...,
@@ -1344,6 +1371,13 @@ func GenerateTektonPipeline(name, namespace string, buildConfig *BuildConfig) *t
 							Value: tektonv1.ParamValue{
 								Type:      tektonv1.ParamTypeString,
 								StringVal: "$(params.secure-build)",
+							},
+						},
+						{
+							Name: "insecure-registry",
+							Value: tektonv1.ParamValue{
+								Type:      tektonv1.ParamTypeString,
+								StringVal: "$(params.insecure-registry)",
 							},
 						},
 						{
@@ -1935,6 +1969,12 @@ func sealedTaskSpec(operation string, buildConfig *BuildConfig) tektonv1.TaskSpe
 				Description: "Target architecture (e.g., amd64, arm64); auto-detected if empty",
 				Default:     &tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: ""},
 			},
+			{
+				Name:        "insecure-registry",
+				Type:        tektonv1.ParamTypeString,
+				Description: "Use insecure (skip TLS verify) for registry operations (true/false)",
+				Default:     &tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: "false"},
+			},
 		},
 		Results: []tektonv1.TaskResult{
 			{
@@ -1970,6 +2010,7 @@ func sealedTaskSpec(operation string, buildConfig *BuildConfig) tektonv1.TaskSpe
 					{Name: "BUILDER_IMAGE", Value: "$(params.builder-image)"},
 					{Name: "AIB_IMAGE", Value: "$(params.aib-image)"},
 					{Name: "ARCHITECTURE", Value: "$(params.architecture)"},
+					{Name: "INSECURE_REGISTRY", Value: "$(params.insecure-registry)"},
 					{Name: "RESULT_PATH", Value: "$(results.output-container.path)"},
 				},
 				Script:  SealedOperationScript,

@@ -350,6 +350,11 @@ func (r *Reconciler) createSealedTaskRun(ctx context.Context, sealed *automotive
 		signedRef = sealed.Spec.SignedRef
 	}
 
+	operatorConfig := &automotivev1alpha1.OperatorConfig{}
+	if err := r.Get(ctx, client.ObjectKey{Name: "config", Namespace: controllerutils.OperatorNamespace()}, operatorConfig); err != nil {
+		return nil, fmt.Errorf("failed to fetch OperatorConfig: %w", err)
+	}
+
 	params := []tektonv1.Param{
 		{Name: "input-ref", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: sealed.Spec.InputRef}},
 		{Name: "output-ref", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: sealed.Spec.OutputRef}},
@@ -357,6 +362,7 @@ func (r *Reconciler) createSealedTaskRun(ctx context.Context, sealed *automotive
 		{Name: "aib-image", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: sealed.Spec.GetAIBImage()}},
 		{Name: "builder-image", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: sealed.Spec.BuilderImage}},
 		{Name: "architecture", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: sealed.Spec.Architecture}},
+		{Name: "insecure-registry", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: fmt.Sprintf("%t", operatorConfig.Spec.OSBuilds != nil && operatorConfig.Spec.OSBuilds.InsecureRegistry)}},
 	}
 
 	trSpec := tektonv1.TaskRunSpec{
@@ -433,6 +439,12 @@ func (r *Reconciler) createSealedPipelineRun(ctx context.Context, sealed *automo
 		pipelineWorkspaceRefs = append(pipelineWorkspaceRefs, tektonv1.WorkspacePipelineTaskBinding{Name: "sealing-key-password", Workspace: "sealing-key-password"})
 	}
 
+	operatorConfig := &automotivev1alpha1.OperatorConfig{}
+	if err := r.Get(ctx, client.ObjectKey{Name: "config", Namespace: controllerutils.OperatorNamespace()}, operatorConfig); err != nil {
+		return nil, fmt.Errorf("failed to fetch OperatorConfig: %w", err)
+	}
+	insecureRegistry := fmt.Sprintf("%t", operatorConfig.Spec.OSBuilds != nil && operatorConfig.Spec.OSBuilds.InsecureRegistry)
+
 	pipelineTasks := make([]tektonv1.PipelineTask, 0, len(stages))
 	for i, op := range stages {
 		pt := tektonv1.PipelineTask{
@@ -463,6 +475,7 @@ func (r *Reconciler) createSealedPipelineRun(ctx context.Context, sealed *automo
 			{Name: "aib-image", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: sealed.Spec.GetAIBImage()}},
 			{Name: "builder-image", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: sealed.Spec.BuilderImage}},
 			{Name: "architecture", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: sealed.Spec.Architecture}},
+			{Name: "insecure-registry", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: insecureRegistry}},
 		}
 		pt.Workspaces = pipelineWorkspaceRefs
 		pipelineTasks = append(pipelineTasks, pt)

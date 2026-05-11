@@ -5,6 +5,7 @@
 # Run after 02-deploy-operator.sh to confirm everything is working.
 
 NAMESPACE="automotive-dev-operator-system"
+BUILD_API_HEALTH_ENDPOINT="/v1/healthz"
 
 if [[ -f "$HOME/.crc_env" ]]; then
     source "$HOME/.crc_env"
@@ -93,7 +94,8 @@ check "Build API route exists" oc get route ado-build-api -n "$NAMESPACE"
 
 BUILD_API_URL=$(oc get route ado-build-api -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null)
 if [ -n "$BUILD_API_URL" ]; then
-    check "Build API endpoint responds" curl -fsSk --max-time 10 "https://${BUILD_API_URL}/v1/healthz"
+    BUILD_API_HEALTH_URL="https://${BUILD_API_URL}${BUILD_API_HEALTH_ENDPOINT}"
+    check "Build API endpoint responds" curl -fsSk --max-time 10 "$BUILD_API_HEALTH_URL"
 fi
 
 echo ""

@@ -170,12 +170,16 @@ pull_source_container() {
     echo "ERROR: input-ref (source container) is required" >&2
     exit 1
   fi
+  local -a tls_args=()
+  if [ "${INSECURE_REGISTRY:-}" = "true" ]; then
+    tls_args=(--src-tls-verify=false)
+  fi
   echo "Pulling source container: $source"
-  local -a pull_cmd=(skopeo copy "docker://$source" "containers-storage:$source")
+  local -a pull_cmd=(skopeo copy "${tls_args[@]}" "docker://$source" "containers-storage:$source")
   log_command "${pull_cmd[@]}"
   if ! "${pull_cmd[@]}" 2>/dev/null; then
     echo "Public pull failed, trying with auth..."
-    pull_cmd=(skopeo copy --authfile="$REGISTRY_AUTH_FILE" "docker://$source" "containers-storage:$source")
+    pull_cmd=(skopeo copy "${tls_args[@]}" --authfile="$REGISTRY_AUTH_FILE" "docker://$source" "containers-storage:$source")
     log_command "${pull_cmd[@]}"
     "${pull_cmd[@]}"
   fi
@@ -216,12 +220,16 @@ resolve_and_pull_builder() {
 
   BUILD_CONTAINER_ARGS=()
   LOCAL_BUILDER="localhost/aib-builder:local"
+  local -a tls_args=()
+  if [ "${INSECURE_REGISTRY:-}" = "true" ]; then
+    tls_args=(--src-tls-verify=false)
+  fi
   echo "Pulling builder image: $builder_image -> $LOCAL_BUILDER"
-  local -a pull_cmd=(skopeo copy --authfile="$REGISTRY_AUTH_FILE" "docker://$builder_image" "containers-storage:$LOCAL_BUILDER")
+  local -a pull_cmd=(skopeo copy "${tls_args[@]}" --authfile="$REGISTRY_AUTH_FILE" "docker://$builder_image" "containers-storage:$LOCAL_BUILDER")
   log_command "${pull_cmd[@]}"
   if ! "${pull_cmd[@]}" 2>/dev/null; then
     echo "Auth pull failed for builder, trying public pull..."
-    pull_cmd=(skopeo copy "docker://$builder_image" "containers-storage:$LOCAL_BUILDER")
+    pull_cmd=(skopeo copy "${tls_args[@]}" "docker://$builder_image" "containers-storage:$LOCAL_BUILDER")
     log_command "${pull_cmd[@]}"
     "${pull_cmd[@]}"
   fi
@@ -232,8 +240,12 @@ push_output_container() {
   local output_ref="$1"
   local source_tag="$2"
   if [ -n "$output_ref" ]; then
+    local -a tls_args=()
+    if [ "${INSECURE_REGISTRY:-}" = "true" ]; then
+      tls_args=(--dest-tls-verify=false)
+    fi
     echo "Pushing output container to registry: $output_ref"
-    local -a push_cmd=(skopeo copy --authfile="$REGISTRY_AUTH_FILE" "containers-storage:$source_tag" "docker://$output_ref")
+    local -a push_cmd=(skopeo copy "${tls_args[@]}" --authfile="$REGISTRY_AUTH_FILE" "containers-storage:$source_tag" "docker://$output_ref")
     log_command "${push_cmd[@]}"
     "${push_cmd[@]}"
     echo "Output container pushed successfully to $output_ref"
@@ -300,19 +312,25 @@ install_oras() {
 }
 
 oras_pull() {
+  local -a extra_args=()
   if [ -n "$ORAS_REGISTRY_CONFIG" ]; then
-    oras pull --registry-config "$ORAS_REGISTRY_CONFIG" "$@"
-  else
-    oras pull "$@"
+    extra_args+=(--registry-config "$ORAS_REGISTRY_CONFIG")
   fi
+  if [ "${INSECURE_REGISTRY:-}" = "true" ]; then
+    extra_args+=(--insecure --plain-http)
+  fi
+  oras pull "${extra_args[@]}" "$@"
 }
 
 oras_push() {
+  local -a extra_args=()
   if [ -n "$ORAS_REGISTRY_CONFIG" ]; then
-    oras push --registry-config "$ORAS_REGISTRY_CONFIG" "$@"
-  else
-    oras push "$@"
+    extra_args+=(--registry-config "$ORAS_REGISTRY_CONFIG")
   fi
+  if [ "${INSECURE_REGISTRY:-}" = "true" ]; then
+    extra_args+=(--insecure --plain-http)
+  fi
+  oras push "${extra_args[@]}" "$@"
 }
 
 # ── Operation: prepare-reseal / reseal ──

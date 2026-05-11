@@ -177,11 +177,18 @@ aib_version="$(params.aib-version)"
 aib_image="$(params.automotive-image-builder)"
 aib_command="$(params.aib-command)"
 SECURE_BUILD="$(params.secure-build)"
+insecure_registry="$(params.insecure-registry)"
 REPRODUCIBLE="$(params.reproducible)"
 TASK_BUNDLE_REF="$(params.task-bundle-ref)"
 CUSTOM_DEFINES="$(params.custom-defines)"
 AIB_EXTRA_ARGS="$(params.aib-extra-args)"
 EXPORT_FORMAT="$(params.export-format)"
+
+ORAS_EXTRA_ARGS=()
+if [ "$insecure_registry" = "true" ]; then
+  ORAS_EXTRA_ARGS=(--insecure --plain-http)
+  echo "Insecure registry mode enabled: using --insecure --plain-http for oras"
+fi
 
 config_file="/etc/target-defaults/target-defaults.yaml"
 default_partitions=""
@@ -359,9 +366,8 @@ EOF
 
   # Push with multi-layer manifest using annotation file
   # Files are pushed from current directory (parts_dir) so they extract flat
-  # shellcheck disable=SC2086
   set -o pipefail
-  "$HOME/bin/oras" push --disable-path-validation \
+  "$HOME/bin/oras" push "${ORAS_EXTRA_ARGS[@]}" --disable-path-validation \
     --image-spec v1.1 \
     --artifact-type "${artifact_type}" \
     --annotation-file "$annotations_file" \
@@ -429,7 +435,7 @@ PYEOF
   echo "  Annotations: distro=${distro}, target=${target}, arch=${arch}"
 
   set -o pipefail
-  "$HOME/bin/oras" push --disable-path-validation \
+  "$HOME/bin/oras" push "${ORAS_EXTRA_ARGS[@]}" --disable-path-validation \
     --image-spec v1.1 \
     --artifact-type "${media_type}" \
     --annotation-file "$single_annotations_file" \
@@ -504,7 +510,7 @@ with open(sys.argv[2], "w") as f:
 PYEOF
 
   echo "Attaching sanitized osbuild manifest to ${repo_url}@${DISK_DIGEST}"
-  if ! "$HOME/bin/oras" attach \
+  if ! "$HOME/bin/oras" attach "${ORAS_EXTRA_ARGS[@]}" \
     --artifact-type "application/vnd.osbuild.manifest.v1+json" \
     "${repo_url}@${DISK_DIGEST}" \
     "${SANITIZED_MANIFEST}:application/vnd.osbuild.manifest.v1+json" 2>&1; then
@@ -529,7 +535,7 @@ attach_referrer() {
     exit 1
   fi
   echo "Attaching $label ($(du -sh "$file" | cut -f1)) to ${repo_url}@${DISK_DIGEST}"
-  if ! "$HOME/bin/oras" attach \
+  if ! "$HOME/bin/oras" attach "${ORAS_EXTRA_ARGS[@]}" \
     --artifact-type "$artifact_type" \
     "${repo_url}@${DISK_DIGEST}" \
     "${file}:${artifact_type}"; then

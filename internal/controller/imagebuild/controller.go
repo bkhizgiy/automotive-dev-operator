@@ -1075,6 +1075,13 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 			},
 		},
 		{
+			Name: "insecure-registry",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: fmt.Sprintf("%t", operatorConfig.Spec.OSBuilds != nil && operatorConfig.Spec.OSBuilds.InsecureRegistry),
+			},
+		},
+		{
 			Name: "reproducible",
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
@@ -1627,9 +1634,14 @@ func (r *ImageBuildReconciler) createPushTaskRun(ctx context.Context, imageBuild
 		return fmt.Errorf("artifact filename is required for push")
 	}
 
-	// Fetch OperatorConfig to resolve image overrides for the push task
+	// Fetch OperatorConfig to resolve image overrides and registry settings for the push task
 	pushBuildConfig := r.resolveBuildConfig(ctx)
 	pushTask := tasks.GeneratePushArtifactRegistryTask(controllerutils.OperatorNamespace(), pushBuildConfig)
+
+	operatorConfig := &automotivev1alpha1.OperatorConfig{}
+	if err := r.Get(ctx, types.NamespacedName{Name: "config", Namespace: controllerutils.OperatorNamespace()}, operatorConfig); err != nil {
+		return fmt.Errorf("failed to fetch OperatorConfig for push task: %w", err)
+	}
 
 	params := []tektonv1.Param{
 		{
@@ -1679,6 +1691,13 @@ func (r *ImageBuildReconciler) createPushTaskRun(ctx context.Context, imageBuild
 			Value: tektonv1.ParamValue{
 				Type:      tektonv1.ParamTypeString,
 				StringVal: artifactFilename,
+			},
+		},
+		{
+			Name: "insecure-registry",
+			Value: tektonv1.ParamValue{
+				Type:      tektonv1.ParamTypeString,
+				StringVal: fmt.Sprintf("%t", operatorConfig.Spec.OSBuilds != nil && operatorConfig.Spec.OSBuilds.InsecureRegistry),
 			},
 		},
 		{

@@ -758,6 +758,13 @@ spec:
                       Default: 240 (4 hours)
                     format: int32
                     type: integer
+                  insecureRegistry:
+                    description: |-
+                      InsecureRegistry skips TLS certificate verification for OCI registry operations
+                      such as artifact pushes via oras. Required when the target registry uses a
+                      self-signed certificate (e.g., CRC/OpenShift internal registry, local Kind
+                      registry with generated certs).
+                    type: boolean
                   maxBuildTTL:
                     description: |-
                       MaxBuildTTL is the maximum TTL that users can request for individual builds.
