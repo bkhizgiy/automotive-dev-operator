@@ -1,0 +1,46 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  annotations:
+    build.appstudio.openshift.io/repo: https://github.com/bkhizgiy/automotive-dev-operator?rev={{revision}}
+    build.appstudio.redhat.com/commit_sha: '{{revision}}'
+    build.appstudio.redhat.com/target_branch: '{{target_branch}}'
+    pipelinesascode.tekton.dev/max-keep-runs: "3"
+    pipelinesascode.tekton.dev/on-cel-expression: event == "push" && target_branch.matches("^(main|release-.*)$")
+  labels:
+    appstudio.openshift.io/application: automotive-dev-operator
+    appstudio.openshift.io/component: operator
+    pipelines.appstudio.io/type: build
+  name: operator-on-push
+  namespace: default-tenant
+spec:
+  params:
+  - name: git-url
+    value: '{{source_url}}'
+  - name: revision
+    value: '{{revision}}'
+  - name: output-image
+    # On push to main/release-* branches the image is tagged with the git revision.
+    # Apply additional human-readable tags via the apply-tags task (see taskRunSpecs below).
+    value: quay.io/bkhizgiy/automotive-dev-operator:{{revision}}
+  - name: dockerfile
+    value: Dockerfile
+  - name: path-context
+    value: .
+  - name: build-source-image
+    value: "true"
+  - name: skip-checks
+    value: "false"
+  pipelineRef:
+    resolver: bundles
+    params:
+    - name: bundle
+      value: quay.io/konflux-ci/tekton-catalog/pipeline-docker-build:latest
+    - name: name
+      value: docker-build
+    - name: kind
+      value: pipeline
+  taskRunTemplate:
+    serviceAccountName: appstudio-pipeline
+  timeouts:
+    pipeline: 1h0m0s

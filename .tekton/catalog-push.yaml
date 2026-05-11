@@ -1,0 +1,42 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  annotations:
+    build.appstudio.openshift.io/repo: https://github.com/bkhizgiy/automotive-dev-operator?rev={{revision}}
+    build.appstudio.redhat.com/commit_sha: '{{revision}}'
+    build.appstudio.redhat.com/target_branch: '{{target_branch}}'
+    pipelinesascode.tekton.dev/max-keep-runs: "3"
+    pipelinesascode.tekton.dev/on-cel-expression: event == "push" && target_branch.matches("^(main|release-.*)$")
+  labels:
+    appstudio.openshift.io/application: automotive-dev-operator
+    appstudio.openshift.io/component: catalog
+    pipelines.appstudio.io/type: build
+  name: catalog-on-push
+  namespace: default-tenant
+spec:
+  params:
+  - name: git-url
+    value: '{{source_url}}'
+  - name: revision
+    value: '{{revision}}'
+  - name: output-image
+    value: quay.io/bkhizgiy/automotive-dev-operator-catalog:{{revision}}
+  - name: dockerfile
+    value: catalog.Dockerfile
+  - name: path-context
+    value: .
+  - name: skip-checks
+    value: "false"
+  pipelineRef:
+    resolver: bundles
+    params:
+    - name: bundle
+      value: quay.io/konflux-ci/tekton-catalog/pipeline-fbc-builder:latest
+    - name: name
+      value: fbc-builder
+    - name: kind
+      value: pipeline
+  taskRunTemplate:
+    serviceAccountName: appstudio-pipeline
+  timeouts:
+    pipeline: 1h0m0s
