@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 env:
-  GO_VERSION: '1.24'
+  GO_VERSION: '1.25'
   KIND_VERSION: v0.24.0
   KUBECTL_VERSION: v1.31.0
   TEKTON_VERSION: v1.9.1

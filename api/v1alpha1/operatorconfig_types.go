@@ -550,6 +550,7 @@ type OperatorConfigSpec struct {
 }
 
 // OSBuildsConfig defines configuration for OS build operations
+// +kubebuilder:validation:XValidation:rule="!has(self.taskBundleVerify) || !self.taskBundleVerify || has(self.taskBundleCosignKeyRef)",message="taskBundleCosignKeyRef is required when taskBundleVerify is true"
 type OSBuildsConfig struct {
 	// Enabled determines if Tekton tasks for OS builds should be deployed
 	// +kubebuilder:default=true
@@ -642,6 +643,18 @@ type OSBuildsConfig struct {
 	// Example: "quay.io/rh-sdv-cloud/automotive-dev-tekton-tasks:v0.1.0@sha256:abc123..."
 	// +optional
 	TaskBundleRef string `json:"taskBundleRef,omitempty"`
+
+	// TaskBundleVerify enables cosign signature verification for Tekton Bundles.
+	// When true, all bundle refs (from OperatorConfig or user-provided --task-bundle-ref)
+	// must be signed with the key in TaskBundleCosignKeyRef.
+	// +optional
+	TaskBundleVerify bool `json:"taskBundleVerify,omitempty"`
+
+	// TaskBundleCosignKeyRef references a ConfigMap key containing the cosign public key (PEM-encoded)
+	// used to verify Tekton Bundle signatures.
+	// Required when TaskBundleVerify is true.
+	// +optional
+	TaskBundleCosignKeyRef *corev1.ConfigMapKeySelector `json:"taskBundleCosignKeyRef,omitempty"`
 
 	// DefaultBuildTTL is the default time-to-live for builds (all phases, including in-progress).
 	// Builds are automatically deleted after this duration. Uses Go duration format (e.g. "24h", "72h").
