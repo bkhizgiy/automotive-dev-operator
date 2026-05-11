@@ -958,7 +958,7 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 					return fmt.Errorf("secureBuild: ConfigMap %q does not contain key %q", cosignKeyRef.Name, cosignKeyRef.Key)
 				}
 				if err := bundleverify.VerifyBundle(ctx, ref, []byte(pubKeyPEM)); err != nil {
-					return fmt.Errorf("secureBuild: task bundle signature verification failed: %w", err)
+					return fmt.Errorf("task bundle signature verification failed: %w", err)
 				}
 			}
 
