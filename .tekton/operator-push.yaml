@@ -32,15 +32,24 @@ spec:
   - name: skip-checks
     value: "false"
   pipelineRef:
-    resolver: git
+    resolver: bundles
     params:
-    - name: url
-      value: https://github.com/konflux-ci/build-definitions.git
-    - name: revision
-      value: main
-    - name: pathInRepo
-      value: pipelines/docker-build/docker-build.yaml
+    - name: bundle
+      value: quay.io/konflux-ci/tekton-catalog/pipeline-docker-build:devel
+    - name: name
+      value: docker-build
+    - name: kind
+      value: pipeline
   taskRunTemplate:
     serviceAccountName: appstudio-pipeline
+  workspaces:
+  - name: workspace
+    volumeClaimTemplate:
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
   timeouts:
     pipeline: 1h0m0s
