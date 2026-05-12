@@ -226,13 +226,7 @@ func (r *Reconciler) ensurePod(ctx context.Context, ws *automotivev1alpha1.Works
 	if operatorConfig != nil {
 		wsConfig = operatorConfig.Spec.Workspaces
 	}
-	image := ws.Spec.Image
-	if image == "" && wsConfig != nil {
-		image = wsConfig.GetToolchainImage()
-	}
-	if image == "" {
-		image = automotivev1alpha1.DefaultToolchainImage
-	}
+	image := resolveWorkspaceImage(ws, wsConfig)
 	if wsConfig != nil && !wsConfig.IsImageAllowed(image) {
 		return nil, fmt.Errorf("image %q is not in the allowed images list", image)
 	}
@@ -241,10 +235,7 @@ func (r *Reconciler) ensurePod(ctx context.Context, ws *automotivev1alpha1.Works
 		if err != nil {
 			return nil, fmt.Errorf("imageVerify is enabled but cosign key is unavailable: %w", err)
 		}
-		imagePullSecrets := ws.Spec.ImagePullSecrets
-		if len(imagePullSecrets) == 0 && wsConfig != nil {
-			imagePullSecrets = wsConfig.GetImagePullSecrets()
-		}
+		imagePullSecrets := resolveImagePullSecrets(ws, wsConfig)
 		keychain, err := bundleverify.KeychainFromPullSecrets(ctx, r.Client, ws.Namespace, imagePullSecrets)
 		if err != nil {
 			return nil, fmt.Errorf("building registry keychain: %w", err)
@@ -266,6 +257,28 @@ func (r *Reconciler) ensurePod(ctx context.Context, ws *automotivev1alpha1.Works
 	return pod, nil
 }
 
+func resolveWorkspaceImage(ws *automotivev1alpha1.Workspace, wsConfig *automotivev1alpha1.WorkspacesConfig) string {
+	if ws.Spec.Image != "" {
+		return ws.Spec.Image
+	}
+	if wsConfig != nil {
+		if img := wsConfig.GetToolchainImage(); img != "" {
+			return img
+		}
+	}
+	return automotivev1alpha1.DefaultToolchainImage
+}
+
+func resolveImagePullSecrets(ws *automotivev1alpha1.Workspace, wsConfig *automotivev1alpha1.WorkspacesConfig) []corev1.LocalObjectReference {
+	if len(ws.Spec.ImagePullSecrets) > 0 {
+		return ws.Spec.ImagePullSecrets
+	}
+	if wsConfig != nil {
+		return wsConfig.GetImagePullSecrets()
+	}
+	return nil
+}
+
 func (r *Reconciler) buildPod(ws *automotivev1alpha1.Workspace, operatorConfig *automotivev1alpha1.OperatorConfig) *corev1.Pod {
 	podName := "workspace-" + ws.Name
 	pvcName := ws.Status.PVCName
@@ -280,15 +293,8 @@ func (r *Reconciler) buildPod(ws *automotivev1alpha1.Workspace, operatorConfig *
 	}
 
 	configuredImage := wsConfig.GetToolchainImage()
-	image := ws.Spec.Image
-	if image == "" {
-		image = configuredImage
-	}
-
-	imagePullSecrets := ws.Spec.ImagePullSecrets
-	if len(imagePullSecrets) == 0 && wsConfig != nil {
-		imagePullSecrets = wsConfig.GetImagePullSecrets()
-	}
+	image := resolveWorkspaceImage(ws, wsConfig)
+	imagePullSecrets := resolveImagePullSecrets(ws, wsConfig)
 
 	// Determine if the cluster supports user namespaces.
 	// With user namespaces: drop ALL caps + add specific ones, procMount=Unmasked

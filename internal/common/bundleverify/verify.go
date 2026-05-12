@@ -58,11 +58,15 @@ func VerifyBundle(ctx context.Context, bundleRef string, cosignPubKeyPEM []byte,
 		return fmt.Errorf("parsing bundle reference %q: %w", bundleRef, err)
 	}
 
-	if err := verifyV3Bundles(ctx, ref, verifier, registryOpts); err == nil {
+	v3Err := verifyV3Bundles(ctx, ref, verifier, registryOpts)
+	if v3Err == nil {
 		return nil
 	}
 
-	return verifyLegacy(ctx, ref, verifier, registryOpts)
+	if legacyErr := verifyLegacy(ctx, ref, verifier, registryOpts); legacyErr != nil {
+		return fmt.Errorf("verification failed (v3: %v, legacy: %w)", v3Err, legacyErr)
+	}
+	return nil
 }
 
 // verifyV3Bundles fetches sigstore v3 bundles via OCI referrers and verifies with sigstore-go.

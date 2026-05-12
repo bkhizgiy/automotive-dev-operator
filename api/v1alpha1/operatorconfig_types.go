@@ -478,10 +478,13 @@ func (c *WorkspacesConfig) GetImagePullSecrets() []corev1.LocalObjectReference {
 // entry in AllowedImages (exact match or prefix glob like "quay.io/org/*").
 // Returns false when AllowedImages is empty and the image is not the toolchain image.
 func (c *WorkspacesConfig) IsImageAllowed(image string) bool {
+	if c == nil {
+		return image == DefaultToolchainImage
+	}
 	if image == c.GetToolchainImage() {
 		return true
 	}
-	if c == nil || len(c.AllowedImages) == 0 {
+	if len(c.AllowedImages) == 0 {
 		return false
 	}
 	for _, pattern := range c.AllowedImages {
