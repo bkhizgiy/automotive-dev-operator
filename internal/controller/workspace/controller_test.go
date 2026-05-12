@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
@@ -357,6 +358,115 @@ func TestSetStatus_NoOpWhenUnchanged(t *testing.T) {
 	err := r.setStatus(ctx, ws, phaseStopped, "")
 	if err != nil {
 		t.Fatalf("setStatus() error = %v", err)
+	}
+}
+
+func TestEnsurePod_RejectsDisallowedImage(t *testing.T) {
+	ws := &automotivev1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "rogue-ws",
+			Namespace: "default",
+		},
+		Spec: automotivev1alpha1.WorkspaceSpec{
+			Owner:        "testuser",
+			Architecture: "amd64",
+			Image:        "quay.io/evil/rogue:latest",
+		},
+		Status: automotivev1alpha1.WorkspaceStatus{
+			PVCName: "rogue-ws-workspace",
+		},
+	}
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "rogue-ws-workspace",
+			Namespace: "default",
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: resource.MustParse("10Gi"),
+				},
+			},
+		},
+	}
+
+	oc := &automotivev1alpha1.OperatorConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "config",
+			Namespace: "default",
+		},
+		Spec: automotivev1alpha1.OperatorConfigSpec{
+			Workspaces: &automotivev1alpha1.WorkspacesConfig{
+				AllowedImages: []string{"quay.io/centos-automotive/*"},
+			},
+		},
+	}
+
+	r, _ := newTestReconciler(ws, pvc, oc)
+	ctx := context.Background()
+
+	_, err := r.ensurePod(ctx, ws, r.Log)
+	if err == nil {
+		t.Fatal("expected ensurePod to reject disallowed image, got nil error")
+	}
+	if !strings.Contains(err.Error(), "not in the allowed images list") {
+		t.Errorf("expected 'not in the allowed images list' error, got: %v", err)
+	}
+}
+
+func TestEnsurePod_SkipsVerifyWhenDisabled(t *testing.T) {
+	ws := &automotivev1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "verified-ws",
+			Namespace: "default",
+		},
+		Spec: automotivev1alpha1.WorkspaceSpec{
+			Owner:        "testuser",
+			Architecture: "amd64",
+		},
+		Status: automotivev1alpha1.WorkspaceStatus{
+			PVCName: "verified-ws-workspace",
+		},
+	}
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "verified-ws-workspace",
+			Namespace: "default",
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: resource.MustParse("10Gi"),
+				},
+			},
+		},
+	}
+	// OperatorConfig with imageVerify=false — signature check should be skipped
+	oc := &automotivev1alpha1.OperatorConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "config",
+			Namespace: "default",
+		},
+		Spec: automotivev1alpha1.OperatorConfigSpec{
+			Workspaces: &automotivev1alpha1.WorkspacesConfig{
+				ImageVerify:    false,
+				ToolchainImage: "quay.io/centos-automotive/automotive-osbuild-worker:latest",
+				AllowedImages:  []string{"quay.io/centos-automotive/*"},
+			},
+		},
+	}
+
+	r, _ := newTestReconciler(ws, pvc, oc)
+	ctx := context.Background()
+
+	pod, err := r.ensurePod(ctx, ws, r.Log)
+	if err != nil {
+		t.Fatalf("expected ensurePod to succeed with imageVerify=false, got: %v", err)
+	}
+	if pod == nil {
+		t.Fatal("expected pod to be created")
 	}
 }
 

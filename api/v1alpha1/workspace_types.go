@@ -29,6 +29,10 @@ type WorkspaceSpec struct {
 	// Image is the toolchain container image to use
 	Image string `json:"image,omitempty"`
 
+	// ImagePullSecrets overrides the global imagePullSecrets for this workspace
+	// +optional
+	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
+
 	// LeaseID is the Jumpstarter lease ID for board access
 	LeaseID string `json:"leaseID,omitempty"`
 

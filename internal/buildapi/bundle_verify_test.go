@@ -75,7 +75,7 @@ var _ = Describe("verifyTaskBundle", func() {
 		k8sClient := newFakeClient()
 		status, err := verifyTaskBundle(ctx, k8sClient, namespace, operatorConfig, bundleRef)
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("taskBundleCosignKeyRef is not set"))
+		Expect(err.Error()).To(ContainSubstring("cosign key reference is not configured"))
 		Expect(status).To(Equal(http.StatusBadRequest))
 	})
 
@@ -118,6 +118,78 @@ var _ = Describe("verifyTaskBundle", func() {
 		}
 		k8sClient := newFakeClient(cm)
 		status, err := verifyTaskBundle(ctx, k8sClient, namespace, operatorConfig, bundleRef)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("does not contain key \"cosign.pub\""))
+		Expect(status).To(Equal(http.StatusBadRequest))
+	})
+})
+
+var _ = Describe("verifyWorkspaceImage", func() {
+	var (
+		ctx       context.Context
+		namespace string
+		imageRef  string
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		namespace = testNamespace
+		imageRef = "quay.io/example/workspace@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	})
+
+	It("should skip verification when wsConfig is nil", func() {
+		k8sClient := newFakeClient()
+		status, err := verifyWorkspaceImage(ctx, k8sClient, namespace, nil, imageRef, nil)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(status).To(Equal(0))
+	})
+
+	It("should skip verification when ImageVerify is false", func() {
+		wsConfig := &automotivev1alpha1.WorkspacesConfig{ImageVerify: false}
+		k8sClient := newFakeClient()
+		status, err := verifyWorkspaceImage(ctx, k8sClient, namespace, wsConfig, imageRef, nil)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(status).To(Equal(0))
+	})
+
+	It("should reject when ImageVerify is true but cosignKeyRef is empty", func() {
+		wsConfig := &automotivev1alpha1.WorkspacesConfig{ImageVerify: true}
+		k8sClient := newFakeClient()
+		status, err := verifyWorkspaceImage(ctx, k8sClient, namespace, wsConfig, imageRef, nil)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("cosign key reference is not configured"))
+		Expect(status).To(Equal(http.StatusBadRequest))
+	})
+
+	It("should reject with 400 when ConfigMap does not exist", func() {
+		wsConfig := &automotivev1alpha1.WorkspacesConfig{
+			ImageVerify: true,
+			ImageCosignKeyRef: &corev1.ConfigMapKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "nonexistent-cm"},
+				Key:                  "cosign.pub",
+			},
+		}
+		k8sClient := newFakeClient()
+		status, err := verifyWorkspaceImage(ctx, k8sClient, namespace, wsConfig, imageRef, nil)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("not found"))
+		Expect(status).To(Equal(http.StatusBadRequest))
+	})
+
+	It("should reject when ConfigMap lacks specified key", func() {
+		wsConfig := &automotivev1alpha1.WorkspacesConfig{
+			ImageVerify: true,
+			ImageCosignKeyRef: &corev1.ConfigMapKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "ws-cosign-key"},
+				Key:                  "cosign.pub",
+			},
+		}
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "ws-cosign-key", Namespace: namespace},
+			Data:       map[string]string{"wrong-key": "some-data"},
+		}
+		k8sClient := newFakeClient(cm)
+		status, err := verifyWorkspaceImage(ctx, k8sClient, namespace, wsConfig, imageRef, nil)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("does not contain key \"cosign.pub\""))
 		Expect(status).To(Equal(http.StatusBadRequest))

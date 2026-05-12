@@ -883,9 +883,10 @@ spec:
                         operator:
                           description: |-
                             Operator represents a key's relationship to the value.
-                            Valid operators are Exists and Equal. Defaults to Equal.
+                            Valid operators are Exists, Equal, Lt, and Gt. Defaults to Equal.
                             Exists is equivalent to wildcard for value, so that a pod can
                             tolerate all taints of a particular category.
+                            Lt and Gt perform numeric comparisons (requires feature gate TaintTolerationComparisonOperators).
                           type: string
                         tolerationSeconds:
                           description: |-
@@ -964,6 +965,15 @@ spec:
               workspaces:
                 description: Workspaces defines configuration for developer workspaces
                 properties:
+                  allowedImages:
+                    description: |-
+                      AllowedImages restricts which container images users may run in workspaces.
+                      Supports exact matches and prefix globs (e.g., "quay.io/my-org/*").
+                      When empty, only the configured toolchain image is allowed.
+                      The toolchain image is always implicitly permitted.
+                    items:
+                      type: string
+                    type: array
                   autoPauseTimeoutMinutes:
                     description: |-
                       AutoPauseTimeoutMinutes is the cluster-wide default idle timeout in minutes before
@@ -981,6 +991,57 @@ spec:
                     description: DefaultArchitecture is the default target architecture
                       for workspaces
                     type: string
+                  imageCosignKeyRef:
+                    description: |-
+                      ImageCosignKeyRef references a ConfigMap key containing the cosign public key
+                      (PEM-encoded) used to verify workspace image signatures.
+                      Required when ImageVerify is true.
+                    properties:
+                      key:
+                        description: The key to select.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the ConfigMap or its key must
+                          be defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  imagePullSecrets:
+                    description: ImagePullSecrets is a list of secret references for
+                      pulling private workspace images
+                    items:
+                      description: |-
+                        LocalObjectReference contains enough information to let you locate the
+                        referenced object inside the same namespace.
+                      properties:
+                        name:
+                          default: ""
+                          description: |-
+                            Name of the referent.
+                            This field is effectively required, but due to backwards compatibility is
+                            allowed to be empty. Instances of this type with an empty value here are
+                            almost certainly wrong.
+                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                          type: string
+                      type: object
+                      x-kubernetes-map-type: atomic
+                    type: array
+                  imageVerify:
+                    description: |-
+                      ImageVerify enables cosign signature verification for workspace images.
+                      When true, images must be signed with the key in ImageCosignKeyRef.
+                    type: boolean
                   maxResources:
                     description: MaxResources defines the maximum CPU and memory that
                       users can request for workspace containers
@@ -1142,9 +1203,10 @@ spec:
                         operator:
                           description: |-
                             Operator represents a key's relationship to the value.
-                            Valid operators are Exists and Equal. Defaults to Equal.
+                            Valid operators are Exists, Equal, Lt, and Gt. Defaults to Equal.
                             Exists is equivalent to wildcard for value, so that a pod can
                             tolerate all taints of a particular category.
+                            Lt and Gt perform numeric comparisons (requires feature gate TaintTolerationComparisonOperators).
                           type: string
                         tolerationSeconds:
                           description: |-
@@ -1166,6 +1228,9 @@ spec:
                       toolchains
                     type: string
                 type: object
+                x-kubernetes-validations:
+                - message: imageCosignKeyRef is required when imageVerify is true
+                  rule: '!has(self.imageVerify) || !self.imageVerify || has(self.imageCosignKeyRef)'
             type: object
           status:
             description: OperatorConfigStatus defines the observed state of OperatorConfig
