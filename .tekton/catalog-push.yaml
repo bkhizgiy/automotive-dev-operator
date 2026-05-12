@@ -28,14 +28,14 @@ spec:
   - name: skip-checks
     value: "false"
   pipelineRef:
-    resolver: bundles
+    resolver: git
     params:
-    - name: bundle
-      value: quay.io/konflux-ci/tekton-catalog/pipeline-fbc-builder:latest
-    - name: name
-      value: fbc-builder
-    - name: kind
-      value: pipeline
+    - name: url
+      value: https://github.com/konflux-ci/build-definitions.git
+    - name: revision
+      value: main
+    - name: pathInRepo
+      value: pipelines/fbc-builder/fbc-builder.yaml
   taskRunTemplate:
     serviceAccountName: appstudio-pipeline
   timeouts:
