@@ -6,8 +6,7 @@ metadata:
     build.appstudio.redhat.com/commit_sha: '{{revision}}'
     build.appstudio.redhat.com/target_branch: '{{target_branch}}'
     pipelinesascode.tekton.dev/max-keep-runs: "3"
-    pipelinesascode.tekton.dev/on-cel-expression: event == "pull_request" && target_branch
-      == "main"
+    pipelinesascode.tekton.dev/on-cel-expression: event == "pull_request" && target_branch == "main"
   labels:
     appstudio.openshift.io/application: automotive-dev-operator
     appstudio.openshift.io/component: operator
@@ -34,12 +33,21 @@ spec:
     resolver: bundles
     params:
     - name: bundle
-      value: quay.io/konflux-ci/tekton-catalog/pipeline-docker-build:latest
+      value: quay.io/konflux-ci/tekton-catalog/pipeline-docker-build:devel
     - name: name
       value: docker-build
     - name: kind
       value: pipeline
   taskRunTemplate:
     serviceAccountName: appstudio-pipeline
+  workspaces:
+  - name: workspace
+    volumeClaimTemplate:
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
   timeouts:
     pipeline: 1h0m0s

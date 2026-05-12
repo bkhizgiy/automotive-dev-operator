@@ -31,12 +31,21 @@ spec:
     resolver: bundles
     params:
     - name: bundle
-      value: quay.io/konflux-ci/tekton-catalog/pipeline-docker-build:latest
+      value: quay.io/konflux-ci/tekton-catalog/pipeline-docker-build:devel
     - name: name
       value: docker-build
     - name: kind
       value: pipeline
   taskRunTemplate:
     serviceAccountName: appstudio-pipeline
+  workspaces:
+  - name: workspace
+    volumeClaimTemplate:
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
   timeouts:
     pipeline: 1h0m0s
