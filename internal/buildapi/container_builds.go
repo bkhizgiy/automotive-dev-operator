@@ -597,7 +597,8 @@ func (a *APIServer) uploadContainerBuildContext(c *gin.Context, name string) {
 	}
 
 	// Phase 2: Signal completion to the waiter.
-	// Use the same lock file only when it is explicitly configured on the source-local step.
+	// Retry with backoff: the waiter's "start" command may not have created the lock file yet
+	// when the tar extraction completes quickly (race between Tekton entrypoint and our exec).
 	doneCmd := []string{"waiter", "done"}
 	if lockFile, ok := getWaiterLockFileFromPodSpec(buildPod, waiterContainer); ok {
 		doneCmd = append(doneCmd, "--lock-file="+lockFile)
@@ -623,23 +624,41 @@ func (a *APIServer) uploadContainerBuildContext(c *gin.Context, name string) {
 		return
 	}
 
-	var doneStdout strings.Builder
-	var doneStderr strings.Builder
-	doneStreamOpts := remotecommand.StreamOptions{
-		Stdout: &doneStdout,
-		Stderr: &doneStderr,
-	}
-
-	if err := doneExecutor.StreamWithContext(ctx, doneStreamOpts); err != nil {
-		detail := strings.TrimSpace(doneStderr.String())
-		if detail == "" {
-			detail = strings.TrimSpace(doneStdout.String())
+	const maxDoneRetries = 5
+	var lastErr error
+	var lastDetail string
+	for attempt := range maxDoneRetries {
+		var doneStdout strings.Builder
+		var doneStderr strings.Builder
+		err := doneExecutor.StreamWithContext(ctx, remotecommand.StreamOptions{
+			Stdout: &doneStdout,
+			Stderr: &doneStderr,
+		})
+		if err == nil {
+			break
 		}
-		if detail != "" {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error signaling completion: %v: %s", err, detail)})
+		lastDetail = strings.TrimSpace(doneStderr.String())
+		if lastDetail == "" {
+			lastDetail = strings.TrimSpace(doneStdout.String())
+		}
+		lastErr = err
+		if !strings.Contains(lastDetail, "no such file or directory") || attempt >= maxDoneRetries-1 {
+			break
+		}
+		select {
+		case <-time.After(time.Duration(attempt+1) * time.Second):
+		case <-ctx.Done():
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "request cancelled during retry"})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error signaling completion: %v", err)})
+	}
+
+	if lastErr != nil {
+		if lastDetail != "" {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error signaling completion: %v: %s", lastErr, lastDetail)})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("error signaling completion: %v", lastErr)})
 		return
 	}
 
