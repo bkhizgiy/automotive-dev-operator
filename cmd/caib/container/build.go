@@ -264,15 +264,21 @@ func resolveContainerBuildContext(contextDir string) (string, string) {
 		handleError(fmt.Errorf("--containerfile (-f) is required. Specify path to Containerfile or Dockerfile"))
 	}
 
-	cfPath := containerfile
-	if !filepath.IsAbs(cfPath) {
-		cfPath = filepath.Join(absContextDir, cfPath)
+	// Match docker/podman -f semantics: resolve relative to CWD, not context dir
+	cfPath, err := filepath.Abs(containerfile)
+	if err != nil {
+		handleError(fmt.Errorf("failed to resolve containerfile path: %w", err))
 	}
 	if _, err := os.Stat(cfPath); err != nil {
 		handleError(fmt.Errorf("containerfile not found: %s", cfPath))
 	}
 
-	return absContextDir, containerfile
+	relPath, err := filepath.Rel(absContextDir, cfPath)
+	if err != nil || strings.HasPrefix(relPath, "..") {
+		handleError(fmt.Errorf("containerfile %s is not inside context directory %s", cfPath, absContextDir))
+	}
+
+	return absContextDir, relPath
 }
 
 // parseContainerBuildArgs parses KEY=VALUE build arguments.
@@ -441,33 +447,33 @@ func displayContainerBuildResult(finalStatus *buildapitypes.ContainerBuildRespon
 	if finalStatus.Message != "" {
 		fmt.Printf("%s %s\n", colorFormatter.LabelColor("Message:"), finalStatus.Message)
 	}
-	if finalStatus.OutputImage != "" {
-		fmt.Printf("%s %s\n", colorFormatter.LabelColor("Output image:"), colorFormatter.ValueColor(finalStatus.OutputImage))
-	}
-	if finalStatus.RegistryToken != "" {
-		credsFile, err := writeRegistryCredentialsFile(finalStatus.RegistryToken)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to write registry credentials file: %v\n", err)
-			fmt.Printf("\n%s\n", colorFormatter.LabelColor("Registry credentials (valid ~4 hours):"))
-			fmt.Printf("  %s %s\n", colorFormatter.LabelColor("Username:"), colorFormatter.ValueColor("serviceaccount"))
-			fmt.Printf("  %s %s\n", colorFormatter.LabelColor("Token:"), colorFormatter.ValueColor(finalStatus.RegistryToken))
-			fmt.Printf("\n%s\n", colorFormatter.LabelColor("To pull this image:"))
-			fmt.Printf("  %s\n", colorFormatter.CommandColor(
-				fmt.Sprintf("podman pull --creds serviceaccount:<token> %s", finalStatus.OutputImage)))
-		} else {
-			fmt.Printf("\n%s %s (valid ~4 hours)\n",
-				colorFormatter.LabelColor("Registry credentials written to:"),
-				colorFormatter.ValueColor(credsFile))
-			fmt.Printf("\n%s\n", colorFormatter.LabelColor("To pull this image:"))
-			fmt.Printf("  %s\n", colorFormatter.CommandColor(
-				fmt.Sprintf("podman pull --creds serviceaccount:$(jq -r .token %s) %s", credsFile, finalStatus.OutputImage)))
-		}
-	}
 	switch finalStatus.Phase {
 	case phaseFailed:
 		fmt.Printf("\n%s\n  %s\n", colorFormatter.LabelColor("View build logs:"), colorFormatter.CommandColor("caib container logs "+finalStatus.Name))
 		handleError(fmt.Errorf("build failed"))
 	case phaseCompleted:
+		if finalStatus.OutputImage != "" {
+			fmt.Printf("%s %s\n", colorFormatter.LabelColor("Output image:"), colorFormatter.ValueColor(finalStatus.OutputImage))
+		}
+		if finalStatus.RegistryToken != "" {
+			credsFile, err := writeRegistryCredentialsFile(finalStatus.RegistryToken)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to write registry credentials file: %v\n", err)
+				fmt.Printf("\n%s\n", colorFormatter.LabelColor("Registry credentials (valid ~4 hours):"))
+				fmt.Printf("  %s %s\n", colorFormatter.LabelColor("Username:"), colorFormatter.ValueColor("serviceaccount"))
+				fmt.Printf("  %s %s\n", colorFormatter.LabelColor("Token:"), colorFormatter.ValueColor(finalStatus.RegistryToken))
+				fmt.Printf("\n%s\n", colorFormatter.LabelColor("To pull this image:"))
+				fmt.Printf("  %s\n", colorFormatter.CommandColor(
+					fmt.Sprintf("podman pull --creds serviceaccount:<token> %s", finalStatus.OutputImage)))
+			} else {
+				fmt.Printf("\n%s %s (valid ~4 hours)\n",
+					colorFormatter.LabelColor("Registry credentials written to:"),
+					colorFormatter.ValueColor(credsFile))
+				fmt.Printf("\n%s\n", colorFormatter.LabelColor("To pull this image:"))
+				fmt.Printf("  %s\n", colorFormatter.CommandColor(
+					fmt.Sprintf("podman pull --creds serviceaccount:$(jq -r .token %s) %s", credsFile, finalStatus.OutputImage)))
+			}
+		}
 		fmt.Printf("\n%s %s\n", colorFormatter.ValueColor("✓"), colorFormatter.ValueColor("Build completed successfully!"))
 	default:
 	}
