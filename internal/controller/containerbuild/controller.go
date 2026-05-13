@@ -427,15 +427,13 @@ func (r *ContainerBuildReconciler) buildShipwrightBuildRun(
 
 	localName := cb.Name + "-source"
 
-	// Build paramValues for Containerfile path
+	// Shipwright's buildah strategy defaults to "Dockerfile"; pass explicitly to use our value.
 	paramValues := make([]shipwrightv1beta1.ParamValue, 0, 1+len(cb.Spec.BuildArgs))
 	containerfile := cb.Spec.GetContainerfile()
-	if containerfile != "Containerfile" {
-		paramValues = append(paramValues, shipwrightv1beta1.ParamValue{
-			Name:        "dockerfile",
-			SingleValue: &shipwrightv1beta1.SingleValue{Value: &containerfile},
-		})
-	}
+	paramValues = append(paramValues, shipwrightv1beta1.ParamValue{
+		Name:        "dockerfile",
+		SingleValue: &shipwrightv1beta1.SingleValue{Value: &containerfile},
+	})
 
 	// Collect all build args into a single ParamValue entry
 	buildArgValues := make([]shipwrightv1beta1.SingleValue, 0, len(cb.Spec.BuildArgs)+1)
