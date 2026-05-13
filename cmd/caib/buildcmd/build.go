@@ -173,16 +173,17 @@ func (h *Handler) validateReproducibleFlags() error {
 // applyRegistryCredentialsToRequest sets registry credentials on the build request.
 // When --internal-registry is combined with --push, both are configured so the
 // container is pushed externally while the disk image uses the internal registry.
+// Credentials are also resolved for --internal-registry without --push when the
+// user provides them (env vars or --registry-auth-file), enabling authenticated
+// pulls of private source images during the build.
 func (h *Handler) applyRegistryCredentialsToRequest(req *buildapitypes.BuildRequest) error {
 	if *h.opts.UseInternalRegistry {
 		req.UseInternalRegistry = true
 		req.InternalRegistryImageName = *h.opts.InternalRegistryImageName
 		req.InternalRegistryTag = *h.opts.InternalRegistryTag
-		if *h.opts.ContainerPush == "" {
+		if *h.opts.ContainerPush == "" && !h.hasRegistryCredentials() {
 			return nil
 		}
-		// Hybrid: fall through to also set external registry credentials
-		// for the container push.
 	}
 
 	effectiveRegistryURL, registryUsername, registryPassword := registryauth.ExtractRegistryCredentials(*h.opts.ContainerPush, *h.opts.ExportOCI)
@@ -197,6 +198,18 @@ func (h *Handler) applyRegistryCredentialsToRequest(req *buildapitypes.BuildRequ
 	}
 	req.RegistryCredentials = registryCreds
 	return nil
+}
+
+// hasRegistryCredentials returns true if the user has provided registry credentials
+// via environment variables or --registry-auth-file.
+func (h *Handler) hasRegistryCredentials() bool {
+	if h.opts.RegistryAuthFile != nil && strings.TrimSpace(*h.opts.RegistryAuthFile) != "" {
+		return true
+	}
+	if os.Getenv("REGISTRY_USERNAME") != "" || os.Getenv("REGISTRY_URL") != "" {
+		return true
+	}
+	return false
 }
 
 // resolveTarget determines the build target: --target flag > manifest value > "qemu".
