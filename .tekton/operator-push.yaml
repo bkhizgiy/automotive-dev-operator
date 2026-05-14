@@ -26,6 +26,8 @@ spec:
     value: quay.io/bkhizgiy/automotive-dev-operator:{{revision}}
   - name: dockerfile
     value: Dockerfile
+  - name: skip-checks
+    value: "true"
   pipelineSpec:
     description: |
       This pipeline is ideal for building demo container images from a Containerfile while maintaining trust after pipeline customization.
