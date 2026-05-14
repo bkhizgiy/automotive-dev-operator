@@ -4,17 +4,18 @@ metadata:
   annotations:
     build.appstudio.openshift.io/repo: https://github.com/bkhizgiy/automotive-dev-operator?rev={{revision}}
     build.appstudio.redhat.com/commit_sha: '{{revision}}'
+    build.appstudio.redhat.com/pull_request_number: '{{pull_request_number}}'
     build.appstudio.redhat.com/target_branch: '{{target_branch}}'
-    pipelinesascode.tekton.dev/cancel-in-progress: "false"
+    pipelinesascode.tekton.dev/cancel-in-progress: "true"
     pipelinesascode.tekton.dev/max-keep-runs: "3"
-    pipelinesascode.tekton.dev/on-cel-expression: event == "push" && target_branch
+    pipelinesascode.tekton.dev/on-cel-expression: event == "pull_request" && target_branch
       == "main"
   creationTimestamp: null
   labels:
     appstudio.openshift.io/application: automotive-dev-operator
-    appstudio.openshift.io/component: operator
+    appstudio.openshift.io/component: bundle
     pipelines.appstudio.openshift.io/type: build
-  name: operator-on-push
+  name: bundle-on-pull-request
   namespace: default-tenant
 spec:
   params:
@@ -23,12 +24,13 @@ spec:
   - name: revision
     value: '{{revision}}'
   - name: output-image
-    value: quay.io/bkhizgiy/automotive-dev-operator:{{revision}}
+    value: quay.io/bkhizgiy/automotive-dev-operator-bundle:on-pr-{{revision}}
+  - name: image-expires-after
+    value: 5d
   - name: dockerfile
-    value: Dockerfile
+    value: bundle.Dockerfile
   - name: skip-checks
     value: "true"
-<<<<<<< Updated upstream
   pipelineSpec:
     description: |
       This pipeline is ideal for building demo container images from a Containerfile while maintaining trust after pipeline customization.
@@ -37,10 +39,6 @@ spec:
 
       _Uses `buildah` to create a container image leveraging [trusted artifacts](https://konflux-ci.dev/architecture/ADR/0036-trusted-artifacts.html). It also optionally creates a source image and runs some build-time tests. Information is shared between tasks using OCI artifacts instead of PVCs. EC will pass the [`trusted_task.trusted`](https://conforma.dev/docs/policy/packages/release_trusted_task.html#trusted_task__trusted) policy as long as all data used to build the artifact is generated from trusted tasks.
       This pipeline is pushed as a Tekton bundle to [quay.io](https://quay.io/repository/konflux-ci/tekton-catalog/pipeline-docker-build-oci-ta?tab=tags)_
-=======
-  pipelineRef:
-    resolver: bundles
->>>>>>> Stashed changes
     params:
     - description: Source Repository URL
       name: git-url
@@ -409,7 +407,7 @@ spec:
     - name: netrc
       optional: true
   taskRunTemplate:
-    serviceAccountName: build-pipeline-operator
+    serviceAccountName: build-pipeline-bundle
   workspaces:
   - name: git-auth
     secret:

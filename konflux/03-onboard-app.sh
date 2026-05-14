@@ -85,6 +85,12 @@ for SA in appstudio-pipeline build-pipeline-operator build-pipeline-bundle build
     -p='{"secrets":[{"name":"quay-push-secret"}],"imagePullSecrets":[{"name":"quay-push-secret"}]}'
 done
 
+echo "Annotating secret for Tekton registry credential binding..."
+kubectl annotate secret quay-push-secret \
+  -n "${NAMESPACE}" \
+  tekton.dev/docker-0=https://quay.io \
+  --overwrite
+
 # ── 4. Application ───────────────────────────────────────────────────────────
 echo "Creating Application..."
 kubectl apply -f - <<EOF
