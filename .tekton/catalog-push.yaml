@@ -7,13 +7,9 @@ metadata:
     build.appstudio.redhat.com/target_branch: '{{target_branch}}'
     pipelinesascode.tekton.dev/cancel-in-progress: "false"
     pipelinesascode.tekton.dev/max-keep-runs: "3"
-<<<<<<< Updated upstream
     pipelinesascode.tekton.dev/on-cel-expression: event == "push" && target_branch
       == "main"
   creationTimestamp: null
-=======
-    pipelinesascode.tekton.dev/on-cel-expression: event == "push" && target_branch.matches("^(main|release-.*)$")
->>>>>>> Stashed changes
   labels:
     appstudio.openshift.io/application: automotive-dev-operator
     appstudio.openshift.io/component: catalog
@@ -32,7 +28,6 @@ spec:
     value: catalog.Dockerfile
   - name: skip-checks
     value: "true"
-<<<<<<< Updated upstream
   pipelineSpec:
     description: |
       This pipeline is ideal for building demo container images from a Containerfile while maintaining trust after pipeline customization.
@@ -41,10 +36,6 @@ spec:
 
       _Uses `buildah` to create a container image leveraging [trusted artifacts](https://konflux-ci.dev/architecture/ADR/0036-trusted-artifacts.html). It also optionally creates a source image and runs some build-time tests. Information is shared between tasks using OCI artifacts instead of PVCs. EC will pass the [`trusted_task.trusted`](https://conforma.dev/docs/policy/packages/release_trusted_task.html#trusted_task__trusted) policy as long as all data used to build the artifact is generated from trusted tasks.
       This pipeline is pushed as a Tekton bundle to [quay.io](https://quay.io/repository/konflux-ci/tekton-catalog/pipeline-docker-build-oci-ta?tab=tags)_
-=======
-  pipelineRef:
-    resolver: bundles
->>>>>>> Stashed changes
     params:
     - description: Source Repository URL
       name: git-url
