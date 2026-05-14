@@ -184,7 +184,7 @@ func TestBuildRunCustomContainerfile(t *testing.T) {
 	}
 }
 
-func TestBuildRunDefaultContainerfileOmitsParam(t *testing.T) {
+func TestBuildRunDefaultContainerfileAlwaysPassesParam(t *testing.T) {
 	r := &ContainerBuildReconciler{}
 	cb := newTestContainerBuild("test", automotivev1alpha1.ContainerBuildSpec{
 		Output:  "quay.io/org/image:latest",
@@ -193,10 +193,17 @@ func TestBuildRunDefaultContainerfileOmitsParam(t *testing.T) {
 
 	br := r.buildShipwrightBuildRun(cb, "test-br", 5*time.Minute)
 
+	found := false
 	for _, pv := range br.Spec.Build.Spec.ParamValues {
 		if pv.Name == "dockerfile" {
-			t.Error("dockerfile param should not be set when using default Containerfile")
+			found = true
+			if pv.SingleValue == nil || pv.Value == nil || *pv.Value != "Containerfile" {
+				t.Errorf("expected dockerfile param = 'Containerfile', got %v", pv.SingleValue)
+			}
 		}
+	}
+	if !found {
+		t.Error("dockerfile param must always be set to override Shipwright's Dockerfile default")
 	}
 }
 
