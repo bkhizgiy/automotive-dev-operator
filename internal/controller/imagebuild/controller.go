@@ -945,19 +945,11 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 			}
 
 			if operatorConfig.Spec.OSBuilds.TaskBundleVerify {
-				cosignKeyRef := operatorConfig.Spec.OSBuilds.TaskBundleCosignKeyRef
-				if cosignKeyRef == nil || cosignKeyRef.Name == "" || cosignKeyRef.Key == "" {
-					return fmt.Errorf("secureBuild: taskBundleVerify is enabled but taskBundleCosignKeyRef is not set")
+				pubKeyPEM, err := bundleverify.FetchCosignPublicKey(ctx, r.Client, operatorConfig.Spec.OSBuilds.TaskBundleCosignKeyRef, controllerutils.OperatorNamespace())
+				if err != nil {
+					return fmt.Errorf("secureBuild: cosign key is unavailable: %w", err)
 				}
-				cm := &corev1.ConfigMap{}
-				if err := r.Get(ctx, types.NamespacedName{Name: cosignKeyRef.Name, Namespace: controllerutils.OperatorNamespace()}, cm); err != nil {
-					return fmt.Errorf("secureBuild: failed to read cosign key ConfigMap %q: %w", cosignKeyRef.Name, err)
-				}
-				pubKeyPEM, ok := cm.Data[cosignKeyRef.Key]
-				if !ok {
-					return fmt.Errorf("secureBuild: ConfigMap %q does not contain key %q", cosignKeyRef.Name, cosignKeyRef.Key)
-				}
-				if err := bundleverify.VerifyBundle(ctx, ref, []byte(pubKeyPEM)); err != nil {
+				if err := bundleverify.VerifyBundle(ctx, ref, pubKeyPEM); err != nil {
 					return fmt.Errorf("task bundle signature verification failed: %w", err)
 				}
 			}

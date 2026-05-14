@@ -11,8 +11,11 @@ import (
 	"time"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
+	"github.com/centos-automotive-suite/automotive-dev-operator/internal/common/bundleverify"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/controller/controllerutils"
 	"github.com/go-logr/logr"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
+	ociremote "github.com/sigstore/cosign/v3/pkg/oci/remote"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -219,6 +222,30 @@ func (r *Reconciler) ensurePod(ctx context.Context, ws *automotivev1alpha1.Works
 		operatorConfig = oc
 	}
 
+	var wsConfig *automotivev1alpha1.WorkspacesConfig
+	if operatorConfig != nil {
+		wsConfig = operatorConfig.Spec.Workspaces
+	}
+	image := resolveWorkspaceImage(ws, wsConfig)
+	if wsConfig != nil && !wsConfig.IsImageAllowed(image) {
+		return nil, fmt.Errorf("image %q is not in the allowed images list", image)
+	}
+	if wsConfig != nil && wsConfig.ImageVerify {
+		pubKeyPEM, err := bundleverify.FetchCosignPublicKey(ctx, r.Client, wsConfig.ImageCosignKeyRef, ws.Namespace)
+		if err != nil {
+			return nil, fmt.Errorf("imageVerify is enabled but cosign key is unavailable: %w", err)
+		}
+		imagePullSecrets := resolveImagePullSecrets(ws, wsConfig)
+		keychain, err := bundleverify.KeychainFromPullSecrets(ctx, r.Client, ws.Namespace, imagePullSecrets)
+		if err != nil {
+			return nil, fmt.Errorf("building registry keychain: %w", err)
+		}
+		registryOpts := ociremote.WithRemoteOptions(remote.WithAuthFromKeychain(keychain))
+		if err := bundleverify.VerifyBundle(ctx, image, pubKeyPEM, registryOpts); err != nil {
+			return nil, fmt.Errorf("workspace image signature verification failed: %w", err)
+		}
+	}
+
 	pod := r.buildPod(ws, operatorConfig)
 	if err := controllerutil.SetControllerReference(ws, pod, r.Scheme); err != nil {
 		return nil, err
@@ -228,6 +255,28 @@ func (r *Reconciler) ensurePod(ctx context.Context, ws *automotivev1alpha1.Works
 		return nil, err
 	}
 	return pod, nil
+}
+
+func resolveWorkspaceImage(ws *automotivev1alpha1.Workspace, wsConfig *automotivev1alpha1.WorkspacesConfig) string {
+	if ws.Spec.Image != "" {
+		return ws.Spec.Image
+	}
+	if wsConfig != nil {
+		if img := wsConfig.GetToolchainImage(); img != "" {
+			return img
+		}
+	}
+	return automotivev1alpha1.DefaultToolchainImage
+}
+
+func resolveImagePullSecrets(ws *automotivev1alpha1.Workspace, wsConfig *automotivev1alpha1.WorkspacesConfig) []corev1.LocalObjectReference {
+	if len(ws.Spec.ImagePullSecrets) > 0 {
+		return ws.Spec.ImagePullSecrets
+	}
+	if wsConfig != nil {
+		return wsConfig.GetImagePullSecrets()
+	}
+	return nil
 }
 
 func (r *Reconciler) buildPod(ws *automotivev1alpha1.Workspace, operatorConfig *automotivev1alpha1.OperatorConfig) *corev1.Pod {
@@ -244,10 +293,8 @@ func (r *Reconciler) buildPod(ws *automotivev1alpha1.Workspace, operatorConfig *
 	}
 
 	configuredImage := wsConfig.GetToolchainImage()
-	image := ws.Spec.Image
-	if image == "" {
-		image = configuredImage
-	}
+	image := resolveWorkspaceImage(ws, wsConfig)
+	imagePullSecrets := resolveImagePullSecrets(ws, wsConfig)
 
 	// Determine if the cluster supports user namespaces.
 	// With user namespaces: drop ALL caps + add specific ones, procMount=Unmasked
@@ -421,6 +468,7 @@ chown -R 1000:1000 /workspace/src /workspace/cache /workspace/.cache /workspace/
 				},
 			},
 		},
+		ImagePullSecrets:              imagePullSecrets,
 		NodeSelector:                  ws.Spec.NodeSelector,
 		Tolerations:                   wsConfig.GetTolerations(),
 		TerminationGracePeriodSeconds: ptr.To[int64](5),

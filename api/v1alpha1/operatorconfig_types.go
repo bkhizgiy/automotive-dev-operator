@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	"strconv"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -327,6 +328,7 @@ type ContainerBuildsConfig struct {
 }
 
 // WorkspacesConfig defines configuration for developer workspaces
+// +kubebuilder:validation:XValidation:rule="!has(self.imageVerify) || !self.imageVerify || has(self.imageCosignKeyRef)",message="imageCosignKeyRef is required when imageVerify is true"
 type WorkspacesConfig struct {
 	// ToolchainImage is the container image for workspace toolchains
 	// +optional
@@ -377,6 +379,28 @@ type WorkspacesConfig struct {
 	// Default: 30
 	// +optional
 	AutoPauseTimeoutMinutes int32 `json:"autoPauseTimeoutMinutes,omitempty"`
+
+	// ImagePullSecrets is a list of secret references for pulling private workspace images
+	// +optional
+	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
+
+	// AllowedImages restricts which container images users may run in workspaces.
+	// Supports exact matches and prefix globs (e.g., "quay.io/my-org/*").
+	// When empty, only the configured toolchain image is allowed.
+	// The toolchain image is always implicitly permitted.
+	// +optional
+	AllowedImages []string `json:"allowedImages,omitempty"`
+
+	// ImageVerify enables cosign signature verification for workspace images.
+	// When true, images must be signed with the key in ImageCosignKeyRef.
+	// +optional
+	ImageVerify bool `json:"imageVerify,omitempty"`
+
+	// ImageCosignKeyRef references a ConfigMap key containing the cosign public key
+	// (PEM-encoded) used to verify workspace image signatures.
+	// Required when ImageVerify is true.
+	// +optional
+	ImageCosignKeyRef *corev1.ConfigMapKeySelector `json:"imageCosignKeyRef,omitempty"`
 }
 
 // GetToolchainImage returns the toolchain image, falling back to the default
@@ -439,6 +463,41 @@ func (c *WorkspacesConfig) GetAutoPauseTimeoutMinutes() int32 {
 		return c.AutoPauseTimeoutMinutes
 	}
 	return DefaultAutoPauseTimeoutMinutes
+}
+
+// GetImagePullSecrets returns the workspace image pull secrets, or nil if not configured
+func (c *WorkspacesConfig) GetImagePullSecrets() []corev1.LocalObjectReference {
+	if c != nil {
+		return c.ImagePullSecrets
+	}
+	return nil
+}
+
+// IsImageAllowed checks whether a container image is permitted for workspace pods.
+// The configured toolchain image is always allowed. Other images must match an
+// entry in AllowedImages (exact match or prefix glob like "quay.io/org/*").
+// Returns false when AllowedImages is empty and the image is not the toolchain image.
+func (c *WorkspacesConfig) IsImageAllowed(image string) bool {
+	if c == nil {
+		return image == DefaultToolchainImage
+	}
+	if image == c.GetToolchainImage() {
+		return true
+	}
+	if len(c.AllowedImages) == 0 {
+		return false
+	}
+	for _, pattern := range c.AllowedImages {
+		if strings.HasSuffix(pattern, "/*") {
+			prefix := strings.TrimSuffix(pattern, "*")
+			if strings.HasPrefix(image, prefix) {
+				return true
+			}
+		} else if image == pattern {
+			return true
+		}
+	}
+	return false
 }
 
 // MonitoringConfig defines configuration for Prometheus metrics collection

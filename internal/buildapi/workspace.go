@@ -159,6 +159,14 @@ func (a *APIServer) createWorkspace(c *gin.Context) {
 	if image == "" {
 		image = wsConfig.GetToolchainImage()
 	}
+	if wsConfig != nil && !wsConfig.IsImageAllowed(image) {
+		c.JSON(http.StatusForbidden, gin.H{"error": fmt.Sprintf("image %q is not in the allowed images list", image)})
+		return
+	}
+	if status, verifyErr := verifyWorkspaceImage(c.Request.Context(), k8sClient, namespace, wsConfig, image, wsConfig.GetImagePullSecrets()); verifyErr != nil {
+		c.JSON(status, gin.H{"error": verifyErr.Error()})
+		return
+	}
 	pvcSize := wsConfig.GetPVCSize()
 
 	// Resolve lease from ImageBuild if --from-build was used

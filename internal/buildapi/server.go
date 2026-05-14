@@ -40,7 +40,7 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
-	ociremote "github.com/sigstore/cosign/v2/pkg/oci/remote"
+	ociremote "github.com/sigstore/cosign/v3/pkg/oci/remote"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
 	"github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi/catalog"
@@ -1238,27 +1238,36 @@ func verifyTaskBundle(ctx context.Context, k8sClient client.Client, namespace st
 		return 0, nil
 	}
 
-	cosignKeyRef := operatorConfig.Spec.OSBuilds.TaskBundleCosignKeyRef
-	if cosignKeyRef == nil || cosignKeyRef.Name == "" || cosignKeyRef.Key == "" {
-		return http.StatusBadRequest, fmt.Errorf("taskBundleVerify is enabled but taskBundleCosignKeyRef is not set in OperatorConfig")
-	}
-
-	cm := &corev1.ConfigMap{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: cosignKeyRef.Name, Namespace: namespace}, cm); err != nil {
-		if k8serrors.IsNotFound(err) {
-			return http.StatusBadRequest, fmt.Errorf("cosign key ConfigMap %q not found in namespace %q", cosignKeyRef.Name, namespace)
-		}
-		return http.StatusInternalServerError, fmt.Errorf("failed to read cosign key ConfigMap %q: %w", cosignKeyRef.Name, err)
-	}
-
-	pubKeyPEM, ok := cm.Data[cosignKeyRef.Key]
-	if !ok {
-		return http.StatusBadRequest, fmt.Errorf("ConfigMap %q does not contain key %q", cosignKeyRef.Name, cosignKeyRef.Key)
+	pubKeyPEM, err := bundleverify.FetchCosignPublicKey(ctx, k8sClient, operatorConfig.Spec.OSBuilds.TaskBundleCosignKeyRef, namespace)
+	if err != nil {
+		return http.StatusBadRequest, fmt.Errorf("taskBundleVerify is enabled but cosign key is unavailable: %w", err)
 	}
 
 	registryOpts := ociremote.WithRemoteOptions(remote.WithAuthFromKeychain(authn.DefaultKeychain))
-	if err := bundleverify.VerifyBundle(ctx, bundleRef, []byte(pubKeyPEM), registryOpts); err != nil {
+	if err := bundleverify.VerifyBundle(ctx, bundleRef, pubKeyPEM, registryOpts); err != nil {
 		return http.StatusForbidden, fmt.Errorf("task bundle signature verification failed: %w", err)
+	}
+
+	return 0, nil
+}
+
+func verifyWorkspaceImage(ctx context.Context, k8sClient client.Client, namespace string, wsConfig *automotivev1alpha1.WorkspacesConfig, imageRef string, imagePullSecrets []corev1.LocalObjectReference) (int, error) {
+	if wsConfig == nil || !wsConfig.ImageVerify {
+		return 0, nil
+	}
+
+	pubKeyPEM, err := bundleverify.FetchCosignPublicKey(ctx, k8sClient, wsConfig.ImageCosignKeyRef, namespace)
+	if err != nil {
+		return http.StatusBadRequest, fmt.Errorf("imageVerify is enabled but cosign key is unavailable: %w", err)
+	}
+
+	keychain, err := bundleverify.KeychainFromPullSecrets(ctx, k8sClient, namespace, imagePullSecrets)
+	if err != nil {
+		return http.StatusInternalServerError, fmt.Errorf("building registry keychain: %w", err)
+	}
+	registryOpts := ociremote.WithRemoteOptions(remote.WithAuthFromKeychain(keychain))
+	if err := bundleverify.VerifyBundle(ctx, imageRef, pubKeyPEM, registryOpts); err != nil {
+		return http.StatusForbidden, fmt.Errorf("workspace image signature verification failed: %w", err)
 	}
 
 	return 0, nil
