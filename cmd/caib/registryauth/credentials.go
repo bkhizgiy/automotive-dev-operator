@@ -18,7 +18,7 @@ func ExtractRegistryCredentials(primaryRef, secondaryRef string) (string, string
 		ref = secondaryRef
 	}
 	if ref == "" {
-		return "", username, password
+		return os.Getenv("REGISTRY_URL"), username, password
 	}
 
 	if username == "" || password == "" {
@@ -66,6 +66,10 @@ func ResolveRegistryCredentials(
 		}, nil
 	}
 	if registryURL == "" {
+		if username != "" || password != "" {
+			fmt.Fprintln(os.Stderr, "Warning: REGISTRY_USERNAME/REGISTRY_PASSWORD set but no registry URL could be determined.")
+			fmt.Fprintln(os.Stderr, "Use --registry-auth-file for authenticated pulls, or set REGISTRY_URL for a single registry.")
+		}
 		return nil, nil
 	}
 
