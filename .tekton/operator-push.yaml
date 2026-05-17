@@ -205,6 +205,8 @@ spec:
         value: $(params.output-image)
       - name: DOCKERFILE
         value: $(params.dockerfile)
+      - name: PUSH_LATEST
+        value: "true"
       runAfter:
       - prefetch-dependencies
       taskSpec:
@@ -213,6 +215,8 @@ spec:
         - name: IMAGE
         - name: DOCKERFILE
           default: Dockerfile
+        - name: PUSH_LATEST
+          default: "false"
         results:
         - name: IMAGE_URL
         - name: IMAGE_DIGEST
@@ -230,7 +234,6 @@ spec:
             #!/usr/bin/env sh
             set -e
             mkdir -p /var/workdir/source
-            # Strip the oci: prefix that Konflux prepends to artifact URIs
             ARTIFACT="$(params.SOURCE_ARTIFACT)"
             ARTIFACT="${ARTIFACT#oci:}"
             oras blob fetch \
@@ -245,10 +248,12 @@ spec:
             #!/usr/bin/env bash
             set -euo pipefail
 
-            # Strip :tag suffix to get the base image name
-            IMAGE=$(echo "$(params.IMAGE)" | sed 's/:[^/:]*$//')
+            IMAGE_FULL="$(params.IMAGE)"
+            IMAGE_BASE=$(echo "${IMAGE_FULL}" | sed 's/:[^/:]*$//')
+            IMAGE_TAG="${IMAGE_FULL##*:}"
             DOCKERFILE="$(params.DOCKERFILE)"
             AUTHFILE="${HOME}/.docker/config.json"
+            PUSH_LATEST="$(params.PUSH_LATEST)"
 
             cd /var/workdir/source
 
@@ -259,34 +264,50 @@ spec:
               --build-arg TARGETOS=linux \
               --build-arg BUILDPLATFORM=linux/arm64 \
               --authfile "${AUTHFILE}" \
-              -t "${IMAGE}:latest-arm64" \
+              -t "${IMAGE_BASE}:${IMAGE_TAG}-arm64" \
               -f "${DOCKERFILE}" .
-            buildah push --authfile "${AUTHFILE}" "${IMAGE}:latest-arm64"
+            buildah push --authfile "${AUTHFILE}" "${IMAGE_BASE}:${IMAGE_TAG}-arm64"
 
-            echo "=== Building linux/amd64 (Go cross-compilation, no QEMU needed) ==="
+            echo "=== Building linux/amd64 (cross-compilation) ==="
             buildah build \
               --platform linux/amd64 \
               --build-arg TARGETARCH=amd64 \
               --build-arg TARGETOS=linux \
               --build-arg BUILDPLATFORM=linux/arm64 \
               --authfile "${AUTHFILE}" \
-              -t "${IMAGE}:latest-amd64" \
+              -t "${IMAGE_BASE}:${IMAGE_TAG}-amd64" \
               -f "${DOCKERFILE}" .
-            buildah push --authfile "${AUTHFILE}" "${IMAGE}:latest-amd64"
+            buildah push --authfile "${AUTHFILE}" "${IMAGE_BASE}:${IMAGE_TAG}-amd64"
 
-            echo "=== Creating multi-arch manifest list as :latest ==="
+            echo "=== Creating manifest: ${IMAGE_BASE}:${IMAGE_TAG} ==="
             buildah manifest rm multiarch 2>/dev/null || true
             buildah manifest create multiarch
-            buildah manifest add multiarch "${IMAGE}:latest-arm64"
-            buildah manifest add multiarch "${IMAGE}:latest-amd64"
+            buildah manifest add multiarch "${IMAGE_BASE}:${IMAGE_TAG}-arm64"
+            buildah manifest add multiarch "${IMAGE_BASE}:${IMAGE_TAG}-amd64"
             buildah manifest push --all multiarch \
               --authfile "${AUTHFILE}" \
-              "docker://${IMAGE}:latest"
+              "docker://${IMAGE_BASE}:${IMAGE_TAG}"
+
+            if [ "${PUSH_LATEST}" = "true" ]; then
+              echo "=== Tagging as :latest, :latest-arm64, :latest-amd64 ==="
+              buildah push --authfile "${AUTHFILE}" \
+                "${IMAGE_BASE}:${IMAGE_TAG}-arm64" \
+                "docker://${IMAGE_BASE}:latest-arm64"
+              buildah push --authfile "${AUTHFILE}" \
+                "${IMAGE_BASE}:${IMAGE_TAG}-amd64" \
+                "docker://${IMAGE_BASE}:latest-amd64"
+              buildah manifest rm latest-manifest 2>/dev/null || true
+              buildah manifest create latest-manifest
+              buildah manifest add latest-manifest "${IMAGE_BASE}:${IMAGE_TAG}-arm64"
+              buildah manifest add latest-manifest "${IMAGE_BASE}:${IMAGE_TAG}-amd64"
+              buildah manifest push --all latest-manifest \
+                --authfile "${AUTHFILE}" \
+                "docker://${IMAGE_BASE}:latest"
+            fi
 
             DIGEST=$(buildah manifest inspect multiarch \
-              | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('digest', d.get('manifests',[{}])[0].get('digest','')))" 2>/dev/null || echo "")
-
-            echo -n "${IMAGE}:latest" > $(results.IMAGE_URL.path)
+              | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('digest',''))" 2>/dev/null || echo "")
+            echo -n "${IMAGE_BASE}:${IMAGE_TAG}" > $(results.IMAGE_URL.path)
             echo -n "${DIGEST}" > $(results.IMAGE_DIGEST.path)
         volumes:
         - name: workdir
