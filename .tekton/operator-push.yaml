@@ -23,7 +23,7 @@ spec:
   - name: revision
     value: '{{revision}}'
   - name: output-image
-    value: quay.io/bkhizgiy/automotive-dev-operator
+    value: quay.io/bkhizgiy/automotive-dev-operator:{{revision}}
   - name: dockerfile
     value: Dockerfile
   - name: skip-checks
@@ -242,7 +242,8 @@ spec:
             #!/usr/bin/env bash
             set -euo pipefail
 
-            IMAGE="$(params.IMAGE)"
+            # Strip :tag suffix to get the base image name
+            IMAGE=$(echo "$(params.IMAGE)" | sed 's/:[^/:]*$//')
             DOCKERFILE="$(params.DOCKERFILE)"
             AUTHFILE="${HOME}/.docker/config.json"
 
