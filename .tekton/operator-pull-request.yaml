@@ -32,14 +32,14 @@ spec:
   - name: skip-checks
     value: "true"
   taskRunSpecs:
-  - pipelineTaskName: build-container
+  - pipelineTaskName: build-multiarch
     computeResources:
       requests:
-        memory: 4Gi
-        cpu: "2"
-      limits:
-        memory: 8Gi
+        memory: 6Gi
         cpu: "4"
+      limits:
+        memory: 12Gi
+        cpu: "8"
   pipelineSpec:
     description: |
       This pipeline is ideal for building demo container images from a Containerfile while maintaining trust after pipeline customization.
@@ -122,10 +122,10 @@ spec:
     results:
     - description: ""
       name: IMAGE_URL
-      value: $(tasks.build-image-index.results.IMAGE_URL)
+      value: $(tasks.build-multiarch.results.IMAGE_URL)
     - description: ""
       name: IMAGE_DIGEST
-      value: $(tasks.build-image-index.results.IMAGE_DIGEST)
+      value: $(tasks.build-multiarch.results.IMAGE_DIGEST)
     - description: ""
       name: CHAINS-GIT_URL
       value: $(tasks.clone-repository.results.url)
@@ -198,82 +198,129 @@ spec:
         workspace: git-auth
       - name: netrc
         workspace: netrc
-    - name: build-container
+    - name: build-multiarch
       params:
+      - name: SOURCE_ARTIFACT
+        value: $(tasks.prefetch-dependencies.results.SOURCE_ARTIFACT)
       - name: IMAGE
         value: $(params.output-image)
       - name: DOCKERFILE
         value: $(params.dockerfile)
-      - name: CONTEXT
-        value: $(params.path-context)
-      - name: HERMETIC
-        value: $(params.hermetic)
-      - name: PREFETCH_INPUT
-        value: $(params.prefetch-input)
-      - name: IMAGE_EXPIRES_AFTER
-        value: $(params.image-expires-after)
-      - name: COMMIT_SHA
-        value: $(tasks.clone-repository.results.commit)
-      - name: BUILD_ARGS
-        value:
-        - $(params.build-args[*])
-      - name: BUILD_ARGS_FILE
-        value: $(params.build-args-file)
-      - name: PRIVILEGED_NESTED
-        value: $(params.privileged-nested)
-      - name: SOURCE_URL
-        value: $(tasks.clone-repository.results.url)
-      - name: BUILDAH_FORMAT
-        value: $(params.buildah-format)
-      - name: HTTP_PROXY
-        value: $(tasks.init.results.http-proxy)
-      - name: NO_PROXY
-        value: $(tasks.init.results.no-proxy)
-      - name: SOURCE_ARTIFACT
-        value: $(tasks.prefetch-dependencies.results.SOURCE_ARTIFACT)
-      - name: CACHI2_ARTIFACT
-        value: $(tasks.prefetch-dependencies.results.CACHI2_ARTIFACT)
+      - name: PUSH_LATEST
+        value: "false"
       runAfter:
       - prefetch-dependencies
-      taskRef:
+      taskSpec:
         params:
-        - name: name
-          value: buildah-oci-ta-min
-        - name: bundle
-          value: quay.io/konflux-ci/tekton-catalog/task-buildah-oci-ta-min:0.9@sha256:97c0d0ac1d508a70f8610c7dc79de453a990414fba7d7e0f8d21ec22f5796d96
-        - name: kind
-          value: task
-        resolver: bundles
-    - name: build-image-index
-      params:
-      - name: IMAGE
-        value: $(params.output-image)
-      - name: ALWAYS_BUILD_INDEX
-        value: $(params.build-image-index)
-      - name: IMAGES
-        value:
-        - $(tasks.build-container.results.IMAGE_URL)@$(tasks.build-container.results.IMAGE_DIGEST)
-      - name: BUILDAH_FORMAT
-        value: $(params.buildah-format)
-      runAfter:
-      - build-container
-      taskRef:
-        params:
-        - name: name
-          value: build-image-index-min
-        - name: bundle
-          value: quay.io/konflux-ci/tekton-catalog/task-build-image-index-min:0.3@sha256:fbb362f21e559606f8941cde6a2c0507c8af6cfc8bee88ffc38032e8e80b4b7e
-        - name: kind
-          value: task
-        resolver: bundles
+        - name: SOURCE_ARTIFACT
+        - name: IMAGE
+        - name: DOCKERFILE
+          default: Dockerfile
+        - name: PUSH_LATEST
+          default: "false"
+        results:
+        - name: IMAGE_URL
+        - name: IMAGE_DIGEST
+        stepTemplate:
+          env:
+          - name: HOME
+            value: /tekton/home
+          volumeMounts:
+          - name: workdir
+            mountPath: /var/workdir
+        steps:
+        - name: fetch-source
+          image: ghcr.io/oras-project/oras:v1.2.0
+          script: |
+            #!/usr/bin/env sh
+            set -e
+            mkdir -p /var/workdir/source
+            ARTIFACT="$(params.SOURCE_ARTIFACT)"
+            ARTIFACT="${ARTIFACT#oci:}"
+            oras blob fetch \
+              --registry-config "${HOME}/.docker/config.json" \
+              "${ARTIFACT}" \
+              --output - | tar xz -C /var/workdir/source
+        - name: build-and-push
+          image: quay.io/buildah/stable:latest
+          securityContext:
+            privileged: true
+          script: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            IMAGE_FULL="$(params.IMAGE)"
+            IMAGE_BASE=$(echo "${IMAGE_FULL}" | sed 's/:[^/:]*$//')
+            IMAGE_TAG="${IMAGE_FULL##*:}"
+            DOCKERFILE="$(params.DOCKERFILE)"
+            AUTHFILE="${HOME}/.docker/config.json"
+            PUSH_LATEST="$(params.PUSH_LATEST)"
+
+            cd /var/workdir/source
+
+            echo "=== Building linux/arm64 (native) ==="
+            buildah build \
+              --platform linux/arm64 \
+              --build-arg TARGETARCH=arm64 \
+              --build-arg TARGETOS=linux \
+              --build-arg BUILDPLATFORM=linux/arm64 \
+              --authfile "${AUTHFILE}" \
+              -t "${IMAGE_BASE}:${IMAGE_TAG}-arm64" \
+              -f "${DOCKERFILE}" .
+            buildah push --authfile "${AUTHFILE}" "${IMAGE_BASE}:${IMAGE_TAG}-arm64"
+
+            echo "=== Building linux/amd64 (cross-compilation) ==="
+            buildah build \
+              --platform linux/amd64 \
+              --build-arg TARGETARCH=amd64 \
+              --build-arg TARGETOS=linux \
+              --build-arg BUILDPLATFORM=linux/arm64 \
+              --authfile "${AUTHFILE}" \
+              -t "${IMAGE_BASE}:${IMAGE_TAG}-amd64" \
+              -f "${DOCKERFILE}" .
+            buildah push --authfile "${AUTHFILE}" "${IMAGE_BASE}:${IMAGE_TAG}-amd64"
+
+            echo "=== Creating manifest: ${IMAGE_BASE}:${IMAGE_TAG} ==="
+            buildah manifest rm multiarch 2>/dev/null || true
+            buildah manifest create multiarch
+            buildah manifest add multiarch "${IMAGE_BASE}:${IMAGE_TAG}-arm64"
+            buildah manifest add multiarch "${IMAGE_BASE}:${IMAGE_TAG}-amd64"
+            buildah manifest push --all multiarch \
+              --authfile "${AUTHFILE}" \
+              "docker://${IMAGE_BASE}:${IMAGE_TAG}"
+
+            if [ "${PUSH_LATEST}" = "true" ]; then
+              echo "=== Tagging as :latest, :latest-arm64, :latest-amd64 ==="
+              buildah push --authfile "${AUTHFILE}" \
+                "${IMAGE_BASE}:${IMAGE_TAG}-arm64" \
+                "docker://${IMAGE_BASE}:latest-arm64"
+              buildah push --authfile "${AUTHFILE}" \
+                "${IMAGE_BASE}:${IMAGE_TAG}-amd64" \
+                "docker://${IMAGE_BASE}:latest-amd64"
+              buildah manifest rm latest-manifest 2>/dev/null || true
+              buildah manifest create latest-manifest
+              buildah manifest add latest-manifest "${IMAGE_BASE}:${IMAGE_TAG}-arm64"
+              buildah manifest add latest-manifest "${IMAGE_BASE}:${IMAGE_TAG}-amd64"
+              buildah manifest push --all latest-manifest \
+                --authfile "${AUTHFILE}" \
+                "docker://${IMAGE_BASE}:latest"
+            fi
+
+            DIGEST=$(buildah manifest inspect multiarch \
+              | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('digest',''))" 2>/dev/null || echo "")
+            echo -n "${IMAGE_BASE}:${IMAGE_TAG}" > $(results.IMAGE_URL.path)
+            echo -n "${DIGEST}" > $(results.IMAGE_DIGEST.path)
+        volumes:
+        - name: workdir
+          emptyDir: {}
     - name: deprecated-base-image-check
       params:
       - name: IMAGE_URL
-        value: $(tasks.build-image-index.results.IMAGE_URL)
+        value: $(tasks.build-multiarch.results.IMAGE_URL)
       - name: IMAGE_DIGEST
-        value: $(tasks.build-image-index.results.IMAGE_DIGEST)
+        value: $(tasks.build-multiarch.results.IMAGE_DIGEST)
       runAfter:
-      - build-image-index
+      - build-multiarch
       taskRef:
         params:
         - name: name
@@ -291,11 +338,11 @@ spec:
     - name: clamav-scan
       params:
       - name: image-digest
-        value: $(tasks.build-image-index.results.IMAGE_DIGEST)
+        value: $(tasks.build-multiarch.results.IMAGE_DIGEST)
       - name: image-url
-        value: $(tasks.build-image-index.results.IMAGE_URL)
+        value: $(tasks.build-multiarch.results.IMAGE_URL)
       runAfter:
-      - build-image-index
+      - build-multiarch
       taskRef:
         params:
         - name: name
@@ -313,9 +360,9 @@ spec:
     - name: sast-shell-check
       params:
       - name: image-digest
-        value: $(tasks.build-image-index.results.IMAGE_DIGEST)
+        value: $(tasks.build-multiarch.results.IMAGE_DIGEST)
       - name: image-url
-        value: $(tasks.build-image-index.results.IMAGE_URL)
+        value: $(tasks.build-multiarch.results.IMAGE_URL)
       - name: TARGET_DIRS
         value: $(params.sast-target-dirs)
       - name: SOURCE_ARTIFACT
@@ -323,7 +370,7 @@ spec:
       - name: CACHI2_ARTIFACT
         value: $(tasks.prefetch-dependencies.results.CACHI2_ARTIFACT)
       runAfter:
-      - build-image-index
+      - build-multiarch
       taskRef:
         params:
         - name: name
@@ -341,9 +388,9 @@ spec:
     - name: sast-unicode-check
       params:
       - name: image-digest
-        value: $(tasks.build-image-index.results.IMAGE_DIGEST)
+        value: $(tasks.build-multiarch.results.IMAGE_DIGEST)
       - name: image-url
-        value: $(tasks.build-image-index.results.IMAGE_URL)
+        value: $(tasks.build-multiarch.results.IMAGE_URL)
       - name: TARGET_DIRS
         value: $(params.sast-target-dirs)
       - name: SOURCE_ARTIFACT
@@ -351,7 +398,7 @@ spec:
       - name: CACHI2_ARTIFACT
         value: $(tasks.prefetch-dependencies.results.CACHI2_ARTIFACT)
       runAfter:
-      - build-image-index
+      - build-multiarch
       taskRef:
         params:
         - name: name
@@ -369,11 +416,11 @@ spec:
     - name: rpms-signature-scan
       params:
       - name: image-url
-        value: $(tasks.build-image-index.results.IMAGE_URL)
+        value: $(tasks.build-multiarch.results.IMAGE_URL)
       - name: image-digest
-        value: $(tasks.build-image-index.results.IMAGE_DIGEST)
+        value: $(tasks.build-multiarch.results.IMAGE_DIGEST)
       runAfter:
-      - build-image-index
+      - build-multiarch
       taskRef:
         params:
         - name: name
@@ -391,11 +438,11 @@ spec:
     - name: tpa-scan
       params:
       - name: image-digest
-        value: $(tasks.build-image-index.results.IMAGE_DIGEST)
+        value: $(tasks.build-multiarch.results.IMAGE_DIGEST)
       - name: image-url
-        value: $(tasks.build-image-index.results.IMAGE_URL)
+        value: $(tasks.build-multiarch.results.IMAGE_URL)
       runAfter:
-      - build-image-index
+      - build-multiarch
       taskRef:
         params:
         - name: name
