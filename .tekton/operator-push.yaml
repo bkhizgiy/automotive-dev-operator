@@ -230,9 +230,12 @@ spec:
             #!/usr/bin/env sh
             set -e
             mkdir -p /var/workdir/source
+            # Strip the oci: prefix that Konflux prepends to artifact URIs
+            ARTIFACT="$(params.SOURCE_ARTIFACT)"
+            ARTIFACT="${ARTIFACT#oci:}"
             oras blob fetch \
               --registry-config "${HOME}/.docker/config.json" \
-              "$(params.SOURCE_ARTIFACT)" \
+              "${ARTIFACT}" \
               --output - | tar xz -C /var/workdir/source
         - name: build-and-push
           image: quay.io/buildah/stable:latest
