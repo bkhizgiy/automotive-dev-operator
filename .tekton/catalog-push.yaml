@@ -28,6 +28,8 @@ spec:
     value: catalog.Dockerfile
   - name: skip-checks
     value: "true"
+  - name: image-expires-after
+    value: 7d
   pipelineSpec:
     description: |
       This pipeline is ideal for building demo container images from a Containerfile while maintaining trust after pipeline customization.

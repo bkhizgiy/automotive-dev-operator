@@ -23,11 +23,13 @@ spec:
   - name: revision
     value: '{{revision}}'
   - name: output-image
-    value: quay.io/bkhizgiy/automotive-dev-operator:{{revision}}
+    value: quay.io/bkhizgiy/automotive-dev-operator:latest
   - name: dockerfile
     value: Dockerfile
   - name: skip-checks
     value: "true"
+  - name: image-expires-after
+    value: 7d
   taskRunSpecs:
   - pipelineTaskName: build-container
     computeResources:
