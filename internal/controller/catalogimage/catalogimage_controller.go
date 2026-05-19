@@ -49,11 +49,11 @@ type CatalogImageReconciler struct {
 	RegistryClient RegistryClient
 }
 
-// +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=catalogimages,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=catalogimages/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=catalogimages/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,namespace=system,resources=catalogimages,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,namespace=system,resources=catalogimages/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,namespace=system,resources=catalogimages/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",namespace=system,resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",namespace=system,resources=events,verbs=create;patch
 
 // Reconcile handles CatalogImage reconciliation
 func (r *CatalogImageReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

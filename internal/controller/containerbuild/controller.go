@@ -64,15 +64,15 @@ type ContainerBuildReconciler struct {
 	Recorder record.EventRecorder
 }
 
-//+kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=containerbuilds,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=containerbuilds/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=containerbuilds/finalizers,verbs=update
-//+kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,resources=operatorconfigs,verbs=get;list;watch
-//+kubebuilder:rbac:groups=shipwright.io,resources=buildruns,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=shipwright.io,resources=builds,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
-//+kubebuilder:rbac:groups="",resources=pods/exec,verbs=create
-//+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+//+kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,namespace=system,resources=containerbuilds,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,namespace=system,resources=containerbuilds/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,namespace=system,resources=containerbuilds/finalizers,verbs=update
+//+kubebuilder:rbac:groups=automotive.sdv.cloud.redhat.com,namespace=system,resources=operatorconfigs,verbs=get;list;watch
+//+kubebuilder:rbac:groups=shipwright.io,namespace=system,resources=buildruns,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=shipwright.io,namespace=system,resources=builds,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",namespace=system,resources=pods,verbs=get;list;watch
+//+kubebuilder:rbac:groups="",namespace=system,resources=pods/exec,verbs=create
+//+kubebuilder:rbac:groups="",namespace=system,resources=events,verbs=create;patch
 
 // Reconcile handles the reconciliation loop for ContainerBuild resources.
 func (r *ContainerBuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

@@ -213,6 +213,11 @@ uninstall_operator() {
     oc delete role ado-build-controller-leader-election -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
     oc delete rolebinding ado-build-controller-leader-election -n ${NAMESPACE} --ignore-not-found=true 2>/dev/null || true
 
+    echo "Cleaning up legacy kustomize RBAC (pre-OLM)..."
+    oc delete clusterrole ado-manager-role --ignore-not-found=true 2>/dev/null || true
+    oc delete clusterrolebinding ado-manager-rolebinding --ignore-not-found=true 2>/dev/null || true
+    oc delete clusterrolebinding ado-manager-cluster-rolebinding --ignore-not-found=true 2>/dev/null || true
+
     echo "Waiting for operator pods to terminate..."
     oc wait --for=delete pod -l control-plane=operator -n ${NAMESPACE} --timeout=60s 2>/dev/null || true
     oc wait --for=delete pod -l app.kubernetes.io/component=build-controller -n ${NAMESPACE} --timeout=60s 2>/dev/null || true
