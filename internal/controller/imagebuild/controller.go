@@ -1458,7 +1458,7 @@ func (r *ImageBuildReconciler) createBuildTaskRun(
 						{
 							Key:      corev1.LabelArchStable,
 							Operator: corev1.NodeSelectorOpIn,
-							Values:   []string{imageBuild.Spec.Architecture},
+							Values:   []string{controllerutils.NormalizeArchToK8s(imageBuild.Spec.Architecture)},
 						},
 					},
 				},
@@ -2557,7 +2557,7 @@ func (r *ImageBuildReconciler) createUploadPod(ctx context.Context, imageBuild *
 								{
 									Key:      corev1.LabelArchStable,
 									Operator: corev1.NodeSelectorOpIn,
-									Values:   []string{imageBuild.Spec.Architecture},
+									Values:   []string{controllerutils.NormalizeArchToK8s(imageBuild.Spec.Architecture)},
 								},
 							},
 						},
