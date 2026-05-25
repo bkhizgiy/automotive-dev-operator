@@ -116,10 +116,25 @@ vet: ## Run go vet against code.
 test: manifests generate fmt vet envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
-# Utilize Kind or modify the e2e tests to load the image locally, enabling compatibility with other vendors.
-.PHONY: test-e2e  # Run the e2e tests against a Kind k8s instance that is spun up.
+# E2E test targets. Use test-e2e to run everything, or pick a lane:
+#   test-e2e-operator  - operator health, Tekton tasks, Build API
+#   test-e2e-bootc     - bootc container build via caib
+#   test-e2e-auth      - OIDC authentication (OpenShift only)
+.PHONY: test-e2e
 test-e2e:
-	go test ./test/e2e/ -v -ginkgo.v -timeout 85m
+	go test ./test/e2e/ -v -ginkgo.v -timeout 80m
+
+.PHONY: test-e2e-operator
+test-e2e-operator:
+	E2E_NAMESPACE=$${E2E_NAMESPACE:-e2e-operator} go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter="operator" -timeout 15m
+
+.PHONY: test-e2e-bootc
+test-e2e-bootc:
+	E2E_NAMESPACE=$${E2E_NAMESPACE:-e2e-bootc} go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter="bootc" -timeout 50m
+
+.PHONY: test-e2e-auth
+test-e2e-auth:
+	E2E_NAMESPACE=$${E2E_NAMESPACE:-e2e-auth} go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter="auth" -timeout 15m
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -188,16 +203,24 @@ install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~
 uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/crd | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
+NAMESPACE ?= automotive-dev-operator-system
+
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	cd config/manager && sed -i.bak 's|value: controller:latest|value: ${IMG}|g' manager.yaml && rm -f manager.yaml.bak
-	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
-	cd config/manager && sed -i.bak 's|value: ${IMG}|value: controller:latest|g' manager.yaml && rm -f manager.yaml.bak
+	@cd $(CURDIR)/config/default && $(KUSTOMIZE) edit set namespace $(NAMESPACE); \
+	cd $(CURDIR)/config/manager && cp manager.yaml manager.yaml.orig; \
+	trap 'cd $(CURDIR)/config/default && $(KUSTOMIZE) edit set namespace automotive-dev-operator-system; cd $(CURDIR)/config/manager && mv -f manager.yaml.orig manager.yaml 2>/dev/null || true' EXIT; \
+	cd $(CURDIR)/config/manager && $(KUSTOMIZE) edit set image controller=${IMG}; \
+	cd $(CURDIR)/config/manager && sed -i.bak 's|value: quay.io/rh-sdv-cloud/automotive-dev-operator:latest|value: ${IMG}|g' manager.yaml && rm -f manager.yaml.bak; \
+	cd $(CURDIR) && $(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -; \
+	cd $(CURDIR)/config/manager && sed -i.bak 's|value: ${IMG}|value: quay.io/rh-sdv-cloud/automotive-dev-operator:latest|g' manager.yaml && rm -f manager.yaml.bak; \
+	rm -f $(CURDIR)/config/manager/manager.yaml.orig
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
+	@cd $(CURDIR)/config/default && $(KUSTOMIZE) edit set namespace $(NAMESPACE); \
+	trap 'cd $(CURDIR)/config/default && $(KUSTOMIZE) edit set namespace automotive-dev-operator-system' EXIT; \
+	cd $(CURDIR) && $(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
 ##@ Dependencies
 

@@ -186,8 +186,9 @@ EXPORT_FORMAT="$(params.export-format)"
 
 ORAS_EXTRA_ARGS=()
 if [ "$insecure_registry" = "true" ]; then
-  ORAS_EXTRA_ARGS=(--insecure --plain-http)
-  echo "Insecure registry mode enabled: using --insecure --plain-http for oras"
+  registry_host="${repo_url%%/*}"
+  # shellcheck disable=SC2207
+  ORAS_EXTRA_ARGS=($(detect_registry_protocol "$registry_host"))
 fi
 
 config_file="/etc/target-defaults/target-defaults.yaml"

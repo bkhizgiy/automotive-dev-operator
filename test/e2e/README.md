@@ -12,6 +12,23 @@ This directory contains end-to-end tests for the Automotive Dev Operator.
 
 ## Running E2E Tests Locally
 
+### Local CRC/OpenShift (recommended)
+
+Set up a local CRC cluster first, then use the local runner:
+
+```bash
+# One-time setup: provision CRC and expose the internal registry
+hack/crc/setup-crc.sh
+
+# Run a single lane or all tests
+bash hack/run-e2e-local.sh operator
+bash hack/run-e2e-local.sh auth
+bash hack/run-e2e-local.sh bootc
+bash hack/run-e2e-local.sh            # all lanes
+```
+
+See [hack/crc/README.md](../../hack/crc/README.md) for CRC setup details and prerequisites.
+
 ### Quick Start
 
 ```bash
@@ -61,34 +78,50 @@ If you want more control over the test environment:
    kind delete cluster --name automotive-dev-e2e
    ```
 
-## What the Tests Cover
+## Test Lanes
 
-The e2e test suite verifies:
+Tests are split into three independently-runnable lanes, each deployed into its own namespace:
 
-1. **Operator Installation**: 
-   - Operator pod starts successfully
-   - CRDs are properly installed
-   - Controller manager is running
+| Lane | Label | Namespace | What it covers |
+|------|-------|-----------|---------------|
+| `operator` | `operator` | `e2e-operator` | Operator health, Tekton tasks/pipeline, Build API deployment |
+| `bootc` | `bootc` | `e2e-bootc` | Bootc container build via caib CLI |
+| `auth` | `auth` | `e2e-auth` | OIDC authentication (OpenShift only) |
 
-2. **OperatorConfig Resource**:
-   - Creates OperatorConfig with `osBuilds` enabled
-   - Verifies Build API deployment is created
-   - Verifies Tekton tasks and pipelines are created when osBuilds is enabled
-   - Tests disabling osBuilds removes Tekton resources
+### Running individual lanes
 
-3. **ImageBuild Resource**:
-   - Creates ImageBuild CR
-   - Verifies TaskRun is created
-   - Verifies PVC is created for the build workspace
+```bash
+# Via Makefile
+make test-e2e-operator
+make test-e2e-bootc
+make test-e2e-auth
+make test-e2e              # all lanes
 
-4. **Configuration Updates**:
-   - Tests updating OperatorConfig
-   - Verifies resources are properly reconciled
+# Via local runner (handles CRC/OpenShift setup)
+bash hack/run-e2e-local.sh operator
+bash hack/run-e2e-local.sh bootc
+bash hack/run-e2e-local.sh auth
+bash hack/run-e2e-local.sh            # all lanes
+```
+
+### Benchmarks
+
+Times measured on CRC (cluster already running):
+
+| Lane | macOS arm64 | Linux amd64 | `go test -timeout` |
+|------|-------------|-------------|-------------------|
+| `operator` | ~2 min | ~3 min | 15m |
+| `auth` | ~3 min | ~4 min | 15m |
+| `bootc` | ~7 min | ~33 min | 50m |
+| all | ~8 min | ~36 min | 80m |
 
 ## Test Structure
 
-- `e2e_suite_test.go`: Test suite setup and configuration
-- `e2e_test.go`: Main test scenarios
+- `e2e_suite_test.go`: Suite setup, `BeforeSuite`/`AfterSuite`
+- `helpers_test.go`: Shared setup (`sync.Once`-based operator deploy, registry config, Build API access, caib credentials)
+- `operator_test.go`: Operator health lane (`Label("operator")`)
+- `bootc_build_test.go`: Bootc build lane (`Label("bootc")`)
+- `auth_test.go`: OIDC authentication lane (`Label("auth")`)
 - `../utils/`: Utility functions for test helpers
 
 ## GitHub Actions
@@ -96,9 +129,12 @@ The e2e test suite verifies:
 The e2e tests run automatically on:
 - Pull requests to `main`
 - Pushes to `main`
-- Manual workflow dispatch
+- Manual workflow dispatch (with optional `label_filter` input)
 
-See `.github/workflows/e2e.yml` for the CI configuration.
+Individual lanes can be triggered on PRs via comment commands:
+- `/e2e-operator`, `/e2e-bootc`, `/e2e-auth`, `/e2e-all`
+
+See `.github/workflows/e2e.yml` and `.github/workflows/e2e-lanes.yml` for the CI configuration.
 
 ## Debugging Test Failures
 

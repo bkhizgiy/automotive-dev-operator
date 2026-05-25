@@ -20,6 +20,8 @@ package testutils
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -414,4 +416,16 @@ func stripNamespaceFinalizers(targetNamespace string) {
 			))
 		}
 	}
+}
+
+// GenerateRandomString returns a random hex string of the specified length.
+func GenerateRandomString(length int) (string, error) {
+	if length <= 0 {
+		return "", fmt.Errorf("length must be positive, got %d", length)
+	}
+	b := make([]byte, (length+1)/2)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("crypto/rand read failed: %w", err)
+	}
+	return hex.EncodeToString(b)[:length], nil
 }

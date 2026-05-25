@@ -8,6 +8,49 @@ REGISTRY_TLS_VERIFY="${REGISTRY_TLS_VERIFY:-false}"
 SCRIPT_PATH="$(realpath "$0")"
 REPO_ROOT="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
 
+# Accept an optional lane name as the first argument.
+# Supported values: operator, bootc, auth (maps to make test-e2e-<lane>).
+# Default: run all tests via "make test-e2e".
+usage() {
+  printf 'Usage: %s [OPTIONS] [LANE]\n\n' "$(basename "$0")"
+  printf 'Run e2e tests against a local CRC/OpenShift cluster.\n\n'
+  printf 'Lanes:\n'
+  printf '  operator  - operator health, Tekton tasks, Build API\n'
+  printf '  bootc     - bootc container build via caib\n'
+  printf '  auth      - OIDC authentication (OpenShift only)\n'
+  printf '  all       - run all tests (default)\n\n'
+  printf 'Options:\n'
+  printf '  -h, --help    Show this help message and exit\n\n'
+  printf 'Environment variables:\n'
+  printf '  E2E_NAMESPACE          Override the test namespace (default: e2e-<lane> or e2e-test-all)\n'
+  printf '  CONTAINER_TOOL         Container runtime (default: podman)\n'
+  printf '  REGISTRY_TLS_VERIFY    TLS verification for registry (default: false)\n'
+  printf '  REGISTRY_HOST          Registry host (default: image-registry.openshift-image-registry.svc)\n'
+}
+
+case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+esac
+
+E2E_LANE="${1:-}"
+case "$E2E_LANE" in
+  operator|bootc|auth)
+    E2E_MAKE_TARGET="test-e2e-${E2E_LANE}"
+    ;;
+  ""|all)
+    E2E_LANE="all"
+    E2E_MAKE_TARGET="test-e2e"
+    ;;
+  *)
+    printf 'Error: unknown lane %q\n\n' "$E2E_LANE" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
+
 info() {
   printf '[INFO] %s\n' "$*"
 }
@@ -171,17 +214,22 @@ set_build_platform
 info "Building caib CLI..."
 make build-caib
 
-info "Running e2e suite against CRC..."
+info "Running e2e lane: ${E2E_LANE} (make ${E2E_MAKE_TARGET})..."
 export CONTAINER_TOOL
 export REGISTRY_TLS_VERIFY
 export REGISTRY_HOST
 export OPENSHIFT_INTERNAL_REGISTRY="${OPENSHIFT_INTERNAL_REGISTRY:-image-registry.openshift-image-registry.svc:5000}"
 export OPENSHIFT_CLUSTER=true
 export CAIB_INSECURE=true
+if [ "$E2E_LANE" = "all" ]; then
+  export E2E_NAMESPACE="${E2E_NAMESPACE:-e2e-test-all}"
+else
+  export E2E_NAMESPACE="${E2E_NAMESPACE:-e2e-${E2E_LANE}}"
+fi
 unset KIND_CLUSTER
-make test-e2e
+make "${E2E_MAKE_TARGET}"
 
 printf '\n=========================================\n'
-printf ' Local CRC e2e run completed successfully \n'
+printf ' Local CRC e2e (%s) completed successfully \n' "${E2E_LANE}"
 printf '=========================================\n'
 
