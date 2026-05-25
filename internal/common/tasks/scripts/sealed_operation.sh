@@ -310,15 +310,18 @@ install_oras() {
   chmod +x /usr/local/bin/oras
   rm -f "/tmp/${ORAS_TARBALL}" "/tmp/${ORAS_CHECKSUMS}"
 }
+insecure_oras_flags=()
+if [ "${INSECURE_REGISTRY:-}" = "true" ]; then
+  # shellcheck disable=SC2207
+  insecure_oras_flags=($(detect_registry_protocol "$REGISTRY"))
+fi
 
 oras_pull() {
   local -a extra_args=()
   if [ -n "$ORAS_REGISTRY_CONFIG" ]; then
     extra_args+=(--registry-config "$ORAS_REGISTRY_CONFIG")
   fi
-  if [ "${INSECURE_REGISTRY:-}" = "true" ]; then
-    extra_args+=(--insecure --plain-http)
-  fi
+  extra_args+=("${insecure_oras_flags[@]}")
   oras pull "${extra_args[@]}" "$@"
 }
 
@@ -327,9 +330,7 @@ oras_push() {
   if [ -n "$ORAS_REGISTRY_CONFIG" ]; then
     extra_args+=(--registry-config "$ORAS_REGISTRY_CONFIG")
   fi
-  if [ "${INSECURE_REGISTRY:-}" = "true" ]; then
-    extra_args+=(--insecure --plain-http)
-  fi
+  extra_args+=("${insecure_oras_flags[@]}")
   oras push "${extra_args[@]}" "$@"
 }
 

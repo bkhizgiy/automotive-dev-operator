@@ -32,4 +32,5 @@ pull-secret*
 
 catalog/automotive-dev-operator.yaml
 /bundle/
+/build-api/
 _output/

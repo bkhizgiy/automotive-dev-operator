@@ -29,7 +29,7 @@ func main() {
 	var (
 		kubeconfigPath = flag.String("kubeconfig-path", "", "Path to kubeconfig file")
 		port           = flag.String("port", "", "Port to listen on (default: 8080)")
-		namespace      = flag.String("namespace", "automotive-dev-operator-system", "Kubernetes namespace to use")
+		namespace      = flag.String("namespace", "", "Kubernetes namespace to use (overrides BUILD_API_NAMESPACE env var)")
 	)
 	flag.Parse()
 
@@ -66,10 +66,14 @@ func main() {
 		}
 	}
 
-	// Load config from OperatorConfig
+	// Load config from OperatorConfig; WATCH_NAMESPACE takes priority over BUILD_API_NAMESPACE
+	// (which may be set from the --namespace flag or directly as an environment variable).
 	configNamespace := os.Getenv("WATCH_NAMESPACE")
 	if configNamespace == "" {
-		configNamespace = *namespace
+		configNamespace = os.Getenv("BUILD_API_NAMESPACE")
+	}
+	if configNamespace == "" {
+		log.Fatalf("namespace must be provided via WATCH_NAMESPACE or BUILD_API_NAMESPACE environment variable, or --namespace flag")
 	}
 	limits, tracingEnabled, tracingEndpoint, tracingSamplingRatio, tracingInsecure := loadFromOperatorConfig(configNamespace, logger)
 

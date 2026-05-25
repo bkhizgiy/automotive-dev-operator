@@ -302,3 +302,39 @@ find_artifact() {
   done
   return 1
 }
+
+# detect_registry_protocol determines the appropriate oras flags for insecure registries.
+# Probes HTTPS first (handles OpenShift/self-signed certs), falls back to plain HTTP (Kind).
+# Usage: detect_registry_protocol <registry_host>
+# Output (stdout): space-separated oras flags (--insecure, or --insecure --plain-http)
+# Logs (stderr): detection result message
+detect_registry_protocol() {
+  local registry_host="$1"
+  local oras_flags="--insecure"
+
+  local https_code
+  https_code=$(curl -sk --connect-timeout 3 --max-time 5 -o /dev/null -w "%{http_code}" "https://${registry_host}/v2/" 2>/dev/null || true)
+
+  case "$https_code" in
+    200|401|403)
+      echo "Insecure registry: HTTPS detected (HTTP $https_code), using --insecure for oras" >&2
+      echo "$oras_flags"
+      return 0
+      ;;
+  esac
+
+  local http_code
+  http_code=$(curl -s --connect-timeout 3 --max-time 5 -o /dev/null -w "%{http_code}" "http://${registry_host}/v2/" 2>/dev/null || true)
+
+  case "$http_code" in
+    200|401|403)
+      oras_flags="$oras_flags --plain-http"
+      echo "Insecure registry: plain HTTP detected (HTTP $http_code), using --insecure --plain-http for oras" >&2
+      echo "$oras_flags"
+      return 0
+      ;;
+  esac
+
+  echo "Insecure registry: protocol unclear, using --insecure for oras" >&2
+  echo "$oras_flags"
+}

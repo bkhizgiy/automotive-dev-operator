@@ -1,20 +1,14 @@
-name: E2E Tests
+name: E2E Test Lanes
 
 on:
-  pull_request:
-    branches:
-      - main
-      - "release-*"
-  push:
-    branches:
-      - main
-      - "release-*"
-  workflow_dispatch:
-    inputs:
-      label_filter:
-        description: 'Ginkgo label filter (e.g. "operator", "bootc", "auth"). Empty runs all.'
-        required: false
-        default: ''
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  statuses: write
 
 env:
   GO_VERSION: '1.25'
@@ -29,12 +23,79 @@ env:
   ARCH: arm64
 
 jobs:
-  e2e-tests:
+  parse-comment:
+    if: >
+      github.event.issue.pull_request &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) &&
+      startsWith(github.event.comment.body, '/e2e-')
+    runs-on: ubuntu-latest
+    outputs:
+      label_filter: ${{ steps.parse.outputs.label_filter }}
+      lane_name: ${{ steps.parse.outputs.lane_name }}
+      sha: ${{ steps.get-sha.outputs.sha }}
+    steps:
+      - name: Parse lane from comment
+        id: parse
+        env:
+          COMMENT: ${{ github.event.comment.body }}
+        run: |
+          case "$COMMENT" in
+            /e2e-operator*)
+              echo "label_filter=operator" >> "$GITHUB_OUTPUT"
+              echo "lane_name=operator" >> "$GITHUB_OUTPUT"
+              ;;
+            /e2e-bootc*)
+              echo "label_filter=bootc" >> "$GITHUB_OUTPUT"
+              echo "lane_name=bootc" >> "$GITHUB_OUTPUT"
+              ;;
+            /e2e-auth*)
+              echo "label_filter=auth" >> "$GITHUB_OUTPUT"
+              echo "lane_name=auth" >> "$GITHUB_OUTPUT"
+              ;;
+            /e2e-all*)
+              echo "label_filter=" >> "$GITHUB_OUTPUT"
+              echo "lane_name=all" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              printf 'Unknown e2e command: %s\n' "$COMMENT"
+              printf 'Supported: /e2e-operator, /e2e-bootc, /e2e-auth, /e2e-all\n'
+              exit 1
+              ;;
+          esac
+
+      - name: Get PR head SHA
+        id: get-sha
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHA=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }} --jq '.head.sha')
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Set commit status to pending
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/${{ github.repository }}/statuses/${{ steps.get-sha.outputs.sha }} \
+            -f state=pending \
+            -f context="e2e / ${{ steps.parse.outputs.lane_name }}" \
+            -f description="E2E ${{ steps.parse.outputs.lane_name }} tests running..."
+
+      - name: React to comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions \
+            -f content=rocket
+
+  e2e-lane:
+    needs: parse-comment
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
     steps:
-      - name: Checkout code
+      - name: Checkout PR code
         uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.parse-comment.outputs.sha }}
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -60,9 +121,6 @@ jobs:
           sudo mv ./kind /usr/local/bin/kind
           kind version
 
-      # ---------------------------------------------------------------
-      # [1/7] Local Registry
-      # ---------------------------------------------------------------
       - name: Set up local registry
         run: |
           docker run -d --restart=always \
@@ -80,9 +138,6 @@ jobs:
           insecure = true
           EOF
 
-      # ---------------------------------------------------------------
-      # [2/7] Kind Cluster
-      # ---------------------------------------------------------------
       - name: Create Kind cluster
         run: |
           kind create cluster --name "$CLUSTER_NAME" --wait 5m
@@ -98,9 +153,6 @@ jobs:
           done
           kubectl wait --for=condition=Ready nodes --all --timeout=60s
 
-      # ---------------------------------------------------------------
-      # [3/7] Internal DNS for Registry (OpenShift spoof)
-      # ---------------------------------------------------------------
       - name: Set up registry DNS spoof
         run: |
           cat <<EOF | kubectl apply -f -
@@ -121,8 +173,8 @@ jobs:
           for i in $(seq 1 30); do
             REGISTRY_IP=$(docker inspect -f '{{.NetworkSettings.Networks.kind.IPAddress}}' "${REGISTRY_NAME}" 2>/dev/null || true)
             if [ -n "$REGISTRY_IP" ]; then
-              echo "Registry IP found: $REGISTRY_IP" 
-              break; 
+              echo "Registry IP found: $REGISTRY_IP"
+              break;
             fi
             echo "Waiting for registry IP... (attempt $i/30)"
             sleep 1
@@ -160,9 +212,6 @@ jobs:
               protocol: TCP
           EOF
 
-      # ---------------------------------------------------------------
-      # [4/7] Infrastructure (Tekton & Ingress)
-      # ---------------------------------------------------------------
       - name: Install Tekton Pipelines
         run: |
           kubectl apply --filename https://infra.tekton.dev/tekton-releases/pipeline/previous/${{ env.TEKTON_VERSION }}/release.yaml
@@ -175,13 +224,10 @@ jobs:
           echo "Waiting for NGINX Ingress Controller to be ready..."
           kubectl wait --namespace ingress-nginx --for=condition=ready pod --selector=app.kubernetes.io/component=controller --timeout=3m
 
-      # ---------------------------------------------------------------
-      # [5/7] Run E2E tests (self-contained: deploys operator, tests, tears down)
-      # ---------------------------------------------------------------
       - name: Build caib CLI
         run: make build-caib
 
-      - name: Run E2E tests
+      - name: Run E2E tests (${{ needs.parse-comment.outputs.lane_name }})
         env:
           KIND_CLUSTER: automotive-dev-e2e
           CONTAINER_TOOL: docker
@@ -190,34 +236,71 @@ jobs:
           REGISTRY_USERNAME: kind
           REGISTRY_PASSWORD: kind
           CAIB_SERVER: http://localhost:8080
-          E2E_LABEL_FILTER: ${{ github.event.inputs.label_filter || '' }}
+          E2E_LABEL_FILTER: ${{ needs.parse-comment.outputs.label_filter }}
+          E2E_NAMESPACE: ${{ needs.parse-comment.outputs.lane_name == 'all' && 'e2e-test-all' || format('e2e-{0}', needs.parse-comment.outputs.lane_name) }}
         run: |
-          ginkgo_args=(-v -ginkgo.v -timeout 30m)
+          case "${{ needs.parse-comment.outputs.lane_name }}" in
+            operator|auth) test_timeout=15m ;;
+            bootc)         test_timeout=50m ;;
+            all)           test_timeout=80m ;;
+            *)             echo "Unknown lane: ${{ needs.parse-comment.outputs.lane_name }}" >&2; exit 1 ;;
+          esac
+          ginkgo_args=(-v -ginkgo.v -timeout "$test_timeout")
           if [ -n "$E2E_LABEL_FILTER" ]; then
             ginkgo_args+=(-ginkgo.label-filter="$E2E_LABEL_FILTER")
           fi
           go test ./test/e2e/ "${ginkgo_args[@]}"
 
+      - name: Set commit status on success
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/${{ github.repository }}/statuses/${{ needs.parse-comment.outputs.sha }} \
+            -f state=success \
+            -f context="e2e / ${{ needs.parse-comment.outputs.lane_name }}" \
+            -f description="E2E ${{ needs.parse-comment.outputs.lane_name }} tests passed"
+
+      - name: Set commit status on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/${{ github.repository }}/statuses/${{ needs.parse-comment.outputs.sha }} \
+            -f state=failure \
+            -f context="e2e / ${{ needs.parse-comment.outputs.lane_name }}" \
+            -f description="E2E ${{ needs.parse-comment.outputs.lane_name }} tests failed"
+
+      - name: Set commit status on cancellation
+        if: cancelled()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/${{ github.repository }}/statuses/${{ needs.parse-comment.outputs.sha }} \
+            -f state=failure \
+            -f context="e2e / ${{ needs.parse-comment.outputs.lane_name }}" \
+            -f description="E2E ${{ needs.parse-comment.outputs.lane_name }} tests cancelled"
+
       - name: Collect logs on failure
         if: failure()
+        env:
+          E2E_NAMESPACE: ${{ needs.parse-comment.outputs.lane_name == 'all' && 'e2e-test-all' || format('e2e-{0}', needs.parse-comment.outputs.lane_name) }}
         run: |
+          NS="${E2E_NAMESPACE:-e2e-test-all}"
           echo "=== Operator Logs ==="
-          kubectl logs -n automotive-dev-operator-system -l control-plane=operator --tail=200 || true
-          echo "=== All Pods in operator namespace ==="
-          kubectl get pods -n automotive-dev-operator-system -o wide || true
+          kubectl logs -n "$NS" -l control-plane=operator --tail=200 || true
+          echo "=== All Pods ==="
+          kubectl get pods -n "$NS" -o wide || true
+          echo "=== TaskRuns ==="
+          kubectl get taskrun -n "$NS" -o yaml || true
           echo "=== PipelineRuns ==="
-          kubectl get pipelinerun -n automotive-dev-operator-system -o yaml || true
+          kubectl get pipelinerun -n "$NS" -o yaml || true
           echo "=== Events ==="
-          kubectl get events -n automotive-dev-operator-system --sort-by='.lastTimestamp' || true
+          kubectl get events -n "$NS" --sort-by='.lastTimestamp' || true
           echo "=== OperatorConfig ==="
-          kubectl get operatorconfig -n automotive-dev-operator-system -o yaml || true
+          kubectl get operatorconfig -n "$NS" -o yaml || true
           echo "=== ImageBuilds ==="
-          kubectl get imagebuilds -n automotive-dev-operator-system -o yaml || true
-          echo "=== Build Image Pod Logs ==="
-          for pod in $(kubectl get pods -n automotive-dev-operator-system -o name | grep build-image-pod); do
-            echo "--- $pod ---"
-            kubectl logs -n automotive-dev-operator-system "$pod" -c step-build-image --tail=100 || true
-          done
+          kubectl get imagebuilds -n "$NS" -o yaml || true
 
       - name: Cleanup
         if: always()
