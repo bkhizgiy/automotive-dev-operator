@@ -11,7 +11,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -664,127 +663,6 @@ func (a *APIServer) cancelBuild(c *gin.Context, name string) {
 	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("build %q cancelled", name)})
 }
 
-// validateBuildRequest validates the build request, sanitizes the name, and applies defaults
-func validateBuildRequest(req *BuildRequest) error {
-	if err := validateBuildName(req.Name); err != nil {
-		return err
-	}
-	req.Name = sanitizeBuildNameForValidation(req.Name)
-
-	if len(req.Manifest) > maxManifestSize {
-		return fmt.Errorf("manifest too large: %d bytes exceeds %d byte limit (ConfigMap/etcd constraint)",
-			len(req.Manifest), maxManifestSize)
-	}
-
-	if req.Mode == ModeDisk {
-		if req.ContainerRef == "" {
-			return fmt.Errorf("container-ref is required for disk mode")
-		}
-		if err := validateContainerRef(req.ContainerRef); err != nil {
-			return err
-		}
-	} else if req.Manifest == "" {
-		return fmt.Errorf("manifest is required")
-	}
-
-	for field, value := range map[string]string{"container-push": req.ContainerPush, "export-oci": req.ExportOCI} {
-		if err := validateContainerRef(value); err != nil {
-			return fmt.Errorf("invalid %s: %v", field, err)
-		}
-	}
-
-	if req.Reproducible && !req.SecureBuild {
-		return fmt.Errorf("reproducible builds require secureBuild to be true")
-	}
-
-	return nil
-}
-
-// resolveAndClampTTL validates the requested TTL and enforces MaxBuildTTL if configured.
-func resolveAndClampTTL(ctx context.Context, k8sClient client.Client, namespace, requestedTTL string) (string, error) {
-	if requestedTTL == "" {
-		return requestedTTL, nil
-	}
-	if requestedTTL != "0" {
-		dur, err := time.ParseDuration(requestedTTL)
-		if err != nil {
-			return "", fmt.Errorf("invalid TTL %q: %w", requestedTTL, err)
-		}
-		if dur < 0 {
-			return "", fmt.Errorf("TTL must not be negative")
-		}
-	}
-	operatorCfg, cfgErr := loadOperatorConfigFn(ctx, k8sClient, namespace)
-	if cfgErr != nil && !k8serrors.IsNotFound(cfgErr) {
-		return "", fmt.Errorf("failed to load OperatorConfig: %w", cfgErr)
-	}
-	if operatorCfg != nil && operatorCfg.Spec.OSBuilds != nil {
-		if maxStr := operatorCfg.Spec.OSBuilds.GetMaxBuildTTL(); maxStr != "" && maxStr != "0" {
-			maxDur, parseErr := time.ParseDuration(maxStr)
-			if parseErr != nil {
-				return "", fmt.Errorf("invalid MaxBuildTTL %q in OperatorConfig: %w", maxStr, parseErr)
-			}
-			if maxDur <= 0 {
-				return "", fmt.Errorf("MaxBuildTTL must be positive, got %q", maxStr)
-			}
-			if requestedTTL == "0" {
-				return "", fmt.Errorf("no-expiry (TTL \"0\") is not allowed when MaxBuildTTL is set (%s)", maxStr)
-			}
-			dur, _ := time.ParseDuration(requestedTTL)
-			if dur > maxDur {
-				return "", fmt.Errorf("requested TTL %q exceeds maximum %q", requestedTTL, maxStr)
-			}
-		}
-	}
-	return requestedTTL, nil
-}
-
-// applyBuildDefaults sets default values for build request fields
-func applyBuildDefaults(req *BuildRequest) error {
-	if req.Distro == "" {
-		req.Distro = "autosd"
-	}
-	if req.Target == "" {
-		req.Target = "qemu"
-	}
-	if req.Architecture == "" {
-		req.Architecture = "arm64"
-	}
-	req.Architecture = req.Architecture.Normalize()
-	if req.ExportFormat == "" {
-		req.ExportFormat = formatImage
-	}
-	if req.Mode == "" {
-		req.Mode = ModeBootc
-	}
-	if strings.TrimSpace(string(req.Compression)) == "" {
-		req.Compression = CompressionGzip
-	}
-	if !req.Compression.IsValid() {
-		return fmt.Errorf("invalid compression %q: must be lz4, gzip, or xz", req.Compression)
-	}
-	if !req.Distro.IsValid() {
-		return fmt.Errorf("distro cannot be empty")
-	}
-	if !req.Target.IsValid() {
-		return fmt.Errorf("target cannot be empty")
-	}
-	if !req.Architecture.IsValid() {
-		return fmt.Errorf("invalid architecture %q: must be amd64, arm64, x86_64, or aarch64", req.Architecture)
-	}
-	// ExportFormat validation removed - allow AIB to handle format validation
-	if !req.Mode.IsValid() {
-		return fmt.Errorf("mode cannot be empty")
-	}
-	if req.AutomotiveImageBuilder == "" {
-		req.AutomotiveImageBuilder = automotivev1alpha1.DefaultAutomotiveImageBuilderImage
-	}
-	if req.ManifestFileName == "" {
-		req.ManifestFileName = "manifest.aib.yml"
-	}
-	return nil
-}
-
 // resolveRegistryForBuild handles registry setup for both internal and external registry builds.
 // It returns envSecretRef, pushSecretName, and an error (non-nil means the response was already written).
 func (a *APIServer) resolveRegistryForBuild(
@@ -916,25 +794,6 @@ func (a *APIServer) setupInternalRegistryBuild(
 }
 
 // buildExportSpec creates ExportSpec configuration from build request
-func buildExportSpec(req *BuildRequest) *automotivev1alpha1.ExportSpec {
-	export := &automotivev1alpha1.ExportSpec{
-		Format:                string(req.ExportFormat),
-		Compression:           string(req.Compression),
-		BuildDiskImage:        req.BuildDiskImage,
-		Container:             req.ContainerPush,
-		UseServiceAccountAuth: req.UseInternalRegistry,
-	}
-
-	// Set disk export if OCI URL is specified
-	if req.ExportOCI != "" {
-		export.Disk = &automotivev1alpha1.DiskExport{
-			OCI: req.ExportOCI,
-		}
-	}
-
-	return export
-}
-
 // resolveExtraRepos processes --extra-repo flags (workspace:path pairs), starts HTTP
 // servers in the workspace pods, and injects extra_repos into the build's CustomDefs.
 func (a *APIServer) resolveExtraRepos(ctx context.Context, k8sClient client.Client, restCfg *rest.Config, req *BuildRequest) error {
@@ -1134,26 +993,6 @@ func (a *APIServer) resolveWorkspaceForBuild(ctx context.Context, k8sClient clie
 }
 
 // buildAIBSpec creates AIBSpec configuration from build request
-func buildAIBSpec(req *BuildRequest, manifest, manifestFileName string, inputFilesServer bool) *automotivev1alpha1.AIBSpec {
-	return &automotivev1alpha1.AIBSpec{
-		Distro:           string(req.Distro),
-		Target:           string(req.Target),
-		Mode:             string(req.Mode),
-		Manifest:         manifest,
-		ManifestFileName: manifestFileName,
-		Image:            req.AutomotiveImageBuilder,
-		BuilderImage:     req.BuilderImage,
-		RebuildBuilder:   req.RebuildBuilder,
-		InputFilesServer: inputFilesServer,
-		ContainerRef:     req.ContainerRef,
-		CustomDefs:       req.CustomDefs,
-		AIBExtraArgs:     req.AIBExtraArgs,
-	}
-}
-
-// digestPinnedRef matches an OCI reference with a sha256 digest: image@sha256:<64 hex chars>
-var digestPinnedRef = regexp.MustCompile(`^.+@sha256:[a-fA-F0-9]{64}$`)
-
 // resolveTaskBundleRef resolves and optionally verifies the Tekton Bundle reference.
 // Returns the validated ref, an HTTP status code, and error.
 func resolveTaskBundleRef(ctx context.Context, k8sClient client.Client, namespace string, req *BuildRequest) (string, int, error) {
@@ -1190,18 +1029,6 @@ func resolveTaskBundleRef(ctx context.Context, k8sClient client.Client, namespac
 	}
 
 	return ref, 0, nil
-}
-
-func validateRestoreSourcesRef(req *BuildRequest) error {
-	if req.RestoreSourcesRef == "" {
-		return nil
-	}
-	ref := strings.TrimSpace(req.RestoreSourcesRef)
-	if !digestPinnedRef.MatchString(ref) {
-		return fmt.Errorf("restoreSourcesRef must be digest-pinned (image@sha256:<64 hex>), got %q", ref)
-	}
-	req.RestoreSourcesRef = ref
-	return nil
 }
 
 func verifyTaskBundle(ctx context.Context, k8sClient client.Client, namespace string, operatorConfig *automotivev1alpha1.OperatorConfig, bundleRef string) (int, error) {
@@ -1713,67 +1540,6 @@ func getBuildTemplate(c *gin.Context, name string) {
 		},
 		SourceFiles: sourceFiles,
 	})
-}
-
-// manifestAddFile represents a single add_files entry from an AIB manifest.
-type manifestAddFile struct {
-	SourcePath string `yaml:"source_path"`
-	SourceGlob string `yaml:"source_glob"`
-	Source     string `yaml:"source"`
-}
-
-// manifestContent represents the content section of an AIB manifest.
-type manifestContent struct {
-	AddFiles []manifestAddFile `yaml:"add_files"`
-}
-
-// manifestSchema is a minimal schema for parsing add_files from AIB manifests.
-type manifestSchema struct {
-	Content manifestContent `yaml:"content"`
-	QM      struct {
-		Content manifestContent `yaml:"content"`
-	} `yaml:"qm"`
-}
-
-// manifestNeedsUpload parses the manifest YAML and returns true if any
-// add_files entry references local files via source_path.
-// Note: source_glob is intentionally excluded — only the client can determine
-// whether a glob expands to actual files. This fallback exists for backward
-// compatibility with older clients that don't send HasLocalFiles.
-func manifestNeedsUpload(manifest string) bool {
-	var m manifestSchema
-	if err := yaml.Unmarshal([]byte(manifest), &m); err != nil {
-		log.Printf("warning: failed to parse manifest for upload detection: %v", err)
-		return false
-	}
-	for _, sections := range [][]manifestAddFile{m.Content.AddFiles, m.QM.Content.AddFiles} {
-		for _, f := range sections {
-			if f.SourcePath != "" {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// extractManifestSourceFiles parses the manifest YAML and returns the list of
-// relative, non-HTTP source references (source, source_path, source_glob).
-func extractManifestSourceFiles(manifest string) []string {
-	var m manifestSchema
-	if err := yaml.Unmarshal([]byte(manifest), &m); err != nil {
-		return nil
-	}
-	var files []string
-	for _, sections := range [][]manifestAddFile{m.Content.AddFiles, m.QM.Content.AddFiles} {
-		for _, f := range sections {
-			for _, p := range []string{f.Source, f.SourcePath, f.SourceGlob} {
-				if p != "" && !strings.HasPrefix(p, "/") && !strings.HasPrefix(p, "http") {
-					files = append(files, p)
-				}
-			}
-		}
-	}
-	return files
 }
 
 func (a *APIServer) handleGetOperatorConfig(c *gin.Context) {
