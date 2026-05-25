@@ -780,6 +780,7 @@ func applyBuildDefaults(req *BuildRequest) error {
 	if req.Architecture == "" {
 		req.Architecture = "arm64"
 	}
+	req.Architecture = req.Architecture.Normalize()
 	if req.ExportFormat == "" {
 		req.ExportFormat = formatImage
 	}
@@ -799,7 +800,7 @@ func applyBuildDefaults(req *BuildRequest) error {
 		return fmt.Errorf("target cannot be empty")
 	}
 	if !req.Architecture.IsValid() {
-		return fmt.Errorf("architecture cannot be empty")
+		return fmt.Errorf("invalid architecture %q: must be amd64, arm64, x86_64, or aarch64", req.Architecture)
 	}
 	// ExportFormat validation removed - allow AIB to handle format validation
 	if !req.Mode.IsValid() {

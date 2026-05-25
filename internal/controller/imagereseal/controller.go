@@ -525,15 +525,13 @@ func (r *Reconciler) createSealedPipelineRun(ctx context.Context, sealed *automo
 }
 
 // archToNodeArch maps ImageReseal.Spec.Architecture to Kubernetes node label (kubernetes.io/arch).
+// Returns empty string for unrecognized architectures so callers can skip node selection.
 func archToNodeArch(arch string) string {
-	switch strings.ToLower(strings.TrimSpace(arch)) {
-	case "amd64", "x86_64":
-		return "amd64"
-	case "arm64", "aarch64":
-		return "arm64"
-	default:
+	normalized := controllerutils.NormalizeArchToK8s(arch)
+	if normalized == arch && normalized != "amd64" && normalized != "arm64" {
 		return ""
 	}
+	return normalized
 }
 
 // validateStages checks that every entry in stages is a known sealed operation.

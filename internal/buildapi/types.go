@@ -23,6 +23,12 @@ type Compression string
 // Mode represents the build mode (bootc, image, package, or disk).
 type Mode string
 
+// Supported CPU architectures.
+const (
+	ArchAMD64 Architecture = "amd64"
+	ArchARM64 Architecture = "arm64"
+)
+
 // Supported compression algorithms for build artifacts.
 const (
 	CompressionGzip Compression = "gzip"
@@ -52,8 +58,26 @@ func (d Distro) IsValid() bool { return IsValid(string(d)) }
 // IsValid returns true if the target value is non-empty.
 func (t Target) IsValid() bool { return IsValid(string(t)) }
 
-// IsValid returns true if the architecture value is non-empty.
-func (a Architecture) IsValid() bool { return IsValid(string(a)) }
+// Normalize maps Linux-convention architecture names to Kubernetes/OCI names.
+func (a Architecture) Normalize() Architecture {
+	switch strings.ToLower(strings.TrimSpace(string(a))) {
+	case "x86_64", "amd64":
+		return ArchAMD64
+	case "aarch64", "arm64":
+		return ArchARM64
+	default:
+		return a
+	}
+}
+
+// IsValid returns true if the architecture is a supported value.
+func (a Architecture) IsValid() bool {
+	switch a {
+	case ArchAMD64, ArchARM64:
+		return true
+	}
+	return false
+}
 
 // IsValid returns true if the export format value is non-empty.
 func (e ExportFormat) IsValid() bool { return IsValid(string(e)) }

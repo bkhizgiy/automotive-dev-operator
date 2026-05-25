@@ -460,7 +460,7 @@ chown -R 1000:1000 /workspace/src /workspace/cache /workspace/.cache /workspace/
 								{
 									Key:      "kubernetes.io/arch",
 									Operator: corev1.NodeSelectorOpIn,
-									Values:   []string{arch},
+									Values:   []string{controllerutils.NormalizeArchToK8s(arch)},
 								},
 							},
 						},

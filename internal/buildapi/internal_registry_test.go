@@ -213,6 +213,50 @@ var _ = Describe("Internal Registry", func() {
 			})
 		})
 
+		Context("architecture validation", func() {
+			It("should accept amd64", func() {
+				req := &BuildRequest{Architecture: "amd64"}
+				err := applyBuildDefaults(req)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(req.Architecture).To(Equal(Architecture("amd64")))
+			})
+
+			It("should accept arm64", func() {
+				req := &BuildRequest{Architecture: "arm64"}
+				err := applyBuildDefaults(req)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(req.Architecture).To(Equal(Architecture("arm64")))
+			})
+
+			It("should normalize x86_64 to amd64", func() {
+				req := &BuildRequest{Architecture: "x86_64"}
+				err := applyBuildDefaults(req)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(req.Architecture).To(Equal(Architecture("amd64")))
+			})
+
+			It("should normalize aarch64 to arm64", func() {
+				req := &BuildRequest{Architecture: "aarch64"}
+				err := applyBuildDefaults(req)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(req.Architecture).To(Equal(Architecture("arm64")))
+			})
+
+			It("should default to arm64 when empty", func() {
+				req := &BuildRequest{}
+				err := applyBuildDefaults(req)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(req.Architecture).To(Equal(Architecture("arm64")))
+			})
+
+			It("should reject invalid architecture", func() {
+				req := &BuildRequest{Architecture: "mips64"}
+				err := applyBuildDefaults(req)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("invalid architecture"))
+			})
+		})
+
 		Context("applyBuildDefaults with internal registry", func() {
 			It("should apply defaults without overwriting internal registry fields", func() {
 				req := &BuildRequest{
