@@ -249,22 +249,38 @@ spec:
               --registry-config "${HOME}/.docker/config.json" \
               "${ARTIFACT}" \
               --output - | tar xz -C /var/workdir/source
-        - name: wait-for-bundle-image
-          image: quay.io/skopeo/stable:v1.17.0
-          script: |
-            #!/usr/bin/env bash
-            set -euo pipefail
-            bash /var/workdir/source/konflux/scripts/wait-for-image.sh "$(params.BUNDLE_IMAGE)"
-        - name: generate-catalog
+        - name: prepare-catalog
           image: registry.access.redhat.com/ubi9/go-toolset:1.25.9
           securityContext:
             runAsUser: 0
           script: |
             #!/usr/bin/env bash
             set -euo pipefail
-            dnf install -y -q make git
-            export BUNDLE_IMAGE="$(params.BUNDLE_IMAGE)"
-            bash /var/workdir/source/konflux/scripts/generate-catalog.sh /var/workdir/source
+            dnf install -y -q make git skopeo
+            export HOME="${HOME:-/tekton/home}"
+            mkdir -p "${HOME}/.config/containers"
+            cat > "${HOME}/.config/containers/policy.json" <<'POLICY'
+            {
+              "default": [{"type": "insecureAcceptAnything"}]
+            }
+            POLICY
+            export DOCKER_CONFIG="${HOME}/.docker"
+            cd /var/workdir/source
+            IMAGE_REF="$(params.BUNDLE_IMAGE)"
+            AUTHFILE="${HOME}/.docker/config.json"
+            for attempt in $(seq 1 120); do
+              if skopeo inspect "docker://${IMAGE_REF}" --authfile "${AUTHFILE}" >/dev/null 2>&1; then
+                echo "Image available: ${IMAGE_REF}"
+                break
+              fi
+              echo "Waiting for ${IMAGE_REF} (${attempt}/120)..."
+              [[ "${attempt}" -eq 120 ]] && { echo "Timeout waiting for ${IMAGE_REF}" >&2; exit 1; }
+              sleep 30
+            done
+            export BUNDLE_IMG="${IMAGE_REF}"
+            export VERSION="$(tr -d '[:space:]' < VERSION)"
+            echo "Generating catalog from ${BUNDLE_IMG} (OLM version ${VERSION})..."
+            make catalog-update
         - name: build-and-push
           image: quay.io/buildah/stable:latest
           securityContext:
