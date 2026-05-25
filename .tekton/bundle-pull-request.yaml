@@ -29,6 +29,8 @@ spec:
     value: 5d
   - name: dockerfile
     value: bundle.Dockerfile
+  - name: operator-image
+    value: quay.io/bkhizgiy/automotive-dev-operator:on-pr-{{revision}}
   - name: skip-checks
     value: "true"
   taskRunSpecs:
@@ -68,6 +70,9 @@ spec:
       description: Path to the Dockerfile inside the context specified by parameter
         path-context
       name: dockerfile
+      type: string
+    - description: Upstream image required before building this component
+      name: operator-image
       type: string
     - default: "false"
       description: Skip checks against built image
@@ -206,6 +211,8 @@ spec:
         value: $(params.output-image)
       - name: DOCKERFILE
         value: $(params.dockerfile)
+      - name: OPERATOR_IMAGE
+        value: $(params.operator-image)
       - name: PUSH_LATEST
         value: "false"
       runAfter:
@@ -216,6 +223,7 @@ spec:
         - name: IMAGE
         - name: DOCKERFILE
           default: Dockerfile
+        - name: OPERATOR_IMAGE
         - name: PUSH_LATEST
           default: "false"
         results:
@@ -241,6 +249,22 @@ spec:
               --registry-config "${HOME}/.docker/config.json" \
               "${ARTIFACT}" \
               --output - | tar xz -C /var/workdir/source
+        - name: wait-for-operator-image
+          image: quay.io/skopeo/stable:v1.17.0
+          script: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+            bash /var/workdir/source/konflux/scripts/wait-for-image.sh "$(params.OPERATOR_IMAGE)"
+        - name: generate-bundle
+          image: registry.access.redhat.com/ubi9/go-toolset:1.25.9
+          securityContext:
+            runAsUser: 0
+          script: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+            dnf install -y -q make git
+            export OPERATOR_IMAGE="$(params.OPERATOR_IMAGE)"
+            bash /var/workdir/source/konflux/scripts/generate-bundle.sh /var/workdir/source
         - name: build-and-push
           image: quay.io/buildah/stable:latest
           securityContext:
