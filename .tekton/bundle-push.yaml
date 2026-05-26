@@ -7,8 +7,7 @@ metadata:
     build.appstudio.redhat.com/target_branch: '{{target_branch}}'
     pipelinesascode.tekton.dev/cancel-in-progress: "false"
     pipelinesascode.tekton.dev/max-keep-runs: "3"
-    pipelinesascode.tekton.dev/on-cel-expression: event == "push" && target_branch
-      == "main"
+    pipelinesascode.tekton.dev/on-cel-expression: "false"
   creationTimestamp: null
   labels:
     appstudio.openshift.io/application: automotive-dev-operator
@@ -26,6 +25,8 @@ spec:
     value: quay.io/bkhizgiy/automotive-dev-operator-bundle:{{revision}}
   - name: dockerfile
     value: bundle.Dockerfile
+  - name: operator-image
+    value: quay.io/bkhizgiy/automotive-dev-operator:{{revision}}
   - name: skip-checks
     value: "true"
   - name: image-expires-after
@@ -67,6 +68,9 @@ spec:
       description: Path to the Dockerfile inside the context specified by parameter
         path-context
       name: dockerfile
+      type: string
+    - description: Upstream image required before building this component
+      name: operator-image
       type: string
     - default: "false"
       description: Skip checks against built image
@@ -205,6 +209,8 @@ spec:
         value: $(params.output-image)
       - name: DOCKERFILE
         value: $(params.dockerfile)
+      - name: OPERATOR_IMAGE
+        value: $(params.operator-image)
       - name: PUSH_LATEST
         value: "true"
       runAfter:
@@ -215,6 +221,7 @@ spec:
         - name: IMAGE
         - name: DOCKERFILE
           default: Dockerfile
+        - name: OPERATOR_IMAGE
         - name: PUSH_LATEST
           default: "false"
         results:
@@ -240,6 +247,30 @@ spec:
               --registry-config "${HOME}/.docker/config.json" \
               "${ARTIFACT}" \
               --output - | tar xz -C /var/workdir/source
+        - name: prepare-bundle
+          image: registry.access.redhat.com/ubi9/go-toolset:1.25.9
+          securityContext:
+            runAsUser: 0
+          script: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+            dnf install -y -q make git skopeo
+            cd /var/workdir/source
+            IMAGE_REF="$(params.OPERATOR_IMAGE)"
+            AUTHFILE="${HOME}/.docker/config.json"
+            for attempt in $(seq 1 120); do
+              if skopeo inspect "docker://${IMAGE_REF}" --authfile "${AUTHFILE}" >/dev/null 2>&1; then
+                echo "Image available: ${IMAGE_REF}"
+                break
+              fi
+              echo "Waiting for ${IMAGE_REF} (${attempt}/120)..."
+              [[ "${attempt}" -eq 120 ]] && { echo "Timeout waiting for ${IMAGE_REF}" >&2; exit 1; }
+              sleep 30
+            done
+            export IMG="${IMAGE_REF}"
+            export VERSION="$(tr -d '[:space:]' < VERSION)"
+            echo "Generating bundle for ${IMG} (OLM version ${VERSION})..."
+            make bundle
         - name: build-and-push
           image: quay.io/buildah/stable:latest
           securityContext:

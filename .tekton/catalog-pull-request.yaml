@@ -8,8 +8,7 @@ metadata:
     build.appstudio.redhat.com/target_branch: '{{target_branch}}'
     pipelinesascode.tekton.dev/cancel-in-progress: "true"
     pipelinesascode.tekton.dev/max-keep-runs: "3"
-    pipelinesascode.tekton.dev/on-cel-expression: event == "pull_request" && target_branch
-      == "main"
+    pipelinesascode.tekton.dev/on-cel-expression: "false"
   creationTimestamp: null
   labels:
     appstudio.openshift.io/application: automotive-dev-operator
@@ -29,6 +28,8 @@ spec:
     value: 5d
   - name: dockerfile
     value: catalog.Dockerfile
+  - name: bundle-image
+    value: quay.io/bkhizgiy/automotive-dev-operator-bundle:on-pr-{{revision}}
   - name: skip-checks
     value: "true"
   taskRunSpecs:
@@ -68,6 +69,9 @@ spec:
       description: Path to the Dockerfile inside the context specified by parameter
         path-context
       name: dockerfile
+      type: string
+    - description: Upstream image required before building this component
+      name: bundle-image
       type: string
     - default: "false"
       description: Skip checks against built image
@@ -206,6 +210,8 @@ spec:
         value: $(params.output-image)
       - name: DOCKERFILE
         value: $(params.dockerfile)
+      - name: BUNDLE_IMAGE
+        value: $(params.bundle-image)
       - name: PUSH_LATEST
         value: "false"
       runAfter:
@@ -216,6 +222,7 @@ spec:
         - name: IMAGE
         - name: DOCKERFILE
           default: Dockerfile
+        - name: BUNDLE_IMAGE
         - name: PUSH_LATEST
           default: "false"
         results:
@@ -241,6 +248,38 @@ spec:
               --registry-config "${HOME}/.docker/config.json" \
               "${ARTIFACT}" \
               --output - | tar xz -C /var/workdir/source
+        - name: prepare-catalog
+          image: registry.access.redhat.com/ubi9/go-toolset:1.25.9
+          securityContext:
+            runAsUser: 0
+          script: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+            dnf install -y -q make git skopeo
+            export HOME="${HOME:-/tekton/home}"
+            mkdir -p "${HOME}/.config/containers"
+            cat > "${HOME}/.config/containers/policy.json" <<'POLICY'
+            {
+              "default": [{"type": "insecureAcceptAnything"}]
+            }
+            POLICY
+            export DOCKER_CONFIG="${HOME}/.docker"
+            cd /var/workdir/source
+            IMAGE_REF="$(params.BUNDLE_IMAGE)"
+            AUTHFILE="${HOME}/.docker/config.json"
+            for attempt in $(seq 1 120); do
+              if skopeo inspect "docker://${IMAGE_REF}" --authfile "${AUTHFILE}" >/dev/null 2>&1; then
+                echo "Image available: ${IMAGE_REF}"
+                break
+              fi
+              echo "Waiting for ${IMAGE_REF} (${attempt}/120)..."
+              [[ "${attempt}" -eq 120 ]] && { echo "Timeout waiting for ${IMAGE_REF}" >&2; exit 1; }
+              sleep 30
+            done
+            export BUNDLE_IMG="${IMAGE_REF}"
+            export VERSION="$(tr -d '[:space:]' < VERSION)"
+            echo "Generating catalog from ${BUNDLE_IMG} (OLM version ${VERSION})..."
+            make catalog-update
         - name: build-and-push
           image: quay.io/buildah/stable:latest
           securityContext:
