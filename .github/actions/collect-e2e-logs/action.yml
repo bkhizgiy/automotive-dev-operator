@@ -1,0 +1,35 @@
+name: Collect E2E Logs
+description: >
+  Collect operator logs, pod status, TaskRuns, events, and custom resources
+  from e2e test namespaces for debugging failures.
+
+inputs:
+  namespaces:
+    description: >
+      Space-separated list of namespaces to collect logs from.
+      Non-existent namespaces are silently skipped.
+    default: e2e-test-all e2e-operator e2e-bootc e2e-auth
+
+runs:
+  using: composite
+  steps:
+    - name: Collect logs from e2e namespaces
+      shell: bash
+      run: |
+        for NS in ${{ inputs.namespaces }}; do
+          if ! kubectl get ns "$NS" &>/dev/null; then continue; fi
+          echo "=== [$NS] Operator Logs ==="
+          kubectl logs -n "$NS" -l control-plane=operator --tail=200 || true
+          echo "=== [$NS] All Pods ==="
+          kubectl get pods -n "$NS" -o wide || true
+          echo "=== [$NS] TaskRuns ==="
+          kubectl get taskrun -n "$NS" -o yaml || true
+          echo "=== [$NS] PipelineRuns ==="
+          kubectl get pipelinerun -n "$NS" -o yaml || true
+          echo "=== [$NS] Events ==="
+          kubectl get events -n "$NS" --sort-by='.lastTimestamp' || true
+          echo "=== [$NS] OperatorConfig ==="
+          kubectl get operatorconfig -n "$NS" -o yaml || true
+          echo "=== [$NS] ImageBuilds ==="
+          kubectl get imagebuilds -n "$NS" -o yaml || true
+        done

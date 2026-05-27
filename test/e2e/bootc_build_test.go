@@ -30,7 +30,7 @@ import (
 
 const (
 	caibBuildManifest = "test/config/test-manifest.aib.yml"
-	caibBuildTimeout  = 45 * time.Minute
+	caibBuildTimeout  = 30 * time.Minute
 	caibListTimeout   = 30 * time.Second
 )
 
