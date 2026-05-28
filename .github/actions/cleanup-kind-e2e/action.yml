@@ -1,0 +1,26 @@
+name: Cleanup Kind E2E Environment
+description: >
+  Delete the Kind cluster, remove the local registry container, and clean up
+  host-level configuration (DNS entries, container registry config).
+
+inputs:
+  cluster-name:
+    description: Kind cluster name to delete
+    default: automotive-dev-e2e
+  registry-name:
+    description: Local registry container name to remove
+    default: kind-registry
+  registry-host:
+    description: Registry hostname to remove from /etc/hosts
+    default: image-registry.openshift-image-registry.svc
+
+runs:
+  using: composite
+  steps:
+    - name: Cleanup Kind cluster and registry
+      shell: bash
+      run: |
+        kind delete cluster --name "${{ inputs.cluster-name }}" || true
+        docker rm -f "${{ inputs.registry-name }}" || true
+        sudo sed -i "/${{ inputs.registry-host }}/d" /etc/hosts 2>/dev/null || true
+        rm -f "${HOME}/.config/containers/registries.conf.d/kind-e2e-registry.conf" || true

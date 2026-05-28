@@ -112,8 +112,8 @@ Times measured on CRC (cluster already running):
 |------|-------------|-------------|-------------------|
 | `operator` | ~2 min | ~3 min | 15m |
 | `auth` | ~3 min | ~4 min | 15m |
-| `bootc` | ~7 min | ~33 min | 50m |
-| all | ~8 min | ~36 min | 80m |
+| `bootc` | ~7 min | ~33 min | 35m |
+| all | ~8 min | ~36 min | 45m |
 
 ## Test Structure
 
@@ -132,7 +132,7 @@ The e2e tests run automatically on:
 - Manual workflow dispatch (with optional `label_filter` input)
 
 Individual lanes can be triggered on PRs via comment commands:
-- `/e2e-operator`, `/e2e-bootc`, `/e2e-auth`, `/e2e-all`
+- `/e2e-operator`, `/e2e-bootc`, `/e2e-auth`, `/e2e-test-all`
 
 See `.github/workflows/e2e.yml` and `.github/workflows/e2e-lanes.yml` for the CI configuration.
 

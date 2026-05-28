@@ -122,7 +122,7 @@ test: manifests generate fmt vet envtest ## Run tests.
 #   test-e2e-auth      - OIDC authentication (OpenShift only)
 .PHONY: test-e2e
 test-e2e:
-	go test ./test/e2e/ -v -ginkgo.v -timeout 80m
+	go test ./test/e2e/ -v -ginkgo.v -timeout 45m
 
 .PHONY: test-e2e-operator
 test-e2e-operator:
@@ -130,7 +130,7 @@ test-e2e-operator:
 
 .PHONY: test-e2e-bootc
 test-e2e-bootc:
-	E2E_NAMESPACE=$${E2E_NAMESPACE:-e2e-bootc} go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter="bootc" -timeout 50m
+	E2E_NAMESPACE=$${E2E_NAMESPACE:-e2e-bootc} go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter="bootc" -timeout 35m
 
 .PHONY: test-e2e-auth
 test-e2e-auth:
