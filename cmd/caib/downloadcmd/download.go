@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/clilog"
 	common "github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/common"
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/registryauth"
 	buildapitypes "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi"
@@ -105,7 +106,7 @@ func (h *Handler) RunDownload(_ *cobra.Command, args []string) {
 		}
 	}
 
-	fmt.Printf("Downloading disk image from %s\n", ociRef)
+	clilog.Infof("Downloading disk image from %s\n", ociRef)
 	if err := common.PullOCIArtifact(ociRef, outputDir, registryUsername, registryPassword, insecureSkipTLS); err != nil {
 		h.handleError(fmt.Errorf("download failed: %w", err))
 		return
