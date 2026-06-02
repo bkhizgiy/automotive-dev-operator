@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/auth"
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/clilog"
 	buildapiclient "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi/client"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -53,7 +54,7 @@ func executeWithReauth(serverURL string, authToken *string, fn func(*buildapicli
 	}
 
 	// Auth error (401) - try re-authentication; token may be rejected, not necessarily expired
-	fmt.Println("Authentication failed (401), re-authenticating...")
+	clilog.Infoln("Authentication failed (401), re-authenticating...")
 
 	newToken, _, err := auth.GetTokenWithReauth(ctx, serverURL, *authToken, insecureSkipTLS)
 	if err != nil {
@@ -69,7 +70,7 @@ func executeWithReauth(serverURL string, authToken *string, fn func(*buildapicli
 			if err != nil {
 				return err
 			}
-			fmt.Println("Using kubeconfig token, retrying...")
+			clilog.Infoln("Using kubeconfig token, retrying...")
 			return fn(client)
 		}
 	}
@@ -79,7 +80,7 @@ func executeWithReauth(serverURL string, authToken *string, fn func(*buildapicli
 		return err
 	}
 
-	fmt.Println("Retrying request...")
+	clilog.Infoln("Retrying request...")
 	err = fn(client)
 	if err == nil {
 		return nil
@@ -95,7 +96,7 @@ func executeWithReauth(serverURL string, authToken *string, fn func(*buildapicli
 		if err != nil {
 			return err
 		}
-		fmt.Println("Attempting kubeconfig fallback...")
+		clilog.Infoln("Attempting kubeconfig fallback...")
 		return fn(client)
 	}
 
@@ -118,7 +119,7 @@ func createBuildAPIClient(serverURL string, authToken *string) (*buildapiclient.
 			oidcErr := err
 			fmt.Printf("Error: OIDC authentication failed: %v\n", oidcErr)
 			// Only try kubeconfig as last resort, but warn the user
-			fmt.Println("Attempting kubeconfig fallback (this may use a different identity)")
+			clilog.Infoln("Attempting kubeconfig fallback (this may use a different identity)")
 			if tok, kerr := loadTokenFromKubeconfig(); kerr == nil && strings.TrimSpace(tok) != "" {
 				*authToken = tok
 			} else {
@@ -129,7 +130,7 @@ func createBuildAPIClient(serverURL string, authToken *string) (*buildapiclient.
 			// OIDC succeeded
 			*authToken = token
 			if didAuth {
-				fmt.Println("OIDC authentication successful")
+				clilog.Infoln("OIDC authentication successful")
 			}
 		} else {
 			// OIDC not configured in OperatorConfig

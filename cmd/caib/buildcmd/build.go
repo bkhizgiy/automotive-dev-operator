@@ -11,6 +11,7 @@ import (
 	"time"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/clilog"
 	common "github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/common"
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/registryauth"
 	buildapitypes "github.com/centos-automotive-suite/automotive-dev-operator/internal/buildapi"
@@ -220,7 +221,7 @@ func (h *Handler) resolveTarget(cmd *cobra.Command, manifestTarget string) {
 
 	if manifestTarget != "" {
 		*h.opts.Target = manifestTarget
-		fmt.Printf("Using target %q from manifest\n", manifestTarget)
+		clilog.Infof("Using target %q from manifest\n", manifestTarget)
 		return
 	}
 
@@ -280,18 +281,18 @@ func ApplyTargetDefaults(cmd *cobra.Command, config *buildapitypes.OperatorConfi
 
 	if defaults.Architecture != "" && !cmd.Flags().Changed("arch") {
 		req.Architecture = buildapitypes.Architecture(defaults.Architecture)
-		fmt.Printf("Using architecture %q from target defaults for %q\n", defaults.Architecture, req.Target)
+		clilog.Infof("Using architecture %q from target defaults for %q\n", defaults.Architecture, req.Target)
 	}
 
 	if len(defaults.ExtraArgs) > 0 {
 		// Default args come first, user args appended.
 		req.AIBExtraArgs = append(defaults.ExtraArgs, req.AIBExtraArgs...)
-		fmt.Printf("Prepending extra args %v from target defaults for %q\n", defaults.ExtraArgs, req.Target)
+		clilog.Infof("Prepending extra args %v from target defaults for %q\n", defaults.ExtraArgs, req.Target)
 	}
 
 	if defaults.DefaultFormat != "" && !cmd.Flags().Changed("format") {
 		req.ExportFormat = buildapitypes.ExportFormat(defaults.DefaultFormat)
-		fmt.Printf("Using format %q from target defaults for %q\n", defaults.DefaultFormat, req.Target)
+		clilog.Infof("Using format %q from target defaults for %q\n", defaults.DefaultFormat, req.Target)
 	}
 }
 
@@ -335,11 +336,11 @@ func (h *Handler) displayBuildResults(ctx context.Context, api *buildapiclient.C
 				credsFile, credsErr := common.WriteRegistryCredentialsFile(st.RegistryToken)
 				if credsErr != nil {
 					fmt.Fprintf(os.Stderr, "Warning: failed to write registry credentials file: %v\n", credsErr)
-					fmt.Printf("\n%s\n", labelColor("Registry credentials (valid ~4 hours):"))
-					fmt.Printf("  %s %s\n", labelColor("Username:"), valueColor("serviceaccount"))
-					fmt.Printf("  %s %s\n", labelColor("Token:"), valueColor(st.RegistryToken))
+					clilog.Infof("\n%s\n", labelColor("Registry credentials (valid ~4 hours):"))
+					clilog.Infof("  %s %s\n", labelColor("Username:"), valueColor("serviceaccount"))
+					clilog.Infof("  %s %s\n", labelColor("Token:"), valueColor(st.RegistryToken))
 				} else {
-					fmt.Printf("\n%s %s (valid ~4 hours)\n",
+					clilog.Infof("\n%s %s (valid ~4 hours)\n",
 						labelColor("Registry credentials written to:"),
 						valueColor(credsFile),
 					)
@@ -349,7 +350,6 @@ func (h *Handler) displayBuildResults(ctx context.Context, api *buildapiclient.C
 		return
 	}
 
-	// Only show push confirmations when the server reports actual artifact locations.
 	if st.ContainerImage != "" && *h.opts.ContainerPush != "" {
 		fmt.Printf("%s %s\n", labelColor("Container image pushed to:"), valueColor(*h.opts.ContainerPush))
 	}
@@ -391,7 +391,7 @@ func (h *Handler) applyFlashOptions(req *buildapitypes.BuildRequest, pushRequire
 	if err != nil {
 		return fmt.Errorf("--flash: %w", err)
 	}
-	fmt.Printf("Using Jumpstarter client %q (endpoint: %s)\n", clientInfo.Name, clientInfo.Endpoint)
+	clilog.Infof("Using Jumpstarter client %q (endpoint: %s)\n", clientInfo.Name, clientInfo.Endpoint)
 	req.FlashEnabled = true
 	req.FlashClientConfig = base64.StdEncoding.EncodeToString(clientInfo.Data)
 	req.FlashLeaseName = *h.opts.LeaseName
@@ -404,6 +404,9 @@ func (h *Handler) applyFlashOptions(req *buildapitypes.BuildRequest, pushRequire
 }
 
 func (h *Handler) displayBuildLogsCommand(buildName string) {
+	if clilog.IsQuiet() {
+		return
+	}
 	labelColor := func(a ...any) string { return fmt.Sprint(a...) }
 	commandColor := func(a ...any) string { return fmt.Sprint(a...) }
 	if h.supportsColorOutput() {
@@ -456,7 +459,7 @@ func (h *Handler) RunBuild(cmd *cobra.Command, args []string) {
 		base = strings.TrimSuffix(base, ".mpp.yml")
 		sanitized := common.SanitizeBuildName(base)
 		*h.opts.BuildName = sanitized
-		fmt.Printf("Auto-generated build name: %s\n", *h.opts.BuildName)
+		clilog.Infof("Auto-generated build name: %s\n", *h.opts.BuildName)
 	} else if err := common.ValidateBuildName(*h.opts.BuildName); err != nil {
 		h.handleError(err)
 		return
@@ -540,7 +543,7 @@ func (h *Handler) RunBuild(cmd *cobra.Command, args []string) {
 		h.handleError(err)
 		return
 	}
-	fmt.Printf("Build %s accepted: %s - %s\n", resp.Name, resp.Phase, resp.Message)
+	clilog.Infof("Build %s accepted: %s - %s\n", resp.Name, resp.Phase, resp.Message)
 	h.displayBuildLogsCommand(resp.Name)
 
 	if len(localRefs) > 0 {
@@ -588,7 +591,7 @@ func (h *Handler) RunDisk(cmd *cobra.Command, args []string) {
 		imagePart = strings.Split(imagePart, ":")[0]
 		sanitized := common.SanitizeBuildName(imagePart)
 		*h.opts.BuildName = fmt.Sprintf("disk-%s", sanitized)
-		fmt.Printf("Auto-generated build name: %s\n", *h.opts.BuildName)
+		clilog.Infof("Auto-generated build name: %s\n", *h.opts.BuildName)
 	} else if err := common.ValidateBuildName(*h.opts.BuildName); err != nil {
 		h.handleError(err)
 		return
@@ -648,7 +651,7 @@ func (h *Handler) RunDisk(cmd *cobra.Command, args []string) {
 		h.handleError(err)
 		return
 	}
-	fmt.Printf("Build %s accepted: %s - %s\n", resp.Name, resp.Phase, resp.Message)
+	clilog.Infof("Build %s accepted: %s - %s\n", resp.Name, resp.Phase, resp.Message)
 	h.displayBuildLogsCommand(resp.Name)
 
 	if *h.opts.WaitForBuild || *h.opts.FollowLogs || *h.opts.OutputDir != "" || *h.opts.FlashAfterBuild {
@@ -699,7 +702,7 @@ func (h *Handler) RunBuildDev(cmd *cobra.Command, args []string) {
 		base = strings.TrimSuffix(base, ".mpp.yml")
 		sanitized := common.SanitizeBuildName(base)
 		*h.opts.BuildName = sanitized
-		fmt.Printf("Auto-generated build name: %s\n", *h.opts.BuildName)
+		clilog.Infof("Auto-generated build name: %s\n", *h.opts.BuildName)
 	} else if err := common.ValidateBuildName(*h.opts.BuildName); err != nil {
 		h.handleError(err)
 		return
@@ -799,7 +802,7 @@ func (h *Handler) RunBuildDev(cmd *cobra.Command, args []string) {
 		h.handleError(err)
 		return
 	}
-	fmt.Printf("Build %s accepted: %s - %s\n", resp.Name, resp.Phase, resp.Message)
+	clilog.Infof("Build %s accepted: %s - %s\n", resp.Name, resp.Phase, resp.Message)
 	h.displayBuildLogsCommand(resp.Name)
 
 	if len(localRefs) > 0 {
@@ -830,7 +833,7 @@ func (h *Handler) handleFileUploads(
 		}
 	}
 
-	fmt.Println("Waiting for upload server to be ready...")
+	clilog.Infoln("Waiting for upload server to be ready...")
 	readyCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	for {
@@ -883,7 +886,7 @@ func (h *Handler) handleFileUploads(
 				strings.Contains(lower, "service unavailable") ||
 				strings.Contains(lower, "upload pod not ready")
 			if isServiceUnavailable {
-				fmt.Println("Upload server not ready yet. Retrying...")
+				clilog.Infoln("Upload server not ready yet. Retrying...")
 				time.Sleep(5 * time.Second)
 				continue
 			}
@@ -891,7 +894,7 @@ func (h *Handler) handleFileUploads(
 		}
 		break
 	}
-	fmt.Println("Local files uploaded. Build will proceed.")
+	clilog.Infoln("Local files uploaded. Build will proceed.")
 	return nil
 }
 
@@ -926,5 +929,5 @@ func (h *Handler) runBuildAction(buildName, verb string, action func(context.Con
 		return
 	}
 
-	fmt.Printf("Build %q %s\n", buildName, verb)
+	clilog.Infof("Build %q %s\n", buildName, verb)
 }

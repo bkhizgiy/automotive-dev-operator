@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/clilog"
 	"github.com/containers/image/v5/docker"
 	"github.com/containers/image/v5/manifest"
 	"github.com/containers/image/v5/types"
@@ -445,7 +446,7 @@ func (h *Handler) downloadReferrers(ociRef, _ string, referrers []referrerInfo, 
 
 		destPath := filepath.Join(outputDir, filename)
 		pullRef := repo + "@" + ref.Digest
-		fmt.Printf("Downloading %s → %s\n", ref.ArtifactType, destPath)
+		clilog.Infof("Downloading %s → %s\n", ref.ArtifactType, destPath)
 		if err := caibcommon.PullOCIArtifact(pullRef, destPath, username, password, insecure, authFile); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to download %s: %v\n", filename, err)
 		}

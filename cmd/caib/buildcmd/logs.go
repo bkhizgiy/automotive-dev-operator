@@ -11,6 +11,7 @@ import (
 	"time"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
+	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/clilog"
 	common "github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/common"
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/logstream"
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/ui"
@@ -22,7 +23,7 @@ import (
 
 //nolint:gocyclo // Complex state machine for build progress tracking with log streaming.
 func (h *Handler) waitForBuildCompletion(ctx context.Context, api *buildapiclient.Client, name string) error {
-	fmt.Println("Waiting for build to complete...")
+	clilog.Infoln("Waiting for build to complete...")
 	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(*h.opts.Timeout)*time.Minute)
 	defer cancel()
 	ticker := time.NewTicker(5 * time.Second)
@@ -64,11 +65,11 @@ func (h *Handler) waitForBuildCompletion(ctx context.Context, api *buildapiclien
 			st, err := api.GetBuild(reqCtx, name)
 			cancelReq()
 			if err != nil {
-				fmt.Printf("status check failed: %v\n", err)
+				fmt.Fprintf(os.Stderr, "status check failed: %v\n", err)
 				continue
 			}
 
-			if !*h.opts.FollowLogs && !streamState.Active {
+			if !clilog.IsQuiet() && !*h.opts.FollowLogs && !streamState.Active {
 				progressCtx, progressCancel := context.WithTimeout(timeoutCtx, 10*time.Second)
 				progress, _ := api.GetBuildProgress(progressCtx, name)
 				progressCancel()
@@ -84,7 +85,7 @@ func (h *Handler) waitForBuildCompletion(ctx context.Context, api *buildapiclien
 				pb.Render(displayPhase, step)
 			} else if !streamState.Active && (!userFollowRequested || !streamState.CanRetry(maxLogRetries)) {
 				if st.Phase != lastPhase || st.Message != lastMessage {
-					fmt.Printf("status: %s - %s\n", st.Phase, st.Message)
+					clilog.Infof("status: %s - %s\n", st.Phase, st.Message)
 					lastPhase = st.Phase
 					lastMessage = st.Message
 				}
@@ -93,70 +94,45 @@ func (h *Handler) waitForBuildCompletion(ctx context.Context, api *buildapiclien
 			if st.Phase == phaseCompleted {
 				pb.Complete()
 				flashWasExecuted := strings.Contains(strings.ToLower(st.Message), "flash")
-				if flashWasExecuted {
-					bannerColor := func(a ...any) string { return fmt.Sprint(a...) }
-					infoColor := func(a ...any) string { return fmt.Sprint(a...) }
-					commandColor := func(a ...any) string { return fmt.Sprint(a...) }
-					if h.supportsColorOutput() {
-						bannerColor = color.New(color.FgHiGreen, color.Bold).SprintFunc()
-						infoColor = color.New(color.FgHiWhite).SprintFunc()
-						commandColor = color.New(color.FgHiYellow, color.Bold).SprintFunc()
-					}
 
-					divider := strings.Repeat("=", 50)
-					fmt.Println("\n" + bannerColor(divider))
-					fmt.Println(bannerColor("Build and flash completed successfully!"))
-					fmt.Println(bannerColor(divider))
-					fmt.Println("\n" + infoColor("The device has been flashed and a lease has been acquired."))
-
-					leaseID := ""
-					if st.Jumpstarter != nil && st.Jumpstarter.LeaseID != "" {
-						leaseID = st.Jumpstarter.LeaseID
-					} else if streamState.LeaseID != "" {
-						leaseID = streamState.LeaseID
+				leaseID := ""
+				if st.Jumpstarter != nil && st.Jumpstarter.LeaseID != "" {
+					leaseID = st.Jumpstarter.LeaseID
+				} else if streamState.LeaseID != "" {
+					leaseID = streamState.LeaseID
+				}
+				if leaseID != "" && h.opts.Workspace != nil && *h.opts.Workspace != "" {
+					leaseCtx, cancelLease := context.WithTimeout(ctx, 10*time.Second)
+					leaseErr := api.SetWorkspaceLease(leaseCtx, *h.opts.Workspace, leaseID)
+					cancelLease()
+					if leaseErr != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to update workspace lease: %v\n", leaseErr)
 					}
-					if leaseID != "" {
-						// Update workspace lease if --workspace was specified
-						if h.opts.Workspace != nil && *h.opts.Workspace != "" {
-							leaseCtx, cancelLease := context.WithTimeout(ctx, 10*time.Second)
-							leaseErr := api.SetWorkspaceLease(leaseCtx, *h.opts.Workspace, leaseID)
-							cancelLease()
-							if leaseErr != nil {
-								fmt.Printf("\nWarning: failed to update workspace lease: %v\n", leaseErr)
-							}
-						}
-						fmt.Printf("\n%s %s\n", infoColor("Lease ID:"), commandColor(leaseID))
-						fmt.Printf("\n%s\n", infoColor("To access the device:"))
-						fmt.Printf("  %s\n", commandColor(fmt.Sprintf("jmp shell --lease %s", leaseID)))
-						fmt.Printf("\n%s\n", infoColor("To release the lease when done:"))
-						fmt.Printf("  %s\n", commandColor(fmt.Sprintf("jmp delete leases %s", leaseID)))
+				}
+
+				if !clilog.IsQuiet() {
+					if flashWasExecuted {
+						h.displayFlashCompletionBanner(leaseID)
 					} else {
-						fmt.Println(infoColor("Check the logs above for lease details, or use:"))
-						fmt.Printf("  %s\n", commandColor("jmp list leases"))
-						fmt.Printf("\n%s\n", infoColor("To access the device:"))
-						fmt.Printf("  %s\n", commandColor("jmp shell --lease <lease-id>"))
-						fmt.Printf("\n%s\n", infoColor("To release the lease when done:"))
-						fmt.Printf("  %s\n", commandColor("jmp delete leases <lease-id>"))
+						fmt.Println("Build completed successfully!")
+						if *h.opts.FlashAfterBuild {
+							fmt.Println("\nWarning: --flash was requested but flash was not executed.")
+							fmt.Println("This may be because no Jumpstarter target mapping exists for this target.")
+							fmt.Println("Check OperatorConfig for JumpstarterTargetMappings configuration.")
+						}
+						h.displayFlashInstructions(st, false)
 					}
-				} else {
-					fmt.Println("Build completed successfully!")
-					if *h.opts.FlashAfterBuild {
-						fmt.Println("\nWarning: --flash was requested but flash was not executed.")
-						fmt.Println("This may be because no Jumpstarter target mapping exists for this target.")
-						fmt.Println("Check OperatorConfig for JumpstarterTargetMappings configuration.")
-					}
-					h.displayFlashInstructions(st, false)
 				}
 				return nil
 			}
 			if st.Phase == phaseCancelled {
 				pb.Clear()
-				fmt.Println("Build was cancelled.")
+				fmt.Fprintln(os.Stderr, "Build was cancelled.")
 				return fmt.Errorf("build cancelled")
 			}
 			if st.Phase == automotivev1alpha1.ImageBuildPhaseExpired {
 				pb.Clear()
-				fmt.Printf("Build expired: %s\n", st.Message)
+				fmt.Fprintf(os.Stderr, "Build expired: %s\n", st.Message)
 				return fmt.Errorf("build expired")
 			}
 			if st.Phase == phaseFailed {
@@ -191,7 +167,7 @@ func (h *Handler) waitForBuildCompletion(ctx context.Context, api *buildapiclien
 			if st.Phase == phasePending {
 				streamState.Reset()
 				if userFollowRequested && !pendingWarningShown {
-					fmt.Println("Waiting for build to start before streaming logs...")
+					clilog.Infoln("Waiting for build to start before streaming logs...")
 					pendingWarningShown = true
 				}
 				continue
@@ -199,7 +175,7 @@ func (h *Handler) waitForBuildCompletion(ctx context.Context, api *buildapiclien
 
 			if isBuildActive(st.Phase) {
 				if streamState.RetryCount == 0 {
-					fmt.Println("Build is active. Attempting to stream logs...")
+					clilog.Infoln("Build is active. Attempting to stream logs...")
 					pendingWarningShown = false
 				}
 
@@ -207,7 +183,7 @@ func (h *Handler) waitForBuildCompletion(ctx context.Context, api *buildapiclien
 					streamState.RetryCount++
 					if !streamState.CanRetry(maxLogRetries) && !retryLimitWarningShown {
 						msg := "Log streaming failed after %d attempts (~2 minutes). Falling back to status updates only.\n"
-						fmt.Printf(msg, maxLogRetries)
+						clilog.Infof(msg, maxLogRetries)
 						retryLimitWarningShown = true
 					}
 				} else {
@@ -260,6 +236,38 @@ func (h *Handler) buildLogURL(buildName string, startTime time.Time) string {
 	return logURL
 }
 
+func (h *Handler) displayFlashCompletionBanner(leaseID string) {
+	bannerColor := func(a ...any) string { return fmt.Sprint(a...) }
+	infoColor := func(a ...any) string { return fmt.Sprint(a...) }
+	commandColor := func(a ...any) string { return fmt.Sprint(a...) }
+	if h.supportsColorOutput() {
+		bannerColor = color.New(color.FgHiGreen, color.Bold).SprintFunc()
+		infoColor = color.New(color.FgHiWhite).SprintFunc()
+		commandColor = color.New(color.FgHiYellow, color.Bold).SprintFunc()
+	}
+
+	divider := strings.Repeat("=", 50)
+	fmt.Println("\n" + bannerColor(divider))
+	fmt.Println(bannerColor("Build and flash completed successfully!"))
+	fmt.Println(bannerColor(divider))
+	fmt.Println("\n" + infoColor("The device has been flashed and a lease has been acquired."))
+
+	if leaseID != "" {
+		fmt.Printf("\n%s %s\n", infoColor("Lease ID:"), commandColor(leaseID))
+		fmt.Printf("\n%s\n", infoColor("To access the device:"))
+		fmt.Printf("  %s\n", commandColor(fmt.Sprintf("jmp shell --lease %s", leaseID)))
+		fmt.Printf("\n%s\n", infoColor("To release the lease when done:"))
+		fmt.Printf("  %s\n", commandColor(fmt.Sprintf("jmp delete leases %s", leaseID)))
+	} else {
+		fmt.Println(infoColor("Check the logs above for lease details, or use:"))
+		fmt.Printf("  %s\n", commandColor("jmp list leases"))
+		fmt.Printf("\n%s\n", infoColor("To access the device:"))
+		fmt.Printf("  %s\n", commandColor("jmp shell --lease <lease-id>"))
+		fmt.Printf("\n%s\n", infoColor("To release the lease when done:"))
+		fmt.Printf("  %s\n", commandColor("jmp delete leases <lease-id>"))
+	}
+}
+
 // RunLogs handles `caib image logs`.
 func (h *Handler) RunLogs(_ *cobra.Command, args []string) {
 	ctx := context.Background()
@@ -281,7 +289,7 @@ func (h *Handler) RunLogs(_ *cobra.Command, args []string) {
 		h.handleError(fmt.Errorf("failed to get build: %w", err))
 		return
 	}
-	fmt.Printf("Build %s: %s - %s\n", name, st.Phase, st.Message)
+	clilog.Infof("Build %s: %s - %s\n", name, st.Phase, st.Message)
 
 	if isTerminalPhase(st.Phase) {
 		logTransport := &http.Transport{
@@ -299,7 +307,7 @@ func (h *Handler) RunLogs(_ *cobra.Command, args []string) {
 		}
 		streamState := &logstream.State{}
 		if err := h.tryLogStreaming(ctx, logClient, name, streamState); err != nil {
-			fmt.Printf("Could not retrieve logs (pods may have been cleaned up). Use 'caib image show %s' for details.\n", name)
+			clilog.Infof("Could not retrieve logs (pods may have been cleaned up). Use 'caib image show %s' for details.\n", name)
 		}
 		return
 	}

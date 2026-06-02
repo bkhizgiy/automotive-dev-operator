@@ -71,6 +71,9 @@ var (
 	// Build TTL
 	buildTTL string
 
+	// Output options
+	quiet bool
+
 	// TLS options
 	insecureSkipTLS bool
 
