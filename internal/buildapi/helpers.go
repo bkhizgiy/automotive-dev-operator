@@ -173,6 +173,9 @@ func getKubernetesClient() (client.Client, error) {
 	if err := automotivev1alpha1.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("failed to add scheme: %w", err)
 	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("failed to add core scheme: %w", err)
+	}
 
 	k8sClient, err := client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {

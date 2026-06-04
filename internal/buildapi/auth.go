@@ -8,7 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"k8s.io/apimachinery/pkg/types"
-	apiserverv1beta1 "k8s.io/apiserver/pkg/apis/apiserver/v1beta1"
+	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/client-go/kubernetes"
 
 	automotivev1alpha1 "github.com/centos-automotive-suite/automotive-dev-operator/api/v1alpha1"
@@ -38,13 +38,12 @@ func (a *APIServer) authMiddleware() gin.HandlerFunc {
 
 func (a *APIServer) refreshAuthConfigIfNeeded() {
 	a.authConfigMu.Lock()
-	defer a.authConfigMu.Unlock()
-
-	// Check if it's time to refresh (every 60 seconds)
 	if time.Since(a.lastAuthConfigCheck) < 60*time.Second {
+		a.authConfigMu.Unlock()
 		return
 	}
 	a.lastAuthConfigCheck = time.Now()
+	a.authConfigMu.Unlock()
 
 	namespace := resolveNamespace()
 	k8sClient, err := getKubernetesClient()
@@ -63,23 +62,33 @@ func (a *APIServer) refreshAuthConfigIfNeeded() {
 		return
 	}
 
-	// Build new config from OperatorConfig (without creating authenticator yet)
+	// Build new config from OperatorConfig, resolving any CA references from Secrets/ConfigMaps.
+	// Re-resolving on every refresh means CA rotations are picked up within ~60 seconds.
 	var newConfig *AuthenticationConfiguration
 	if operatorConfig.Spec.BuildAPI != nil && operatorConfig.Spec.BuildAPI.Authentication != nil {
 		auth := operatorConfig.Spec.BuildAPI.Authentication
-		// Deep copy JWT config with Prefix handling
-		jwtCopy := make([]apiserverv1beta1.JWTAuthenticator, len(auth.JWT))
-		for i, jwt := range auth.JWT {
-			jwtCopy[i] = jwt
-			if jwt.ClaimMappings.Username.Claim != "" && jwt.ClaimMappings.Username.Prefix == nil {
+
+		refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer refreshCancel()
+
+		jwtCopy, resolveErr := toUpstreamJWTAuthenticators(refreshCtx, k8sClient, auth.JWT, namespace)
+		if resolveErr != nil {
+			a.log.Error(resolveErr, "failed to resolve JWT CA references during refresh, keeping existing config")
+			return
+		}
+
+		// Ensure Prefix pointers are non-nil when Claim is set (k8s OIDC authenticator requirement).
+		for i := range jwtCopy {
+			if jwtCopy[i].ClaimMappings.Username.Claim != "" && jwtCopy[i].ClaimMappings.Username.Prefix == nil {
 				emptyPrefix := ""
 				jwtCopy[i].ClaimMappings.Username.Prefix = &emptyPrefix
 			}
-			if jwt.ClaimMappings.Groups.Claim != "" && jwt.ClaimMappings.Groups.Prefix == nil {
+			if jwtCopy[i].ClaimMappings.Groups.Claim != "" && jwtCopy[i].ClaimMappings.Groups.Prefix == nil {
 				emptyPrefix := ""
 				jwtCopy[i].ClaimMappings.Groups.Prefix = &emptyPrefix
 			}
 		}
+
 		newConfig = &AuthenticationConfiguration{
 			ClientID: auth.ClientID,
 			Internal: InternalAuthConfig{Prefix: "internal:"},
@@ -90,7 +99,31 @@ func (a *APIServer) refreshAuthConfigIfNeeded() {
 		}
 	}
 
-	// Compare with existing config, only recreate authenticator if config changed
+	a.authConfigMu.Lock()
+	// Compare with existing config first. In the common steady-state case, avoid
+	// rebuilding the authenticator entirely.
+	if authConfigsEqual(a.authConfig, newConfig) {
+		a.authConfigMu.Unlock()
+		return
+	}
+	a.authConfigMu.Unlock()
+
+	// Config changed - build authenticator outside lock to avoid blocking
+	// concurrent requests on slow network or crypto operations.
+	var authn authenticator.Token
+	if newConfig != nil {
+		authn, err = newJWTAuthenticator(context.Background(), *newConfig)
+		if err != nil {
+			a.log.Error(err, "failed to create JWT authenticator during refresh, keeping existing config")
+			return
+		}
+	}
+
+	a.authConfigMu.Lock()
+	defer a.authConfigMu.Unlock()
+
+	// Re-check under lock in case another refresh already applied the same config
+	// while authenticator construction was in flight.
 	if authConfigsEqual(a.authConfig, newConfig) {
 		return
 	}
@@ -102,13 +135,6 @@ func (a *APIServer) refreshAuthConfigIfNeeded() {
 		a.authConfig = nil
 		a.externalJWT = nil
 		a.internalPrefix = ""
-		return
-	}
-
-	// Create new authenticator
-	authn, err := newJWTAuthenticator(context.Background(), *newConfig)
-	if err != nil {
-		a.log.Error(err, "failed to create JWT authenticator during refresh, keeping existing config")
 		return
 	}
 
