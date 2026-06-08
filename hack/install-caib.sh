@@ -41,7 +41,7 @@ esac
 ARTIFACT="caib-${VERSION}-${SUFFIX}.tar.gz"
 URL="https://github.com/${REPO}/releases/download/${VERSION}/${ARTIFACT}"
 CHECKSUMS_URL="https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt"
-INSTALL_DIR="/usr/local/bin"
+INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
