@@ -155,6 +155,20 @@ make build-caib           # CLI tool
 make docker-build
 ```
 
+## CI
+
+### GitHub Actions
+
+Builds, tests, and publishes releases via `.github/workflows/`. On `v*` tags, GHA builds multi-arch operator and toolchain images, OLM bundle/catalog, `caib` CLI binaries, and creates a GitHub Release.
+
+### Konflux CI (self-hosted)
+
+Operator, bundle, and catalog images can be built on a self-hosted [Konflux](https://konflux-ci.dev/) instance (Kind + Tekton). One combined pipeline runs per push or PR:
+
+- **Setup:** cluster via [upstream guide](https://github.com/konflux-ci/konflux-ci/blob/main/docs/bootstrapping.md), then run `hack/konflux/onboard-app.sh`
+- **Active pipeline:** `.tekton/release-push.yaml` / `.tekton/release-pull-request.yaml`
+- **Images:** `quay.io/rh-sdv-cloud/automotive-dev-operator` (+ `-bundle`, `-catalog`)
+
 ## Release Information
 
 This project publishes versioned releases with:
