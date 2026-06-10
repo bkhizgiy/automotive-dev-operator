@@ -34,3 +34,6 @@ catalog/automotive-dev-operator.yaml
 /bundle/
 /build-api/
 _output/
+
+# Generated e2e test artifacts (Dex certs, etc.)
+.e2e/
