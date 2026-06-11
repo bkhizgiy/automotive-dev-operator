@@ -11,6 +11,50 @@ import (
 	"github.com/centos-automotive-suite/automotive-dev-operator/cmd/caib/config"
 )
 
+// TestNewLoginCmdTokenFlag verifies that newLoginCmd registers the --token flag
+// with the expected default value and no shorthand.
+func TestNewLoginCmdTokenFlag(t *testing.T) {
+	cmd := newLoginCmd()
+
+	f := cmd.Flags().Lookup("token")
+	if f == nil {
+		t.Fatal("--token flag not registered on login command")
+	}
+	if f.DefValue != "" {
+		t.Errorf("--token default = %q, want %q", f.DefValue, "")
+	}
+	if f.Shorthand != "" {
+		t.Errorf("--token shorthand = %q, want no shorthand", f.Shorthand)
+	}
+}
+
+// TestNewLoginCmdNoEndpointOrNoInteractiveFlags verifies that the removed flags
+// are not present on the login command.
+func TestNewLoginCmdNoEndpointOrNoInteractiveFlags(t *testing.T) {
+	cmd := newLoginCmd()
+
+	for _, name := range []string{"endpoint", "nointeractive"} {
+		if f := cmd.Flags().Lookup(name); f != nil {
+			t.Errorf("flag --%s should not be registered on login command", name)
+		}
+	}
+}
+
+// TestNewLoginCmdMaxOnePositionalArg verifies the command accepts at most one
+// positional argument (the server URL).
+func TestNewLoginCmdMaxOnePositionalArg(t *testing.T) {
+	cmd := newLoginCmd()
+	if err := cmd.Args(cmd, []string{"a", "b"}); err == nil {
+		t.Error("expected error when two positional args are provided, got nil")
+	}
+	if err := cmd.Args(cmd, []string{"a"}); err != nil {
+		t.Errorf("unexpected error for one positional arg: %v", err)
+	}
+	if err := cmd.Args(cmd, []string{}); err != nil {
+		t.Errorf("unexpected error for zero positional args: %v", err)
+	}
+}
+
 func TestNormalizeServerURL(t *testing.T) {
 	tests := []struct {
 		input   string

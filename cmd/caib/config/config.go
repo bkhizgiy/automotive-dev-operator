@@ -28,7 +28,8 @@ var healthHTTPClient *http.Client
 
 // CLIConfig holds saved CLI settings.
 type CLIConfig struct {
-	ServerURL string `json:"server_url"`
+	ServerURL  string `json:"server_url"`
+	SavedToken string `json:"saved_token,omitempty"`
 }
 
 // DefaultServer returns the effective default server URL: CAIB_SERVER env, then saved config.
@@ -195,8 +196,49 @@ func Read() (*CLIConfig, error) {
 	return &cfg, nil
 }
 
-// SaveServerURL writes the given server URL to the local config file.
+// SaveServerURL writes the given server URL to the local config file,
+// preserving any other existing fields (e.g. SavedToken).
 func SaveServerURL(serverURL string) error {
+	return updateConfig(func(cfg *CLIConfig) {
+		cfg.ServerURL = strings.TrimSpace(serverURL)
+	})
+}
+
+// SaveToken saves an explicit bearer token to the local config file.
+// The token is used as the primary auth credential for all API calls,
+// bypassing OIDC. Accepts both opaque tokens (e.g. oc whoami -t) and JWTs.
+// Pass an empty string to clear the saved token.
+func SaveToken(token string) error {
+	return updateConfig(func(cfg *CLIConfig) {
+		cfg.SavedToken = normalizeToken(token)
+	})
+}
+
+// LoadSavedToken returns the token saved via SaveToken, or "" if none is set.
+func LoadSavedToken() string {
+	cfg, err := Read()
+	if err != nil || cfg == nil {
+		return ""
+	}
+	return normalizeToken(cfg.SavedToken)
+}
+
+func normalizeToken(token string) string {
+	trimmed := strings.TrimSpace(token)
+	if trimmed == "" {
+		return ""
+	}
+
+	parts := strings.Fields(trimmed)
+	if len(parts) >= 2 && strings.EqualFold(parts[0], "bearer") {
+		return strings.TrimSpace(strings.Join(parts[1:], " "))
+	}
+
+	return trimmed
+}
+
+// updateConfig reads the current config (if any), applies fn, and writes it back.
+func updateConfig(fn func(*CLIConfig)) error {
 	path, err := configFilePath()
 	if err != nil {
 		return err
@@ -204,7 +246,16 @@ func SaveServerURL(serverURL string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	cfg := &CLIConfig{ServerURL: strings.TrimSpace(serverURL)}
+
+	cfg := &CLIConfig{}
+	if data, readErr := os.ReadFile(path); readErr == nil {
+		if jsonErr := json.Unmarshal(data, cfg); jsonErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: caib config file is corrupted and will be reset (%s): %v\n", path, jsonErr)
+		}
+	}
+
+	fn(cfg)
+
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err

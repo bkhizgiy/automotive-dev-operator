@@ -24,7 +24,7 @@ var (
 func NewAuthCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "auth",
-		Short: "Manage authentication tokens",
+		Short: "Authentication and token management commands",
 		Long:  `Commands for inspecting and refreshing OIDC authentication tokens.`,
 	}
 
@@ -129,7 +129,7 @@ func runRefresh(cmd *cobra.Command, _ []string) {
 	serverURL := config.DefaultServerWithDerive()
 	if serverURL == "" {
 		fmt.Println(color.RedString("No server configured."))
-		fmt.Println("Run 'caib login <server-url>' or 'jmp login <endpoint>' first.")
+		fmt.Println("Run 'caib login <server-url>' first.")
 		return
 	}
 

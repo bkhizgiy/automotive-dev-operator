@@ -309,6 +309,93 @@ var _ = Describe("DefaultServerWithDerive", func() {
 	})
 })
 
+var _ = Describe("SaveToken and LoadSavedToken", func() {
+	var tempDir string
+	var origHome, origXDG string
+
+	BeforeEach(func() {
+		var err error
+		tempDir, err = os.MkdirTemp("", "caib-savetoken-test-*")
+		Expect(err).NotTo(HaveOccurred())
+
+		origHome = os.Getenv("HOME")
+		origXDG = os.Getenv("XDG_CONFIG_HOME")
+		Expect(os.Setenv("HOME", tempDir)).To(Succeed())
+		Expect(os.Unsetenv("XDG_CONFIG_HOME")).To(Succeed())
+	})
+
+	AfterEach(func() {
+		_ = os.Setenv("HOME", origHome)
+		if origXDG != "" {
+			_ = os.Setenv("XDG_CONFIG_HOME", origXDG)
+		} else {
+			_ = os.Unsetenv("XDG_CONFIG_HOME")
+		}
+		_ = os.RemoveAll(tempDir)
+	})
+
+	It("saves and loads an opaque token (e.g. oc whoami -t)", func() {
+		opaqueToken := "sha256~someRandomOpaqueToken"
+		Expect(SaveToken(opaqueToken)).To(Succeed())
+		Expect(LoadSavedToken()).To(Equal(opaqueToken))
+	})
+
+	It("saves and loads a JWT token", func() {
+		fakeJWT := "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.sig"
+		Expect(SaveToken(fakeJWT)).To(Succeed())
+		Expect(LoadSavedToken()).To(Equal(fakeJWT))
+	})
+
+	It("normalizes bearer-prefixed tokens before saving", func() {
+		Expect(SaveToken("Bearer sha256~someRandomOpaqueToken")).To(Succeed())
+		Expect(LoadSavedToken()).To(Equal("sha256~someRandomOpaqueToken"))
+	})
+
+	It("normalizes bearer-prefixed tokens with extra spaces", func() {
+		Expect(SaveToken("  Bearer   eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.sig  ")).To(Succeed())
+		Expect(LoadSavedToken()).To(Equal("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.sig"))
+	})
+
+	It("returns empty string when no token is saved", func() {
+		Expect(LoadSavedToken()).To(Equal(""))
+	})
+
+	It("clears a saved token when empty string is passed", func() {
+		Expect(SaveToken("some-token")).To(Succeed())
+		Expect(SaveToken("")).To(Succeed())
+		Expect(LoadSavedToken()).To(Equal(""))
+	})
+
+	It("SaveServerURL preserves the saved token", func() {
+		Expect(SaveToken("my-token")).To(Succeed())
+		Expect(SaveServerURL("https://build-api.example.com")).To(Succeed())
+
+		Expect(LoadSavedToken()).To(Equal("my-token"))
+		cfg, err := Read()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.ServerURL).To(Equal("https://build-api.example.com"))
+	})
+
+	It("SaveToken preserves the server URL", func() {
+		Expect(SaveServerURL("https://build-api.example.com")).To(Succeed())
+		Expect(SaveToken("my-token")).To(Succeed())
+
+		cfg, err := Read()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.ServerURL).To(Equal("https://build-api.example.com"))
+		Expect(cfg.SavedToken).To(Equal("my-token"))
+	})
+
+	It("stores token in cli.json with 0600 permissions", func() {
+		Expect(SaveToken("secret-token")).To(Succeed())
+
+		configPath := filepath.Join(tempDir, ".config", "caib", "cli.json")
+		info, err := os.Stat(configPath)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(info.Mode().Perm()).To(Equal(os.FileMode(0600)))
+	})
+})
+
 var _ = Describe("Read with XDG config override", func() {
 	var tempDir string
 	var origHome, origXDG string

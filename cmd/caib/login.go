@@ -15,6 +15,36 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var loginToken string
+
+func newLoginCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "login [server-url]",
+		Short: "Save server endpoint and authenticate for subsequent commands",
+		Long: `Login saves the Build API server URL in XDG config (typically ~/.config/caib/cli.json) so you do not need
+to pass --server or set CAIB_SERVER for later commands. If the server uses OIDC,
+this command also performs authentication and caches the token.
+
+If no URL is provided, the server endpoint is attempted to be derived from the current
+Jumpstarter client config (~/.config/jumpstarter/clients/<alias>.yaml).
+
+Use --token to provide a bearer token explicitly (e.g. from 'oc whoami -t' or a
+ServiceAccount token). The token is saved to config and used by all subsequent commands,
+bypassing OIDC. This is the recommended approach for machine users and CI/CD pipelines.
+
+Examples:
+  caib login https://build-api.my-cluster.example.com
+  caib login --token "$(oc whoami -t)" https://build-api.my-cluster.example.com
+  caib login  # derive endpoint from Jumpstarter config (if available)`,
+		Args: cobra.MaximumNArgs(1),
+		Run:  runLogin,
+	}
+
+	cmd.Flags().StringVar(&loginToken, "token", "", "bearer token to save and use for all API calls (bypasses OIDC)")
+
+	return cmd
+}
+
 // normalizeServerURL parses and normalizes a raw server URL argument.
 // It prepends "https://" if no scheme is present, and rejects URLs with
 // invalid schemes, credentials, query parameters, fragments, or non-root paths.
@@ -95,6 +125,16 @@ func runLogin(_ *cobra.Command, args []string) {
 		handleError(fmt.Errorf("failed to save server URL: %w", err))
 	}
 	clilog.Infof("Server saved: %s\n", server)
+
+	// --token: save to config so all subsequent commands use it directly,
+	// bypassing OIDC. Works for both opaque tokens (oc whoami -t) and JWTs.
+	if loginToken != "" {
+		if err := config.SaveToken(loginToken); err != nil {
+			handleError(fmt.Errorf("failed to save token: %w", err))
+		}
+		clilog.Infoln("Token saved. Subsequent commands will use it without re-authentication.")
+		return
+	}
 
 	ctx := context.Background()
 	token, didAuth, err := auth.GetTokenWithReauth(ctx, server, "", insecureSkipTLS)

@@ -73,4 +73,9 @@ var _ = Describe("NewAuthCmd", func() {
 		}
 		Fail("status subcommand not found")
 	})
+
+	It("should use description aligned with jmp auth", func() {
+		cmd := NewAuthCmd()
+		Expect(cmd.Short).To(Equal("Authentication and token management commands"))
+	})
 })
