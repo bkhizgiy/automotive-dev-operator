@@ -213,6 +213,8 @@ spec:
         value: $(params.operator-image)
       - name: PUSH_LATEST
         value: "false"
+      - name: IMAGE_EXPIRES_AFTER
+        value: $(params.image-expires-after)
       runAfter:
       - prefetch-dependencies
       taskSpec:
@@ -224,6 +226,7 @@ spec:
         - name: OPERATOR_IMAGE
         - name: PUSH_LATEST
           default: "false"
+        - name: IMAGE_EXPIRES_AFTER
         results:
         - name: IMAGE_URL
         - name: IMAGE_DIGEST
@@ -288,13 +291,21 @@ spec:
             DOCKERFILE="$(params.DOCKERFILE)"
             AUTHFILE="${HOME}/.docker/config.json"
             PUSH_LATEST="$(params.PUSH_LATEST)"
+            IMAGE_EXPIRES_AFTER="$(params.IMAGE_EXPIRES_AFTER)"
 
             cd /var/workdir/source
+
+            LABEL_ARGS=()
+            if [ -n "${IMAGE_EXPIRES_AFTER}" ]; then
+              echo "=== Tagging image to expire after ${IMAGE_EXPIRES_AFTER} ==="
+              LABEL_ARGS+=(--label "quay.expires-after=${IMAGE_EXPIRES_AFTER}")
+            fi
 
             echo "=== Building single-arch linux/amd64 (bundle must not be a manifest list) ==="
             buildah build \
               --storage-driver vfs \
               --platform linux/amd64 \
+              "${LABEL_ARGS[@]}" \
               --authfile "${AUTHFILE}" \
               -t "${IMAGE_FULL}" \
               -f "${DOCKERFILE}" .
