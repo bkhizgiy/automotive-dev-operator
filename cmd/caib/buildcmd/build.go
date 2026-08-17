@@ -390,9 +390,8 @@ func (h *Handler) displayBuildResults(ctx context.Context, api *buildapiclient.C
 		return
 	}
 
-	credsFile := h.handleBuildArtifacts(st)
-
 	if h.isStructuredOutput() {
+		credsFile := h.handleBuildArtifacts(st)
 		format, _ := common.ResolveOutputFormat(h.opts.OutputFormat)
 		result := BuildResult{
 			Name:                    st.Name,
@@ -403,7 +402,7 @@ func (h *Handler) displayBuildResults(ctx context.Context, api *buildapiclient.C
 			LeaseID:                 h.lastLeaseID,
 			RegistryCredentialsFile: credsFile,
 		}
-		if credsFile == "" && st.RegistryToken != "" && *h.opts.UseInternalRegistry {
+		if st.RegistryToken != "" && *h.opts.UseInternalRegistry {
 			result.RegistryUsername = "serviceaccount"
 			result.RegistryToken = st.RegistryToken
 		}
@@ -411,6 +410,7 @@ func (h *Handler) displayBuildResults(ctx context.Context, api *buildapiclient.C
 		return
 	}
 
+	credsFile := h.handleBuildArtifacts(st)
 	h.displayBuildResultsText(st, credsFile)
 }
 
@@ -467,10 +467,10 @@ func (h *Handler) displayBuildResultsText(st *buildapitypes.BuildResponse, creds
 
 	if *h.opts.UseInternalRegistry {
 		if st.ContainerImage != "" {
-			fmt.Printf("%s %s\n", labelColor("Container image:"), valueColor(st.ContainerImage))
+			clilog.Infof("%s %s\n", labelColor("Container image:"), valueColor(st.ContainerImage))
 		}
 		if st.DiskImage != "" {
-			fmt.Printf("%s %s\n", labelColor("Disk image:"), valueColor(st.DiskImage))
+			clilog.Infof("%s %s\n", labelColor("Disk image:"), valueColor(st.DiskImage))
 		}
 		if credsFile != "" {
 			clilog.Infof("\n%s %s (valid ~4 hours)\n",
@@ -486,10 +486,10 @@ func (h *Handler) displayBuildResultsText(st *buildapitypes.BuildResponse, creds
 	}
 
 	if st.ContainerImage != "" && *h.opts.ContainerPush != "" {
-		fmt.Printf("%s %s\n", labelColor("Container image pushed to:"), valueColor(*h.opts.ContainerPush))
+		clilog.Infof("%s %s\n", labelColor("Container image pushed to:"), valueColor(*h.opts.ContainerPush))
 	}
 	if st.DiskImage != "" && *h.opts.ExportOCI != "" {
-		fmt.Printf("%s %s\n", labelColor("Disk image pushed to:"), valueColor(*h.opts.ExportOCI))
+		clilog.Infof("%s %s\n", labelColor("Disk image pushed to:"), valueColor(*h.opts.ExportOCI))
 	}
 }
 
