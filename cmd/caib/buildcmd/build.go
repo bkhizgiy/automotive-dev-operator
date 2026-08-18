@@ -89,6 +89,15 @@ type Options struct {
 	RestoreSourcesRef *string
 	TTL               *string
 
+	S3Bucket            *string
+	S3Prefix            *string
+	S3Region            *string
+	S3Endpoint          *string
+	S3AccessKeyID       *string
+	S3SecretAccessKey   *string
+	S3CredentialsSecret *string
+	S3Insecure          *bool
+
 	InsecureSkipTLS *bool
 	OutputFormat    *string
 
@@ -536,6 +545,76 @@ func (h *Handler) applyFlashOptions(req *buildapitypes.BuildRequest, pushRequire
 	return nil
 }
 
+func (h *Handler) applyS3Options(req *buildapitypes.BuildRequest) error {
+	if h.opts.S3Bucket == nil || *h.opts.S3Bucket == "" {
+		return nil
+	}
+
+	req.S3Bucket = *h.opts.S3Bucket
+	if h.opts.S3Prefix != nil {
+		req.S3Prefix = *h.opts.S3Prefix
+	}
+	if h.opts.S3Endpoint != nil {
+		req.S3Endpoint = *h.opts.S3Endpoint
+	}
+	if h.opts.S3Region != nil {
+		req.S3Region = *h.opts.S3Region
+	}
+	if h.opts.S3Insecure != nil {
+		req.S3InsecureSkipTLSVerify = *h.opts.S3Insecure
+	}
+
+	secretProvided := h.opts.S3CredentialsSecret != nil && *h.opts.S3CredentialsSecret != ""
+	explicitAccess := h.opts.S3AccessKeyID != nil && *h.opts.S3AccessKeyID != ""
+	explicitSecret := h.opts.S3SecretAccessKey != nil && *h.opts.S3SecretAccessKey != ""
+	inlineCredsProvided := explicitAccess || explicitSecret
+	envAccess := os.Getenv("AWS_ACCESS_KEY_ID")
+	envSecret := os.Getenv("AWS_SECRET_ACCESS_KEY")
+	envCredsProvided := envAccess != "" || envSecret != ""
+
+	sourcesCount := 0
+	if secretProvided {
+		sourcesCount++
+	}
+	if inlineCredsProvided {
+		sourcesCount++
+	}
+	if envCredsProvided {
+		sourcesCount++
+	}
+	if sourcesCount > 1 {
+		return fmt.Errorf("multiple S3 credential sources provided; use only one of: --s3-credentials-secret, --s3-access-key-id/--s3-secret-access-key, or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY env vars")
+	}
+
+	if secretProvided {
+		req.S3CredentialsSecretName = *h.opts.S3CredentialsSecret
+	} else if inlineCredsProvided {
+		if !explicitAccess {
+			return fmt.Errorf("--s3-secret-access-key is set but --s3-access-key-id is missing")
+		}
+		if !explicitSecret {
+			return fmt.Errorf("--s3-access-key-id is set but --s3-secret-access-key is missing")
+		}
+		req.S3Credentials = &buildapitypes.S3Credentials{
+			AccessKeyID:     *h.opts.S3AccessKeyID,
+			SecretAccessKey: *h.opts.S3SecretAccessKey,
+		}
+	} else if envCredsProvided {
+		if envAccess == "" {
+			return fmt.Errorf("AWS_SECRET_ACCESS_KEY is set but AWS_ACCESS_KEY_ID is missing")
+		}
+		if envSecret == "" {
+			return fmt.Errorf("AWS_ACCESS_KEY_ID is set but AWS_SECRET_ACCESS_KEY is missing")
+		}
+		req.S3Credentials = &buildapitypes.S3Credentials{
+			AccessKeyID:     envAccess,
+			SecretAccessKey: envSecret,
+		}
+	}
+
+	return nil
+}
+
 func (h *Handler) displayBuildLogsCommand(buildName string) {
 	if clilog.IsQuiet() || h.isStructuredOutput() {
 		return
@@ -773,6 +852,11 @@ func (h *Handler) RunBuild(cmd *cobra.Command, args []string) {
 		return
 	}
 
+	if err := h.applyS3Options(&req); err != nil {
+		h.handleError(err)
+		return
+	}
+
 	localRefs, refsErr := common.FindLocalFileReferences(string(manifestBytes), filepath.Dir(manifestPath))
 	if refsErr != nil {
 		h.handleError(fmt.Errorf("manifest file reference error: %w", refsErr))
@@ -891,6 +975,11 @@ func (h *Handler) RunDisk(cmd *cobra.Command, args []string) {
 		return
 	}
 
+	if err := h.applyS3Options(&req); err != nil {
+		h.handleError(err)
+		return
+	}
+
 	resp, err := api.CreateBuild(ctx, req)
 	if err != nil {
 		h.handleError(err)
@@ -906,6 +995,22 @@ func (h *Handler) RunDisk(cmd *cobra.Command, args []string) {
 	}
 
 	h.displayBuildResults(ctx, api, resp.Name)
+}
+
+func (h *Handler) validateDevExportFlags(manifestPath string) error {
+	if *h.opts.UseInternalRegistry {
+		if *h.opts.ExportOCI != "" {
+			return common.NewActionableError(
+				fmt.Errorf("--internal-registry cannot be used with --push"),
+				fmt.Sprintf("caib image build-dev --push %s %s", *h.opts.ExportOCI, manifestPath),
+			)
+		}
+		return nil
+	}
+	if h.opts.S3Bucket != nil && *h.opts.S3Bucket != "" {
+		return nil
+	}
+	return common.ValidateOutputRequiresPush(*h.opts.OutputDir, *h.opts.ExportOCI, "--push")
 }
 
 // RunBuildDev handles `caib image build-dev` (traditional ostree/package builds).
@@ -928,6 +1033,11 @@ func (h *Handler) RunBuildDev(cmd *cobra.Command, args []string) {
 
 	if err := h.validateRegistryFlags("--push",
 		fmt.Sprintf("caib image build-dev --push %s %s", *h.opts.ExportOCI, manifestPath)); err != nil {
+		h.handleError(err)
+		return
+	}
+
+	if err := h.validateDevExportFlags(manifestPath); err != nil {
 		h.handleError(err)
 		return
 	}
@@ -1037,6 +1147,11 @@ func (h *Handler) RunBuildDev(cmd *cobra.Command, args []string) {
 	ApplyTargetDefaults(cmd, operatorConfig, &req)
 
 	if err := h.applyFlashOptions(&req, "--push"); err != nil {
+		h.handleError(err)
+		return
+	}
+
+	if err := h.applyS3Options(&req); err != nil {
 		h.handleError(err)
 		return
 	}
