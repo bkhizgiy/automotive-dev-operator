@@ -225,9 +225,7 @@ func (r *OperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			log.Error(err, "Failed to add finalizer")
 			return ctrl.Result{}, err
 		}
-		log.Info("Finalizer added, requeuing")
-		// Requeue to avoid doing more work in this reconciliation
-		return ctrl.Result{Requeue: true}, nil
+		// GenerationChangedPredicate drops this Update; continue here.
 	}
 
 	// Handle deletion
@@ -671,7 +669,7 @@ func (r *OperatorConfigReconciler) deployOSBuilds(
 	}
 
 	// Generate and deploy Tekton tasks
-	tektonTasks := []*tektonv1.Task{
+	tektonTasks := []*tektonv1.Task{ //nolint:prealloc // sealed tasks appended below
 		tasks.GenerateBuildAutomotiveImageTask(config.Namespace, buildConfig, ""),
 		tasks.GeneratePushArtifactRegistryTask(config.Namespace, buildConfig),
 		tasks.GeneratePushArtifactS3Task(config.Namespace, buildConfig),
